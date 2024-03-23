@@ -1,5 +1,8 @@
 use openworkers_runtime::ScheduledInit;
+use openworkers_runtime::Script;
 use openworkers_runtime::Task;
+use openworkers_runtime::Worker;
+
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -14,7 +17,7 @@ pub struct ScheduledData {
     pub worker_id: String,
 }
 
-fn run_scheduled(data: ScheduledData, script: openworkers_runtime::Script) {
+fn run_scheduled(data: ScheduledData, script: Script) {
     let (res_tx, res_rx) = tokio::sync::oneshot::channel::<()>();
 
     let task = Task::Scheduled(Some(ScheduledInit::new(res_tx, data.scheduled_time)));
@@ -29,7 +32,7 @@ fn run_scheduled(data: ScheduledData, script: openworkers_runtime::Script) {
 
         local.spawn_local(async move {
             log::debug!("create worker");
-            let mut worker = openworkers_runtime::Worker::new(script).await.unwrap();
+            let mut worker = Worker::new(script).await.unwrap();
 
             log::debug!("exec scheduled task");
             match worker.exec(task).await {
@@ -88,7 +91,7 @@ pub fn handle_scheduled(db: store::Database) {
                     }
                 };
 
-                let script = openworkers_runtime::Script {
+                let script = Script {
                     specifier: openworkers_runtime::module_url("script.js"),
                     code: Some(openworkers_runtime::FastString::from(worker.script)),
                 };

@@ -1,5 +1,5 @@
-mod store;
 mod scheduled;
+mod store;
 
 use bytes::Bytes;
 
@@ -172,9 +172,6 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest) -> HttpResponse 
 
     response
 }
-
-
-
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
