@@ -177,6 +177,10 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest) -> HttpResponse 
     response
 }
 
+async fn health_check() -> HttpResponse {
+    HttpResponse::Ok().body("ok")
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv::dotenv().ok();
@@ -188,6 +192,18 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
 
     debug!("start main");
+
+    if !std::env::var("DATABASE_URL").is_ok() {
+        let host = std::env::var("POSTGRES_HOST").expect("POSTGRES_HOST must be set");
+        let port = std::env::var("POSTGRES_PORT").expect("POSTGRES_PORT must be set");
+        let user = std::env::var("POSTGRES_USER").expect("POSTGRES_USER must be set");
+        let password = std::env::var("POSTGRES_PASSWORD").expect("POSTGRES_PASSWORD must be set");
+        let database = std::env::var("POSTGRES_DB").expect("POSTGRES_DB must be set");
+
+        debug!("DATABASE_URL not set, using POSTGRES_* env vars");
+
+        std::env::set_var("DATABASE_URL", format!("postgres://{user}:{password}@{host}:{port}/{database}"));
+    }
 
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = PgPoolOptions::new()
@@ -203,6 +219,7 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .app_data(Data::new(AppState { db: pool.clone() }))
+            .route("/health", web::get().to(health_check))
             .default_service(web::to(handle_request))
     })
     .bind(("127.0.0.1", 8080))?
