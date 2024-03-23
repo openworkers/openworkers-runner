@@ -94,6 +94,10 @@ pub fn handle_scheduled(db: store::Database) {
                 let script = Script {
                     specifier: openworkers_runtime::module_url("script.js"),
                     code: Some(openworkers_runtime::FastString::from(worker.script)),
+                    env: match worker.env {
+                        Some(env) => Some(env.encode_to_string()),
+                        None => None,                        
+                    },
                 };
 
                 run_scheduled(data, script);

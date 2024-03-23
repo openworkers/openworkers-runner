@@ -1,6 +1,3 @@
-mod scheduled;
-mod store;
-
 use bytes::Bytes;
 
 use log::debug;
@@ -21,7 +18,7 @@ use actix_web::HttpResponse;
 
 use sqlx::postgres::PgPoolOptions;
 
-use crate::store::WorkerIdentifier;
+use openworkers_runner::store::WorkerIdentifier;
 
 type Database = sqlx::Pool<sqlx::Postgres>;
 
@@ -76,7 +73,8 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest) -> HttpResponse 
             if host.contains(".workers.") {
                 worker_name = Some(host.split('.').next().unwrap().to_string());
             } else {
-                worker_id = store::get_worker_id_from_domain(&data.db, host).await;
+                worker_id =
+                    openworkers_runner::store::get_worker_id_from_domain(&data.db, host).await;
             }
         }
     }
@@ -97,7 +95,7 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest) -> HttpResponse 
         }
     };
 
-    let worker = store::get_worker(&data.db, worker_identifier).await;
+    let worker = openworkers_runner::store::get_worker(&data.db, worker_identifier).await;
 
     debug!("worker found: {:?}", worker.is_some());
 
@@ -113,6 +111,10 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest) -> HttpResponse 
     let script = Script {
         specifier: openworkers_runtime::module_url("script.js"),
         code: Some(openworkers_runtime::FastString::from(worker.script)),
+        env: match worker.env {
+            Some(env) => Some(env.encode_to_string()),
+            None => None,
+        },
     };
 
     let start = tokio::time::Instant::now();
@@ -191,7 +193,7 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("Failed to connect to Postgres");
 
-    scheduled::handle_scheduled(pool.clone());
+    openworkers_runner::scheduled::handle_scheduled(pool.clone());
 
     HttpServer::new(move || {
         println!("Listening on http://localhost:8080");

@@ -11,8 +11,7 @@ pub enum WorkerIdentifier {
 #[derive(Debug, FromRow)]
 pub struct WorkerData {
     pub id: String,
-    pub env: Option<String>,
-    // env: Option<sqlx::types::Json<std::collections::HashMap<String, String>>>,
+    pub env: Option<sqlx::types::Json<std::collections::HashMap<String, String>>>,
     pub script: String,
     pub checksum: i64,
 }
@@ -51,7 +50,7 @@ pub async fn get_worker(db: &Database, identifier: WorkerIdentifier) -> Option<W
         .await
     {
         Ok(worker) => {
-            log::debug!("worker found: {:?}", worker.id);
+            log::debug!("worker found: id: {}, checksum: {}", worker.id, worker.checksum);
             Some(worker)
         }
         Err(err) => {
