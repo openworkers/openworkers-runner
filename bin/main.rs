@@ -179,6 +179,8 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest) -> HttpResponse 
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    dotenv::dotenv().ok();
+
     if !std::env::var("RUST_LOG").is_ok() {
         std::env::set_var("RUST_LOG", "info");
     }
@@ -187,8 +189,7 @@ async fn main() -> std::io::Result<()> {
 
     debug!("start main");
 
-    let db_url = std::env::var("DATABASE_URL")
-        .unwrap_or("postgres://admin:pass@127.0.0.1/swap_dev".to_string());
+    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect(&db_url)

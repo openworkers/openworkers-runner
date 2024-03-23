@@ -23,3 +23,15 @@ export RUST_LOG=openworkers_runtime=debug,openworkers_runner=debug # Optional
 
 cargo run
 ```
+
+
+### Install sqlx-cli (optional - only for development)
+
+```bash
+cargo install sqlx-cli --no-default-features --features rustls,postgres
+```
+
+#### Prepare the database
+```bash
+cargo sqlx prepare
+```

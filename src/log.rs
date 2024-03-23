@@ -4,7 +4,7 @@ pub fn create_log_handler(worker_id: String) -> std::sync::mpsc::Sender<LogEvent
   let (tx, rx) = std::sync::mpsc::channel::<LogEvent>();
 
   std::thread::spawn(move || {
-    let nc = nats::connect("nats://127.0.0.1:4222").expect("failed to connect to nats");
+    let nc = crate::nats::nats_connect();
 
     for event in rx {
       log::debug!("{:?}", event);

@@ -464,6 +464,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
+name = "base64"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9475866fec1451be56a3c2400fd081ff546538961565ccb5b7142cbd22bc7a51"
+
+[[package]]
 name = "base64-simd"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1194,6 +1200,12 @@ dependencies = [
  "quote",
  "syn 2.0.53",
 ]
+
+[[package]]
+name = "dotenv"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
 
 [[package]]
 name = "dotenvy"
@@ -2202,10 +2214,12 @@ checksum = "ff011a302c396a5197692431fc1948019154afc178baf7d8e37367442a4601cf"
 
 [[package]]
 name = "openworkers-runner"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "actix-web",
+ "base64 0.22.0",
  "bytes",
+ "dotenv",
  "env_logger",
  "http",
  "log",
@@ -2219,7 +2233,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime"
-version = "0.1.4"
+version = "0.1.5"
+source = "git+https://github.com/openworkers/openworkers-runtime?tag=v0.1.5#50fdebef3c253ec8f8c23198f04c2ca35de4f19c"
 dependencies = [
  "bytes",
  "deno_console",

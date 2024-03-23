@@ -64,7 +64,7 @@ pub fn handle_scheduled(db: store::Database) {
             .unwrap();
 
         let handle = local.spawn_local(async move {
-            let nc = nats::connect("nats://127.0.0.1:4222").expect("failed to connect to nats");
+            let nc = crate::nats::nats_connect();
             let sub = nc
                 .queue_subscribe("scheduled", "runner")
                 .expect("failed to subscribe to scheduled");
