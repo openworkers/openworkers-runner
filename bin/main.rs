@@ -108,6 +108,8 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest) -> HttpResponse 
         }
     };
 
+    let log_tx = openworkers_runner::log::create_log_handler(worker.id);
+
     let script = Script {
         specifier: openworkers_runtime::module_url("script.js"),
         code: Some(openworkers_runtime::FastString::from(worker.script)),
@@ -132,7 +134,7 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest) -> HttpResponse 
 
         let tasks = local.spawn_local(async move {
             debug!("create worker");
-            let mut worker = Worker::new(script).await.unwrap();
+            let mut worker = Worker::new(script, Some(log_tx)).await.unwrap();
 
             debug!("exec fetch task");
             match worker.exec(task).await {

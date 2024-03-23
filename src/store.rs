@@ -26,7 +26,7 @@ pub async fn get_worker(db: &Database, identifier: WorkerIdentifier) -> Option<W
             W.name,
             W.script,
             cast(extract(epoch from W.updated_at) + COALESCE(extract(epoch from max(V.updated_at)), 0) as BIGINT) as checksum,
-            json_object_agg(V.key, V.value) FILTER (WHERE V IS NOT NULL)::text AS env
+            json_object_agg(V.key, V.value) FILTER (WHERE V IS NOT NULL) AS env
         FROM workers AS W
         LEFT OUTER JOIN environment_values AS V ON W.environment_id=V.environment_id AND W.user_id=V.user_id
         LEFT OUTER JOIN environments AS E ON W.environment_id=E.id AND W.user_id=E.user_id

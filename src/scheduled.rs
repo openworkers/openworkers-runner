@@ -22,6 +22,8 @@ fn run_scheduled(data: ScheduledData, script: Script) {
 
     let task = Task::Scheduled(Some(ScheduledInit::new(res_tx, data.scheduled_time)));
 
+    let log_tx = crate::log::create_log_handler(data.worker_id);
+
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -32,7 +34,7 @@ fn run_scheduled(data: ScheduledData, script: Script) {
 
         local.spawn_local(async move {
             log::debug!("create worker");
-            let mut worker = Worker::new(script).await.unwrap();
+            let mut worker = Worker::new(script, Some(log_tx)).await.unwrap();
 
             log::debug!("exec scheduled task");
             match worker.exec(task).await {
