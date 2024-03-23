@@ -11,6 +11,11 @@ This runner manages instances of [OpenWorkers Runtime](https://github.com/openwo
 cargo build --release
 ```
 
+### Snapshot the runtime
+```bash
+cargo run --bin snapshot
+```
+
 ### Run
 
 ```bash

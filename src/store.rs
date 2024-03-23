@@ -11,7 +11,7 @@ pub enum WorkerIdentifier {
 #[derive(Debug, FromRow)]
 pub struct WorkerData {
     pub id: String,
-    pub env: String,
+    pub env: Option<String>,
     // env: Option<sqlx::types::Json<std::collections::HashMap<String, String>>>,
     pub script: String,
     pub checksum: i64,
@@ -35,7 +35,7 @@ pub async fn get_worker(db: &Database, identifier: WorkerIdentifier) -> Option<W
         GROUP BY W.id, E.id
         "#,
         match identifier {
-            WorkerIdentifier::Id(_) => "W.id = $1",
+            WorkerIdentifier::Id(_) => "W.id::text = $1",
             WorkerIdentifier::Name(_) => "W.name = $1",
         }
     );
@@ -51,11 +51,26 @@ pub async fn get_worker(db: &Database, identifier: WorkerIdentifier) -> Option<W
         .await
     {
         Ok(worker) => {
-            log::debug!("worker found: {:?}", worker);
+            log::debug!("worker found: {:?}", worker.id);
             Some(worker)
         }
         Err(err) => {
             log::warn!("worker not found: {:?}", err);
+            None
+        }
+    }
+}
+
+pub async fn get_worker_id_from_domain(db: &Database, domain: String) -> Option<String> {
+    let query = sqlx::query_scalar!(
+        "SELECT worker_id::text FROM domains WHERE name = $1 LIMIT 1",
+        domain
+    );
+
+    match query.fetch_one(db).await {
+        Ok(worker_id) => worker_id,
+        Err(err) => {
+            log::warn!("failed to get worker id from domain: {:?}", err);
             None
         }
     }

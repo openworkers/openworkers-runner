@@ -1,4 +1,5 @@
 mod store;
+mod scheduled;
 
 use bytes::Bytes;
 
@@ -28,12 +29,7 @@ struct AppState {
     db: Database,
 }
 
-async fn get_worker_id_from_domain(_domain: &str) -> Option<String> {
-    // TODO
-    None
-}
-
-async fn handle_request(_data: Data<AppState>, req: HttpRequest) -> HttpResponse {
+async fn handle_request(data: Data<AppState>, req: HttpRequest) -> HttpResponse {
     debug!(
         "handle_request of: {} {} in thread {:?}",
         req.method(),
@@ -80,7 +76,7 @@ async fn handle_request(_data: Data<AppState>, req: HttpRequest) -> HttpResponse
             if host.contains(".workers.") {
                 worker_name = Some(host.split('.').next().unwrap().to_string());
             } else {
-                worker_id = get_worker_id_from_domain(&host).await;
+                worker_id = store::get_worker_id_from_domain(&data.db, host).await;
             }
         }
     }
@@ -101,14 +97,12 @@ async fn handle_request(_data: Data<AppState>, req: HttpRequest) -> HttpResponse
         }
     };
 
-    let worker = store::get_worker(&_data.db, worker_identifier).await;
+    let worker = store::get_worker(&data.db, worker_identifier).await;
 
     debug!("worker found: {:?}", worker.is_some());
 
     let worker = match worker {
-        Some(worker) => {
-            worker
-        }
+        Some(worker) => worker,
         None => {
             return HttpResponse::NotFound()
                 .content_type("text/plain")
@@ -179,6 +173,9 @@ async fn handle_request(_data: Data<AppState>, req: HttpRequest) -> HttpResponse
     response
 }
 
+
+
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     if !std::env::var("RUST_LOG").is_ok() {
@@ -189,8 +186,6 @@ async fn main() -> std::io::Result<()> {
 
     debug!("start main");
 
-    println!("Listening on http://localhost:8080");
-
     let db_url = std::env::var("DATABASE_URL")
         .unwrap_or("postgres://admin:pass@127.0.0.1/swap_dev".to_string());
     let pool = PgPoolOptions::new()
@@ -199,7 +194,11 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("Failed to connect to Postgres");
 
+    scheduled::handle_scheduled(pool.clone());
+
     HttpServer::new(move || {
+        println!("Listening on http://localhost:8080");
+
         App::new()
             .app_data(Data::new(AppState { db: pool.clone() }))
             .default_service(web::to(handle_request))
