@@ -1,0 +1,17 @@
+[package]
+name = "openworkers-runner"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+actix-web = "4.5.1"
+bytes = "1.6.0"
+log = "0.4.21"
+tokio = "1.36.0"
+env_logger = "0.11.2"
+http_v02 = { package = "http", version = "0.2.9" }
+sqlx = { version = "0.7", features = [ "runtime-tokio", "postgres", "uuid", "bigdecimal", "rust_decimal" ] }
+# openworkers-runtime ={ git = "https://github.com/openworkers/openworkers-runtime", branch = "master" }
+openworkers-runtime =  { path = "../openworkers-runtime" }
