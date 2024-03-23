@@ -202,7 +202,10 @@ async fn main() -> std::io::Result<()> {
 
         debug!("DATABASE_URL not set, using POSTGRES_* env vars");
 
-        std::env::set_var("DATABASE_URL", format!("postgres://{user}:{password}@{host}:{port}/{database}"));
+        std::env::set_var(
+            "DATABASE_URL",
+            format!("postgres://{user}:{password}@{host}:{port}/{database}"),
+        );
     }
 
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
@@ -211,6 +214,17 @@ async fn main() -> std::io::Result<()> {
         .connect(&db_url)
         .await
         .expect("Failed to connect to Postgres");
+
+    // Check postgres connection
+    sqlx::query("SELECT 1")
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to query Postgres");
+    debug!("connected to Postgres");
+
+    // Check NATS connection
+    openworkers_runner::nats::nats_connect().publish("boot", "0").expect("Failed to connect to NATS");
+    debug!("connected to NATS");
 
     openworkers_runner::scheduled::handle_scheduled(pool.clone());
 
