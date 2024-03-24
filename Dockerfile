@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=~/.cargo \
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y ca-certificates \
+    && apt-get install -y ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/output /usr/local/bin/openworkers-runner
