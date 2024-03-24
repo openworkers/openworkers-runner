@@ -8,12 +8,20 @@ pub enum WorkerIdentifier {
     Name(String),
 }
 
+#[derive(Clone, Debug, PartialEq, sqlx::Type)]
+#[sqlx(type_name = "enum_workers_language", rename_all = "lowercase")]
+pub enum WorkerLanguage {
+    Javascript,
+    Typescript,
+}
+
 #[derive(Debug, FromRow)]
 pub struct WorkerData {
     pub id: String,
     pub env: Option<sqlx::types::Json<std::collections::HashMap<String, String>>>,
     pub script: String,
     pub checksum: i64,
+    pub language: WorkerLanguage,
 }
 
 pub async fn get_worker(db: &Database, identifier: WorkerIdentifier) -> Option<WorkerData> {
@@ -25,6 +33,7 @@ pub async fn get_worker(db: &Database, identifier: WorkerIdentifier) -> Option<W
             W.id::text,
             W.name,
             W.script,
+            W.language,
             cast(extract(epoch from W.updated_at) + COALESCE(extract(epoch from max(V.updated_at)), 0) as BIGINT) as checksum,
             json_object_agg(V.key, V.value) FILTER (WHERE V IS NOT NULL) AS env
         FROM workers AS W
@@ -50,7 +59,7 @@ pub async fn get_worker(db: &Database, identifier: WorkerIdentifier) -> Option<W
         .await
     {
         Ok(worker) => {
-            log::debug!("worker found: id: {}, checksum: {}", worker.id, worker.checksum);
+            log::debug!("worker found: id: {}, checksum: {}, language: {:?}", worker.id, worker.checksum, worker.language);
             Some(worker)
         }
         Err(err) => {

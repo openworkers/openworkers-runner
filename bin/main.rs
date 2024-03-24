@@ -2,10 +2,6 @@ use bytes::Bytes;
 
 use log::debug;
 use log::error;
-use openworkers_runtime::FetchInit;
-use openworkers_runtime::Script;
-use openworkers_runtime::Task;
-use openworkers_runtime::Worker;
 
 use tokio::sync::oneshot::channel;
 
@@ -108,52 +104,18 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest) -> HttpResponse 
         }
     };
 
-    let log_tx = openworkers_runner::log::create_log_handler(worker.id);
-
-    let script = Script {
-        specifier: openworkers_runtime::module_url("script.js"),
-        code: Some(openworkers_runtime::FastString::from(worker.script)),
-        env: match worker.env {
-            Some(env) => Some(env.encode_to_string()),
-            None => None,
-        },
-    };
-
     let start = tokio::time::Instant::now();
 
-    let req = http_v02::Request::builder()
+    let req: http_v02::Request<Bytes> = http_v02::Request::builder()
         .uri(req.uri())
         .body(Default::default())
         .unwrap();
 
     let (res_tx, res_rx) = channel::<http_v02::Response<Bytes>>();
-    let task = Task::Fetch(Some(FetchInit::new(req, res_tx)));
 
-    let handle = std::thread::spawn(move || {
-        let local = tokio::task::LocalSet::new();
+    let handle = openworkers_runner::event_fetch::run_fetch(worker, req, res_tx);
 
-        let tasks = local.spawn_local(async move {
-            debug!("create worker");
-            let mut worker = Worker::new(script, Some(log_tx)).await.unwrap();
-
-            debug!("exec fetch task");
-            match worker.exec(task).await {
-                Ok(()) => debug!("exec completed"),
-                Err(err) => error!("exec did not complete: {err}"),
-            }
-        });
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        match local.block_on(&rt, tasks) {
-            Ok(()) => {}
-            Err(err) => error!("failed to wait for end: {err}"),
-        }
-    });
-
+    // TODO: select! on res_rx, timeout and handle.join()
     let response = match res_rx.await {
         Ok(res) => {
             let mut rb = HttpResponse::build(res.status());
@@ -223,10 +185,12 @@ async fn main() -> std::io::Result<()> {
     debug!("connected to Postgres");
 
     // Check NATS connection
-    openworkers_runner::nats::nats_connect().publish("boot", "0").expect("Failed to connect to NATS");
+    openworkers_runner::nats::nats_connect()
+        .publish("boot", "0")
+        .expect("Failed to connect to NATS");
     debug!("connected to NATS");
 
-    openworkers_runner::scheduled::handle_scheduled(pool.clone());
+    openworkers_runner::event_scheduled::handle_scheduled(pool.clone());
 
     HttpServer::new(move || {
         println!("Listening on http://localhost:8080");
