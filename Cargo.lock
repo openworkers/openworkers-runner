@@ -2530,6 +2530,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime"
 version = "0.1.6"
+source = "git+https://github.com/openworkers/openworkers-runtime?tag=v0.1.6#403775ceaacb5d5b67cb07f88dd292a03a798b3f"
 dependencies = [
  "bytes",
  "deno_console",
