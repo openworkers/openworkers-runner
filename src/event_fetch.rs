@@ -15,11 +15,11 @@ pub fn run_fetch(
     req: http_v02::Request<Bytes>,
     res_tx: ResTx,
 ) -> JoinHandle<()> {
-    let log_tx = crate::log::create_log_handler(worker.id);
+    let log_tx = crate::log::create_log_handler(worker.id.clone());
 
     let script = Script {
         specifier: openworkers_runtime::module_url("script.js"),
-        code: Some(openworkers_runtime::FastString::from(worker.script)),
+        code: Some(crate::transform::parse_worker_code(&worker)),
         env: match worker.env {
             Some(env) => Some(env.encode_to_string()),
             None => None,
