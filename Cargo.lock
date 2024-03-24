@@ -2504,7 +2504,7 @@ checksum = "ff011a302c396a5197692431fc1948019154afc178baf7d8e37367442a4601cf"
 
 [[package]]
 name = "openworkers-runner"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "actix-web",
  "base64 0.22.0",
@@ -2529,8 +2529,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime"
-version = "0.1.5"
-source = "git+https://github.com/openworkers/openworkers-runtime?tag=v0.1.5#50fdebef3c253ec8f8c23198f04c2ca35de4f19c"
+version = "0.1.6"
 dependencies = [
  "bytes",
  "deno_console",

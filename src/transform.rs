@@ -20,12 +20,6 @@ pub(crate) fn parse_worker_code(worker: &WorkerData) -> FastString {
             return FastString::from(worker.script.clone());
         }
         WorkerLanguage::Typescript => {
-            log::debug!(
-                "parsing typescript worker code: {} {}",
-                worker.id,
-                worker.script
-            );
-
             let cm = Lrc::new(SourceMap::new(swc_common::FilePathMapping::empty()));
 
             let c = swc::Compiler::new(cm.clone());
@@ -36,8 +30,6 @@ pub(crate) fn parse_worker_code(worker: &WorkerData) -> FastString {
             );
 
             let js_code = GLOBALS.set(&Default::default(), || to_js(&c, fm.clone()));
-
-            log::debug!("parsed typescript worker code: {} {}", worker.id, js_code);
 
             return FastString::from(js_code);
         }

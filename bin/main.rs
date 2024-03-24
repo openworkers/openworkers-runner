@@ -22,7 +22,7 @@ struct AppState {
     db: Database,
 }
 
-async fn handle_request(data: Data<AppState>, req: HttpRequest) -> HttpResponse {
+async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> HttpResponse {
     debug!(
         "handle_request of: {} {} in thread {:?}",
         req.method(),
@@ -106,14 +106,47 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest) -> HttpResponse 
 
     let start = tokio::time::Instant::now();
 
-    let req: http_v02::Request<Bytes> = http_v02::Request::builder()
-        .uri(req.uri())
-        .body(Default::default())
-        .unwrap();
+    // Create a new request to forward to the worker.
+    let request = {
+        let mut request: http_v02::Request<Bytes> = http_v02::Request::builder()
+            .uri(format!(
+                "{}://{}{}",
+                req.connection_info().scheme(),
+                req.connection_info().host(),
+                req.uri()
+            ))
+            .method(req.method())
+            .body(body)
+            .unwrap();
+
+        // Copy headers from the incoming request to the forwarded request.
+        let headers = request.headers_mut();
+        for (k, v) in req.headers() {
+            headers.insert(k, v.clone());
+        }
+
+        // If the worker id is not provided, we add it to the headers.
+        if req.headers().get("x-worker-id").is_none() {
+            headers.insert(
+                "x-worker-id",
+                http_v02::HeaderValue::from_str(&worker.id).unwrap(),
+            );
+        }
+
+        // If the worker name is not provided, we add it to the headers.
+        if req.headers().get("x-worker-name").is_none() {
+            headers.insert(
+                "x-worker-name",
+                http_v02::HeaderValue::from_str(&worker.name).unwrap(),
+            );
+        }
+
+        request
+    };
 
     let (res_tx, res_rx) = channel::<http_v02::Response<Bytes>>();
 
-    let handle = openworkers_runner::event_fetch::run_fetch(worker, req, res_tx);
+    let handle = openworkers_runner::event_fetch::run_fetch(worker, request, res_tx);
 
     // TODO: select! on res_rx, timeout and handle.join()
     let response = match res_rx.await {

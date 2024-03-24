@@ -18,6 +18,7 @@ pub enum WorkerLanguage {
 #[derive(Debug, FromRow)]
 pub struct WorkerData {
     pub id: String,
+    pub name: String,
     pub env: Option<sqlx::types::Json<std::collections::HashMap<String, String>>>,
     pub script: String,
     pub checksum: i64,
