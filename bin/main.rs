@@ -233,7 +233,7 @@ async fn main() -> std::io::Result<()> {
             .route("/health", web::get().to(health_check))
             .default_service(web::to(handle_request))
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("0.0.0.0", 8080))?
     .workers(4)
     .run()
     .await
