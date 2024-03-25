@@ -16,10 +16,8 @@ use sqlx::postgres::PgPoolOptions;
 
 use openworkers_runner::store::WorkerIdentifier;
 
-type Database = sqlx::Pool<sqlx::Postgres>;
-
 struct AppState {
-    db: Database,
+    db: sqlx::Pool<sqlx::Postgres>,
 }
 
 async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> HttpResponse {
@@ -29,6 +27,16 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
         req.uri(),
         std::thread::current().id()
     );
+
+    // Acquire a database connection from the pool.
+    let mut conn: sqlx::pool::PoolConnection<sqlx::Postgres> = match data.db.acquire().await {
+        Ok(db) => db,
+        Err(err) => {
+            error!("Failed to acquire a database connection: {}", err);
+            return HttpResponse::InternalServerError()
+                .body("Failed to acquire a database connection");
+        }
+    };
 
     // Expect x-request-id header
     let request_id = match req.headers().get("x-request-id") {
@@ -70,7 +78,7 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
                 worker_name = Some(host.split('.').next().unwrap().to_string());
             } else {
                 worker_id =
-                    openworkers_runner::store::get_worker_id_from_domain(&data.db, host).await;
+                    openworkers_runner::store::get_worker_id_from_domain(&mut conn, host).await;
             }
         }
     }
@@ -91,7 +99,7 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
         }
     };
 
-    let worker = openworkers_runner::store::get_worker(&data.db, worker_identifier).await;
+    let worker = openworkers_runner::store::get_worker(&mut conn, worker_identifier).await;
 
     debug!("worker found: {:?}", worker.is_some());
 
@@ -172,7 +180,13 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
     response
 }
 
-async fn health_check() -> HttpResponse {
+async fn health_check(req: HttpRequest) -> HttpResponse {
+    debug!(
+        "health_check of: {:?} {}",
+        req.connection_info(),
+        req.method()
+    );
+
     HttpResponse::Ok().body("ok")
 }
 
@@ -230,7 +244,12 @@ async fn main() -> std::io::Result<()> {
 
         App::new()
             .app_data(Data::new(AppState { db: pool.clone() }))
-            .route("/health", web::get().to(health_check))
+            .service(
+                web::resource("/health")
+                    .guard(actix_web::guard::Header("host", "127.0.0.1:8080"))
+                    .route(web::head().to(health_check))
+                    .route(web::get().to(health_check)),
+            )
             .default_service(web::to(handle_request))
     })
     .bind(("0.0.0.0", 8080))?

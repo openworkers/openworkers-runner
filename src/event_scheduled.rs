@@ -54,7 +54,7 @@ fn run_scheduled(data: ScheduledData, script: Script) {
     });
 }
 
-pub fn handle_scheduled(db: store::Database) {
+pub fn handle_scheduled(db: sqlx::Pool<sqlx::Postgres>) {
     std::thread::spawn(move || {
         let local = tokio::task::LocalSet::new();
 
@@ -64,6 +64,15 @@ pub fn handle_scheduled(db: store::Database) {
             .unwrap();
 
         let handle = local.spawn_local(async move {
+            // Acquire a database connection from the pool.
+            let mut conn: sqlx::pool::PoolConnection<sqlx::Postgres> = match db.acquire().await {
+                Ok(db) => db,
+                Err(err) => {
+                    log::error!("Failed to acquire a database connection: {}", err);
+                    return;
+                }
+            };
+
             let nc = crate::nats::nats_connect();
             let sub = nc
                 .queue_subscribe("scheduled", "runner")
@@ -85,7 +94,7 @@ pub fn handle_scheduled(db: store::Database) {
                 log::debug!("scheduled task parsed: {:?}", data);
 
                 let worker_id = store::WorkerIdentifier::Id(data.worker_id.clone());
-                let worker = match store::get_worker(&db, worker_id).await {
+                let worker = match store::get_worker(&mut conn, worker_id).await {
                     Some(worker) => worker,
                     None => {
                         log::error!("worker not found: {:?}", data.worker_id);

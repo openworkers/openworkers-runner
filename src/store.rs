@@ -1,7 +1,5 @@
 use sqlx::prelude::FromRow;
 
-pub type Database = sqlx::Pool<sqlx::Postgres>;
-
 #[derive(Debug)]
 pub enum WorkerIdentifier {
     Id(String),
@@ -25,7 +23,7 @@ pub struct WorkerData {
     pub language: WorkerLanguage,
 }
 
-pub async fn get_worker(db: &Database, identifier: WorkerIdentifier) -> Option<WorkerData> {
+pub async fn get_worker(conn: &mut sqlx::PgConnection, identifier: WorkerIdentifier) -> Option<WorkerData> {
     log::debug!("get_worker: {:?}", identifier);
 
     let query = format!(
@@ -56,7 +54,7 @@ pub async fn get_worker(db: &Database, identifier: WorkerIdentifier) -> Option<W
 
     match sqlx::query_as::<_, WorkerData>(query.as_str())
         .bind(identifier)
-        .fetch_one(db)
+        .fetch_one(conn)
         .await
     {
         Ok(worker) => {
@@ -70,13 +68,13 @@ pub async fn get_worker(db: &Database, identifier: WorkerIdentifier) -> Option<W
     }
 }
 
-pub async fn get_worker_id_from_domain(db: &Database, domain: String) -> Option<String> {
+pub async fn get_worker_id_from_domain(conn: &mut sqlx::PgConnection, domain: String) -> Option<String> {
     let query = sqlx::query_scalar!(
         "SELECT worker_id::text FROM domains WHERE name = $1 LIMIT 1",
         domain
     );
 
-    match query.fetch_one(db).await {
+    match query.fetch_one(conn).await {
         Ok(worker_id) => worker_id,
         Err(err) => {
             log::warn!("failed to get worker id from domain: {:?}", err);
