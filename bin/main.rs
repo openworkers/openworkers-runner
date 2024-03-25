@@ -180,16 +180,6 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
     response
 }
 
-async fn health_check(req: HttpRequest) -> HttpResponse {
-    debug!(
-        "health_check of: {:?} {}",
-        req.connection_info(),
-        req.method()
-    );
-
-    HttpResponse::Ok().body("ok")
-}
-
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv::dotenv().ok();
@@ -247,8 +237,8 @@ async fn main() -> std::io::Result<()> {
             .service(
                 web::resource("/health")
                     .guard(actix_web::guard::Header("host", "127.0.0.1:8080"))
-                    .route(web::head().to(health_check))
-                    .route(web::get().to(health_check)),
+                    .route(web::head().to(HttpResponse::Ok))
+                    .route(web::get().to(HttpResponse::Ok)),
             )
             .default_service(web::to(handle_request))
     })
