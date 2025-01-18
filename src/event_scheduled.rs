@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use openworkers_runtime::ScheduledInit;
 use openworkers_runtime::Script;
 use openworkers_runtime::Task;
@@ -103,12 +105,10 @@ pub fn handle_scheduled(db: sqlx::Pool<sqlx::Postgres>) {
                 };
 
                 let script = Script {
-                    specifier: openworkers_runtime::module_url("script.js"),
-                    // code: Some(openworkers_runtime::FastString::from(worker.script)),
-                    code: Some(crate::transform::parse_worker_code(&worker)),
+                    code: crate::transform::parse_worker_code(&worker),
                     env: match worker.env {
-                        Some(env) => Some(env.encode_to_string()),
-                        None => None,                        
+                        Some(env) => Some(env.deref().to_owned()),
+                        None => None
                     },
                 };
 

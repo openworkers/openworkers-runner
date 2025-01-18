@@ -8,30 +8,24 @@ use swc_common::{errors::Handler, source_map::SourceMap, sync::Lrc, Mark, GLOBAL
 use swc_ecma_ast::EsVersion;
 use swc_ecma_ast::Program;
 use swc_ecma_parser::Syntax;
-use swc_ecma_visit::FoldWith;
+use swc_ecma_transforms_typescript::strip;
 
 use crate::store::WorkerData;
 use crate::store::WorkerLanguage;
-use openworkers_runtime::FastString;
 
-pub(crate) fn parse_worker_code(worker: &WorkerData) -> FastString {
+pub(crate) fn parse_worker_code(worker: &WorkerData) -> String {
     match worker.language {
-        WorkerLanguage::Javascript => {
-            return FastString::from(worker.script.clone());
-        }
+        WorkerLanguage::Javascript => worker.script.clone(),
         WorkerLanguage::Typescript => {
             let cm = Lrc::new(SourceMap::new(swc_common::FilePathMapping::empty()));
 
             let c = swc::Compiler::new(cm.clone());
 
-            let fm = cm.new_source_file(
-                swc_common::FileName::Custom("script.ts".into()),
-                worker.script.clone(),
-            );
+            let file = swc_common::FileName::Custom("script.ts".into());
 
-            let js_code = GLOBALS.set(&Default::default(), || to_js(&c, fm.clone()));
+            let fm = cm.new_source_file(Arc::new(file), worker.script.clone());
 
-            return FastString::from(js_code);
+            return GLOBALS.set(&Default::default(), || to_js(&c, fm.clone()));
         }
     }
 }
@@ -56,8 +50,9 @@ fn parse(c: &swc::Compiler, fm: Arc<SourceFile>) -> Program {
 fn as_es(c: &swc::Compiler, fm: Arc<SourceFile>) -> Program {
     let program = parse(c, fm);
     let top_level_mark = Mark::new();
+    let unresolved_mark = Mark::new();
 
-    program.fold_with(&mut swc_ecma_transforms_typescript::strip(top_level_mark))
+    program.apply(strip(unresolved_mark, top_level_mark))
 }
 
 fn to_js(c: &swc::Compiler, fm: Arc<SourceFile>) -> String {

@@ -1,4 +1,5 @@
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::engine::general_purpose::STANDARD;
+use base64::engine::Engine;
 
 pub fn nats_connect() -> nats::Connection {
     let nats_servers = std::env::var("NATS_SERVERS").expect("NATS_SERVERS must be set");

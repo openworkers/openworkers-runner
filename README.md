@@ -16,6 +16,18 @@ cargo build --release
 cargo run --bin snapshot
 ```
 
+### Prepare the database
+```sql
+CREATE USER openworkers WITH PASSWORD 'password';
+CREATE DATABASE openworkers WITH OWNER openworkers;
+```
+
+### Create .env file
+```bash
+DATABASE_URL='postgres://openworkers:password@localhost:5432/openworkers'
+NATS_SERVERS='nats://localhost:4222'
+```
+
 ### Run
 
 ```bash
@@ -23,7 +35,6 @@ export RUST_LOG=openworkers_runtime=debug,openworkers_runner=debug # Optional
 
 cargo run
 ```
-
 
 ### Install sqlx-cli (optional - only for development)
 

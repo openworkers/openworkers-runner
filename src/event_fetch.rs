@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::thread::JoinHandle;
 
 use bytes::Bytes;
@@ -18,10 +19,9 @@ pub fn run_fetch(
     let log_tx = crate::log::create_log_handler(worker.id.clone());
 
     let script = Script {
-        specifier: openworkers_runtime::module_url("script.js"),
-        code: Some(crate::transform::parse_worker_code(&worker)),
+        code: crate::transform::parse_worker_code(&worker),
         env: match worker.env {
-            Some(env) => Some(env.encode_to_string()),
+            Some(env) => Some(env.deref().to_owned()),
             None => None,
         },
     };
