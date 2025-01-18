@@ -1,4 +1,4 @@
-FROM rust:1.77 as builder
+FROM rust:1.84 as builder
 
 RUN mkdir -p /build/openworkers-runner
 
