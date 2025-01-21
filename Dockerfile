@@ -1,5 +1,10 @@
 FROM rust:1.84 as builder
 
+ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+ARG TARGETVARIANT
+
 RUN mkdir -p /build/openworkers-runner
 
 ENV RUST_BACKTRACE=1
