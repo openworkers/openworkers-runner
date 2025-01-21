@@ -11,9 +11,9 @@ COPY . /build/openworkers-runner
 
 RUN touch $RUNTIME_SNAPSHOT_PATH
 
-RUN --mount=type=cache,target=$CARGO_HOME/git \
-    --mount=type=cache,target=$CARGO_HOME/registry \
-    --mount=type=cache,target=/build/openworkers-runner/target \
+RUN --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=$CARGO_HOME/git \
+    --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=$CARGO_HOME/registry \
+    --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=/build/openworkers-runner/target \
     cargo run --release --bin snapshot && \
     # Build the runner and copy executable out of the cache so it can be used in the next stage
     cargo build --release && cp /build/openworkers-runner/target/release/openworkers-runner /build/output
