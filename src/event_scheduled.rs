@@ -19,7 +19,7 @@ pub struct ScheduledData {
     pub worker_id: String,
 }
 
-fn run_scheduled(data: ScheduledData, script: Script) {
+fn run_scheduled(data: ScheduledData, script: Script, nc: nats::Connection) {
     let (res_tx, res_rx) = tokio::sync::oneshot::channel::<()>();
 
     let task = Task::Scheduled(Some(ScheduledInit::new(res_tx, data.scheduled_time)));
@@ -47,12 +47,17 @@ fn run_scheduled(data: ScheduledData, script: Script) {
 
         log::debug!("scheduled task listener started");
 
-        match local.block_on(&rt, async { res_rx.await } ) {
+        match local.block_on(&rt, async { res_rx.await }) {
             Ok(()) => {}
             Err(err) => log::error!("failed to wait for end: {err}"),
         }
 
         log::debug!("scheduled task listener stopped");
+
+        match nc.publish(&format!("scheduled.ack.{}", data.id), b"") {
+            Ok(()) => {}
+            Err(err) => log::error!("failed to ack: {err}"),
+        }
     });
 }
 
@@ -108,11 +113,11 @@ pub fn handle_scheduled(db: sqlx::Pool<sqlx::Postgres>) {
                     code: crate::transform::parse_worker_code(&worker),
                     env: match worker.env {
                         Some(env) => Some(env.deref().to_owned()),
-                        None => None
+                        None => None,
                     },
                 };
 
-                run_scheduled(data, script);
+                run_scheduled(data, script, nc.clone());
             }
 
             log::debug!("scheduled task listener stopped");
