@@ -1,22 +1,22 @@
-FROM rust:1.84 as builder
+FROM rust:1.84 AS builder
 
-RUN mkdir -p /build/openworkers-runner
+RUN mkdir -p /build
 
 ENV RUST_BACKTRACE=1
 ENV RUNTIME_SNAPSHOT_PATH=/build/snapshot.bin
 
-WORKDIR /build/openworkers-runner
+WORKDIR /build
 
-COPY . /build/openworkers-runner
+COPY . /build
 
 RUN touch $RUNTIME_SNAPSHOT_PATH
 
 RUN --mount=type=cache,target=$CARGO_HOME/git \
     --mount=type=cache,target=$CARGO_HOME/registry \
-    --mount=type=cache,target=/build/openworkers-runner/target \
+    --mount=type=cache,target=/build/target \
     cargo run --release --bin snapshot && \
     # Build the runner and copy executable out of the cache so it can be used in the next stage
-    cargo build --release && cp /build/openworkers-runner/target/release/openworkers-runner /build/output
+    cargo build --release && cp /build/target/release/openworkers-runner /build/output
 
 FROM debian:bookworm-slim
 

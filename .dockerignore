@@ -1,6 +1,20 @@
-.vscode
-.git
+# Ignore everything
+*
 
-target
+# Allow bin and src directories
+!/src
+!/bin
 
-.env
+# Allow cargo files
+!Cargo.toml
+!Cargo.lock
+
+# Allow .sqlx directory
+!.sqlx
+
+# Ignore unnecessary files inside allowed directories
+# This should go after the allowed directories
+**/*~
+**/*.log
+**/.DS_Store
+**/Thumbs.db
