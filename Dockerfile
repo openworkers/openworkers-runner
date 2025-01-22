@@ -46,9 +46,9 @@ ARG TARGETPLATFORM
 
 RUN echo "Building for $TARGETPLATFORM"
 
-RUN --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=$CARGO_HOME/git \
-    --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=$CARGO_HOME/registry \
-    --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=/build/openworkers-runner/target \
+RUN --mount=type=cache,id=apt-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/git \
+    --mount=type=cache,id=apt-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/registry \
+    --mount=type=cache,id=apt-$TARGETPLATFORM,sharing=locked,target=/build/openworkers-runner/target \
     case "$TARGETPLATFORM" in \
         "linux/arm64") cargo build --release --target aarch64-unknown-linux-gnu && \
                         mv /build/target/aarch64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \
