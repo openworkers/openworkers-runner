@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - master
-      - compile
+      - cache
       - dev
     tags:
       - 'v*.*.*'

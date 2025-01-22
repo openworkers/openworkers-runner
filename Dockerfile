@@ -35,7 +35,10 @@ COPY . /build
 
 RUN touch $RUNTIME_SNAPSHOT_PATH
 
-RUN cargo run --release --bin snapshot
+RUN --mount=type=cache,sharing=locked,target=$CARGO_HOME/git \
+    --mount=type=cache,sharing=locked,target=$CARGO_HOME/registry \
+    --mount=type=cache,sharing=locked,target=/build/openworkers-runner/target \
+    cargo run --release --bin snapshot
 
 FROM build AS platform
 
@@ -44,8 +47,16 @@ ARG TARGETPLATFORM
 RUN echo "Building for $TARGETPLATFORM"
 
 RUN case "$TARGETPLATFORM" in \
-    "linux/arm64") cargo build --release --target aarch64-unknown-linux-gnu && mv /build/target/aarch64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \
-    "linux/amd64") cargo build --release --target x86_64-unknown-linux-gnu  && mv /build/target/x86_64-unknown-linux-gnu/release/openworkers-runner  /build/output ;; \
+    "linux/arm64")  --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=$CARGO_HOME/git \
+                    --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=$CARGO_HOME/registry \
+                    --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=/build/openworkers-runner/target \
+                    cargo build --release --target aarch64-unknown-linux-gnu && \
+                    mv /build/target/aarch64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \
+    "linux/amd64")  --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=$CARGO_HOME/git \
+                    --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=$CARGO_HOME/registry \
+                    --mount=type=cache,id=apt-$TARGETARCH$TARGETVARIANT,sharing=locked,target=/build/openworkers-runner/target \
+                    cargo build --release --target x86_64-unknown-linux-gnu && \
+                 mv /build/target/x86_64-unknown-linux-gnu/release/openworkers-runner  /build/output ;; \
     *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac
 
