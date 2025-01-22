@@ -35,8 +35,7 @@ COPY . /build
 
 RUN touch $RUNTIME_SNAPSHOT_PATH
 
-RUN cargo run --release --bin snapshot && \
-    cargo build --release
+RUN cargo run --release --bin snapshot
 
 FROM build AS platform
 
