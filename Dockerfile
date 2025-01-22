@@ -1,20 +1,11 @@
-FROM --platform=$BUILDPLATFORM rust:1.84 AS init
+FROM debian:bookworm-slim as common
 
-RUN mkdir -p /build
+RUN apt-get update \
+    # Install ca-certificates and wget (used for healthcheck)
+    && apt-get install -y ca-certificates wget \
+    && rm -rf /var/lib/apt/lists/*
 
-ENV RUST_BACKTRACE=1
-ENV RUNTIME_SNAPSHOT_PATH=/build/snapshot.bin
-
-WORKDIR /build
-
-COPY . /build
-
-RUN touch $RUNTIME_SNAPSHOT_PATH
-
-RUN cargo run --release --bin snapshot && \
-    cargo build --release
-
-FROM init AS prepare_cross_build
+FROM --platform=$BUILDPLATFORM rust:1.84 AS prepare
 
 RUN apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
@@ -31,7 +22,23 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 RUN rustup target add x86_64-unknown-linux-gnu \
                       aarch64-unknown-linux-gnu
 
-FROM prepare_cross_build AS build
+FROM prepare AS build
+
+RUN mkdir -p /build
+
+ENV RUST_BACKTRACE=1
+ENV RUNTIME_SNAPSHOT_PATH=/build/snapshot.bin
+
+WORKDIR /build
+
+COPY . /build
+
+RUN touch $RUNTIME_SNAPSHOT_PATH
+
+RUN cargo run --release --bin snapshot && \
+    cargo build --release
+
+FROM build AS platform
 
 ARG TARGETPLATFORM
 
@@ -43,14 +50,9 @@ RUN case "$TARGETPLATFORM" in \
     *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac
 
-FROM debian:bookworm-slim
+FROM common AS runner
 
-RUN apt-get update \
-    # Install ca-certificates and wget (used for healthcheck)
-    && apt-get install -y ca-certificates wget \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=build /build/output /usr/local/bin/openworkers-runner
+COPY --from=platform /build/output /usr/local/bin/openworkers-runner
 
 CMD ["/usr/local/bin/openworkers-runner"]
 
