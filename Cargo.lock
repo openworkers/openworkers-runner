@@ -3080,7 +3080,7 @@ checksum = "ff011a302c396a5197692431fc1948019154afc178baf7d8e37367442a4601cf"
 
 [[package]]
 name = "openworkers-runner"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "actix-web",
  "base64 0.22.1",
@@ -3105,8 +3105,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime"
-version = "0.1.8"
-source = "git+https://github.com/openworkers/openworkers-runtime?tag=v0.1.8#dad8cbeaf2cca06628150ed49f3faf7e1417f51f"
+version = "0.1.9"
+source = "git+https://github.com/openworkers/openworkers-runtime?tag=v0.1.9#5f578a237744f6073d8c39b30a07fc2e49b9f41a"
 dependencies = [
  "bytes",
  "deno_console",
@@ -4022,9 +4022,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.135"
+version = "1.0.137"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b0d7ba2887406110130a978386c4e1befb98c674b4fba677954e4db976630d9"
+checksum = "930cfb6e6abf99298aaad7d29abbef7a9999a9a8806a40088f55f0dcec03146b"
 dependencies = [
  "indexmap",
  "itoa",
@@ -4745,9 +4745,9 @@ dependencies = [
 
 [[package]]
 name = "swc_ecma_ast"
-version = "5.0.2"
+version = "5.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0f8476c5338a588dec42c3dc5eecb3192a517e88a74e1673c235ba4214167ba"
+checksum = "a05e7518b3052102506969009cabb027a88259ccde64ed675aa4ea8703b651f5"
 dependencies = [
  "bitflags",
  "is-macro",
