@@ -1,3 +1,7 @@
 {
-  "cSpell.words": ["actix", "dotenv", "nats", "oneshot", "sqlx"]
+  "cSpell.words": ["actix", "dotenv", "nats", "oneshot", "sqlx"],
+  "files.insertFinalNewline": true,
+  "files.associations": {
+    ".dockerignore": "dockerfile"
+  }
 }
