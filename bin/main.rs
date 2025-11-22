@@ -153,11 +153,35 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
         request
     };
 
+    // Try to acquire a worker slot from the semaphore with timeout
+    let timeout = openworkers_runner::worker_pool::get_worker_wait_timeout();
+    let permit = match tokio::time::timeout(
+        timeout,
+        openworkers_runner::worker_pool::WORKER_SEMAPHORE
+            .clone()
+            .acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            error!("semaphore closed unexpectedly");
+            return HttpResponse::InternalServerError()
+                .content_type("text/plain")
+                .body("Internal server error");
+        }
+        Err(_) => {
+            debug!("worker pool saturated after {}ms timeout, returning 503", timeout.as_millis());
+            return HttpResponse::ServiceUnavailable()
+                .content_type("text/plain")
+                .body("Server is overloaded, please try again later");
+        }
+    };
+
     let (res_tx, res_rx) = channel::<http_v02::Response<Bytes>>();
 
-    let handle = openworkers_runner::event_fetch::run_fetch(worker, request, res_tx, data.log_tx.clone());
+    openworkers_runner::event_fetch::run_fetch(worker, request, res_tx, data.log_tx.clone(), permit);
 
-    // TODO: select! on res_rx, timeout and handle.join()
     let response = match res_rx.await {
         Ok(res) => {
             let mut rb = HttpResponse::build(res.status());
@@ -175,8 +199,6 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
     };
 
     debug!("handle_request done in {}ms", start.elapsed().as_millis());
-
-    handle.join().unwrap();
 
     response
 }

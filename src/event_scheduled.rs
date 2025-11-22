@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::store;
+use crate::worker_pool::WORKER_POOL;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,51 +26,64 @@ fn run_scheduled(
     script: Script,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
 ) {
-    let (res_tx, res_rx) = tokio::sync::oneshot::channel::<()>();
-
-    let task = Task::Scheduled(Some(ScheduledInit::new(res_tx, data.scheduled_time)));
+    // Try to acquire a worker slot
+    let permit = match crate::worker_pool::WORKER_SEMAPHORE
+        .clone()
+        .try_acquire_owned()
+    {
+        Ok(permit) => permit,
+        Err(_) => {
+            log::warn!(
+                "worker pool saturated, skipping scheduled task for worker: {}",
+                data.worker_id
+            );
+            return;
+        }
+    };
 
     let (log_tx, log_handler) = crate::log::create_log_handler(data.worker_id, global_log_tx);
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+    // Use the global worker pool instead of spawning a new thread
+    WORKER_POOL.spawn_pinned(move || async move {
+        // Keep the permit alive for the entire worker execution
+        let _permit = permit;
+        log::debug!("create worker");
 
-        let local = tokio::task::LocalSet::new();
+        let limits = RuntimeLimits {
+            max_cpu_time_ms: 100,           // 100ms CPU time for scheduled tasks
+            max_wall_clock_time_ms: 60_000, // 60s total time for scheduled tasks
+            ..Default::default()
+        };
 
-        local.spawn_local(async move {
-            log::debug!("create worker");
-
-            let limits = RuntimeLimits {
-                max_cpu_time_ms: 100,           // 100ms CPU time for scheduled tasks
-                max_wall_clock_time_ms: 60_000, // 60s total time for scheduled tasks
-                ..Default::default()
-            };
-
-            let mut worker = Worker::new(script, Some(log_tx), Some(limits))
-                .await
-                .unwrap();
-
-            log::debug!("exec scheduled task");
-            match worker.exec(task).await {
-                Ok(()) => log::debug!("exec completed"),
-                Err(err) => log::error!("exec did not complete: {err}"),
+        let mut worker = match Worker::new(script, Some(log_tx), Some(limits)).await {
+            Ok(worker) => worker,
+            Err(err) => {
+                log::error!("failed to create scheduled worker: {err}");
+                log_handler.flush();
+                return;
             }
+        };
 
-            // CRITICAL: Flush logs before worker is dropped to prevent log loss
-            log_handler.flush();
-        });
+        // Create the oneshot channel INSIDE the async block so the receiver stays alive
+        let (res_tx, res_rx) = tokio::sync::oneshot::channel::<()>();
+        let task = Task::Scheduled(Some(ScheduledInit::new(res_tx, data.scheduled_time)));
 
-        log::debug!("scheduled task listener started");
-
-        match local.block_on(&rt, async { res_rx.await }) {
-            Ok(()) => {}
-            Err(err) => log::error!("failed to wait for end: {err}"),
+        log::debug!("exec scheduled task");
+        match worker.exec(task).await {
+            Ok(()) => log::debug!("exec completed"),
+            Err(err) => log::error!("exec did not complete: {err}"),
         }
 
-        log::debug!("scheduled task listener stopped");
+        // Wait for the scheduled event to complete
+        match res_rx.await {
+            Ok(()) => log::debug!("scheduled task responded"),
+            Err(err) => log::error!("scheduled task response error: {err}"),
+        }
+
+        // CRITICAL: Flush logs before worker is dropped to prevent log loss
+        log_handler.flush();
+
+        // Permit is automatically released here when _permit goes out of scope
     });
 }
 
