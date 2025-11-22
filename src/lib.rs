@@ -5,3 +5,6 @@ pub mod nats;
 pub mod store;
 pub mod worker_pool;
 mod transform;
+
+// Re-export TerminationReason for use in bin/main.rs
+pub use openworkers_runtime::TerminationReason;

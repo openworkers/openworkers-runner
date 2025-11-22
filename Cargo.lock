@@ -2986,7 +2986,7 @@ checksum = "ff011a302c396a5197692431fc1948019154afc178baf7d8e37367442a4601cf"
 
 [[package]]
 name = "openworkers-runner"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "actix-web",
  "async-nats",
@@ -3014,8 +3014,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime"
-version = "0.1.10"
-source = "git+https://github.com/openworkers/openworkers-runtime?tag=v0.1.10#8f272d7c33d1068e4bcd279f8591270c86e49eda"
+version = "0.1.11"
 dependencies = [
  "bytes",
  "deno_console",

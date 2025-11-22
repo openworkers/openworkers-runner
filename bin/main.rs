@@ -2,6 +2,9 @@ use bytes::Bytes;
 
 use log::debug;
 use log::error;
+use log::warn;
+
+use std::time::Duration;
 
 use tokio::sync::oneshot::channel;
 
@@ -41,7 +44,14 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
 
     // Expect x-request-id header
     let request_id = match req.headers().get("x-request-id") {
-        Some(value) => value.to_str().unwrap(),
+        Some(value) => match value.to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                return HttpResponse::BadRequest()
+                    .content_type("text/plain")
+                    .body("Invalid x-request-id header encoding");
+            }
+        },
         None => {
             return HttpResponse::BadRequest()
                 .content_type("text/plain")
@@ -50,17 +60,35 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
     };
 
     let host = match req.headers().get("host") {
-        Some(value) => Some(value.to_str().unwrap().to_string()),
+        Some(value) => match value.to_str() {
+            Ok(s) => Some(s.to_string()),
+            Err(_) => {
+                error!("Invalid host header encoding");
+                None
+            }
+        },
         None => None,
     };
 
     let mut worker_id = match req.headers().get("x-worker-id") {
-        Some(value) => Some(value.to_str().unwrap().to_string()),
+        Some(value) => match value.to_str() {
+            Ok(s) => Some(s.to_string()),
+            Err(_) => {
+                error!("Invalid x-worker-id header encoding");
+                None
+            }
+        },
         None => None,
     };
 
     let mut worker_name = match req.headers().get("x-worker-name") {
-        Some(value) => Some(value.to_str().unwrap().to_string()),
+        Some(value) => match value.to_str() {
+            Ok(s) => Some(s.to_string()),
+            Err(_) => {
+                error!("Invalid x-worker-name header encoding");
+                None
+            }
+        },
         None => None,
     };
 
@@ -117,7 +145,7 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
 
     // Create a new request to forward to the worker.
     let request = {
-        let mut request: http_v02::Request<Bytes> = http_v02::Request::builder()
+        let mut request: http_v02::Request<Bytes> = match http_v02::Request::builder()
             .uri(format!(
                 "{}://{}{}",
                 req.connection_info().scheme(),
@@ -126,7 +154,15 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
             ))
             .method(req.method())
             .body(body)
-            .unwrap();
+        {
+            Ok(r) => r,
+            Err(e) => {
+                error!("Failed to build request: {}", e);
+                return HttpResponse::InternalServerError()
+                    .content_type("text/plain")
+                    .body("Failed to build forwarded request");
+            }
+        };
 
         // Copy headers from the incoming request to the forwarded request.
         let headers = request.headers_mut();
@@ -136,18 +172,26 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
 
         // If the worker id is not provided, we add it to the headers.
         if req.headers().get("x-worker-id").is_none() {
-            headers.insert(
-                "x-worker-id",
-                http_v02::HeaderValue::from_str(&worker.id).unwrap(),
-            );
+            match http_v02::HeaderValue::from_str(&worker.id) {
+                Ok(header_value) => {
+                    headers.insert("x-worker-id", header_value);
+                }
+                Err(e) => {
+                    error!("Invalid worker id for header: {}", e);
+                }
+            }
         }
 
         // If the worker name is not provided, we add it to the headers.
         if req.headers().get("x-worker-name").is_none() {
-            headers.insert(
-                "x-worker-name",
-                http_v02::HeaderValue::from_str(&worker.name).unwrap(),
-            );
+            match http_v02::HeaderValue::from_str(&worker.name) {
+                Ok(header_value) => {
+                    headers.insert("x-worker-name", header_value);
+                }
+                Err(e) => {
+                    error!("Invalid worker name for header: {}", e);
+                }
+            }
         }
 
         request
@@ -179,8 +223,9 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
     };
 
     let (res_tx, res_rx) = channel::<http_v02::Response<Bytes>>();
+    let (termination_tx, termination_rx) = channel::<openworkers_runner::TerminationReason>();
 
-    openworkers_runner::event_fetch::run_fetch(worker, request, res_tx, data.log_tx.clone(), permit);
+    openworkers_runner::event_fetch::run_fetch(worker, request, res_tx, termination_tx, data.log_tx.clone(), permit);
 
     let response = match res_rx.await {
         Ok(res) => {
@@ -192,9 +237,44 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
 
             rb.body(res.body().clone())
         }
-        Err(err) => {
-            error!("worker fetch error: {}, ensure the worker registered a listener for the 'fetch' event", err);
-            HttpResponse::InternalServerError().body(err.to_string())
+        Err(_) => {
+            // Worker didn't send a response, check termination reason
+            use openworkers_runner::TerminationReason;
+
+            let reason = termination_rx.await.unwrap_or(TerminationReason::Exception);
+
+            error!("worker terminated without sending response: {:?}", reason);
+
+            let status = reason.http_status();
+            let body = match reason {
+                TerminationReason::Success => {
+                    // This shouldn't happen - worker completed but didn't send response
+                    "Worker completed but did not send a response (missing fetch event listener?)"
+                }
+                TerminationReason::CpuTimeLimit => {
+                    "Worker exceeded CPU time limit (100ms)"
+                }
+                TerminationReason::WallClockTimeout => {
+                    "Worker exceeded wall-clock time limit (60s)"
+                }
+                TerminationReason::MemoryLimit => {
+                    "Worker exceeded memory limit (128MB)"
+                }
+                TerminationReason::Exception => {
+                    "Worker threw an uncaught exception"
+                }
+                TerminationReason::InitializationError => {
+                    "Worker failed to initialize"
+                }
+                TerminationReason::Terminated => {
+                    "Worker was terminated"
+                }
+            };
+
+            HttpResponse::build(actix_web::http::StatusCode::from_u16(status).unwrap())
+                .content_type("text/plain")
+                .insert_header(("X-Termination-Reason", format!("{:?}", reason)))
+                .body(body)
         }
     };
 
@@ -231,26 +311,65 @@ async fn main() -> std::io::Result<()> {
     }
 
     let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let pool = PgPoolOptions::new()
-        .max_connections(4)
-        .connect(&db_url)
-        .await
-        .expect("Failed to connect to Postgres");
 
-    // Check postgres connection
-    sqlx::query("SELECT 1")
-        .fetch_one(&pool)
-        .await
-        .expect("Failed to query Postgres");
-    debug!("connected to Postgres");
+    // Retry database connection with exponential backoff
+    let mut retry_count = 0;
+    let max_retries = 5;
+    let pool = loop {
+        match PgPoolOptions::new()
+            .max_connections(20) // Increased from 4
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+        {
+            Ok(pool) => {
+                // Test the connection
+                match sqlx::query("SELECT 1").fetch_one(&pool).await {
+                    Ok(_) => {
+                        debug!("connected to Postgres");
+                        break pool;
+                    }
+                    Err(e) => {
+                        error!("Database connection test failed: {}", e);
+                        if retry_count >= max_retries {
+                            panic!("Failed to connect to database after {} retries", max_retries);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                retry_count += 1;
+                if retry_count > max_retries {
+                    panic!("Failed to connect to database after {} retries: {}", max_retries, e);
+                }
+                let wait_time = Duration::from_secs(2u64.pow(retry_count.min(5)));
+                warn!("Database connection attempt {} failed: {}. Retrying in {:?}...",
+                      retry_count, e, wait_time);
+                tokio::time::sleep(wait_time).await;
+            }
+        }
+    };
 
-    // Check NATS connection
-    let nats_client = openworkers_runner::nats::nats_connect().await;
-    nats_client
-        .publish("boot", "0".into())
-        .await
-        .expect("Failed to connect to NATS");
-    debug!("connected to NATS");
+    // Connect to NATS with retries
+    let mut retry_count = 0;
+    loop {
+        match openworkers_runner::nats::nats_connect().await.publish("boot", "0".into()).await {
+            Ok(_) => {
+                debug!("connected to NATS");
+                break;
+            }
+            Err(e) => {
+                retry_count += 1;
+                if retry_count > max_retries {
+                    panic!("Failed to connect to NATS after {} retries: {}", max_retries, e);
+                }
+                let wait_time = Duration::from_secs(2u64.pow(retry_count.min(5)));
+                warn!("NATS connection attempt {} failed: {}. Retrying in {:?}...",
+                      retry_count, e, wait_time);
+                tokio::time::sleep(wait_time).await;
+            }
+        }
+    }
 
     // Start global log publisher
     let log_tx = openworkers_runner::log::start_log_publisher();

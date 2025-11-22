@@ -70,14 +70,36 @@ fn run_scheduled(
 
         log::debug!("exec scheduled task");
         match worker.exec(task).await {
-            Ok(()) => log::debug!("exec completed"),
-            Err(err) => log::error!("exec did not complete: {err}"),
-        }
+            Ok(reason) => {
+                use openworkers_runtime::TerminationReason;
 
-        // Wait for the scheduled event to complete
-        match res_rx.await {
-            Ok(()) => log::debug!("scheduled task responded"),
-            Err(err) => log::error!("scheduled task response error: {err}"),
+                match reason {
+                    TerminationReason::Success => {
+                        log::debug!("scheduled task completed successfully");
+                        // Wait for the scheduled event to complete
+                        match res_rx.await {
+                            Ok(()) => log::debug!("scheduled task responded"),
+                            Err(err) => log::error!("scheduled task response error: {err}"),
+                        }
+                    }
+                    TerminationReason::CpuTimeLimit => {
+                        log::warn!("scheduled task terminated: CPU time limit exceeded");
+                    }
+                    TerminationReason::WallClockTimeout => {
+                        log::warn!("scheduled task terminated: wall-clock timeout");
+                    }
+                    TerminationReason::MemoryLimit => {
+                        log::warn!("scheduled task terminated: memory limit exceeded");
+                    }
+                    TerminationReason::Exception => {
+                        log::error!("scheduled task terminated: uncaught exception");
+                    }
+                    _ => {
+                        log::error!("scheduled task terminated: {:?}", reason);
+                    }
+                }
+            }
+            Err(err) => log::error!("scheduled task exec error: {err}"),
         }
 
         // CRITICAL: Flush logs before worker is dropped to prevent log loss
@@ -142,8 +164,16 @@ pub fn handle_scheduled(
                     }
                 };
 
+                let code = match crate::transform::parse_worker_code(&worker) {
+                    Ok(code) => code,
+                    Err(e) => {
+                        log::error!("Failed to parse worker code for scheduled task: {}", e);
+                        continue; // Skip this scheduled task
+                    }
+                };
+
                 let script = Script {
-                    code: crate::transform::parse_worker_code(&worker),
+                    code,
                     env: match worker.env {
                         Some(env) => Some(env.deref().to_owned()),
                         None => None,
