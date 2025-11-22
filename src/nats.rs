@@ -1,21 +1,23 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::engine::Engine;
 
-pub fn nats_connect() -> nats::Connection {
+pub async fn nats_connect() -> async_nats::Client {
     let nats_servers = std::env::var("NATS_SERVERS").expect("NATS_SERVERS must be set");
 
     log::debug!("connecting to nats: {nats_servers}");
-    
+
     let conn = match std::env::var("NATS_CREDS") {
         Ok(credentials) => {
           // Decode the base64 encoded credentials
           let credentials: Vec<u8> = STANDARD.decode(credentials).expect("failed to decode credentials");
-          let credentials = String::from_utf8(credentials).expect("failed to convert credentials to string");
-          let options = nats::Options::with_static_credentials(&credentials).expect("failed to create nats options");
-        
-          options.connect(nats_servers)
+          let credentials_str = String::from_utf8(credentials).expect("failed to convert credentials to string");
+
+          async_nats::ConnectOptions::with_credentials(&credentials_str)
+              .expect("failed to create nats options")
+              .connect(&nats_servers)
+              .await
         },
-        Err(_) => nats::connect(nats_servers),
+        Err(_) => async_nats::connect(&nats_servers).await,
     };
 
     conn.expect("failed to connect to nats")

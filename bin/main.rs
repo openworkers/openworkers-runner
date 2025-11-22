@@ -18,6 +18,7 @@ use openworkers_runner::store::WorkerIdentifier;
 
 struct AppState {
     db: sqlx::Pool<sqlx::Postgres>,
+    log_tx: std::sync::mpsc::Sender<openworkers_runner::log::LogMessage>,
 }
 
 async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> HttpResponse {
@@ -154,7 +155,7 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
 
     let (res_tx, res_rx) = channel::<http_v02::Response<Bytes>>();
 
-    let handle = openworkers_runner::event_fetch::run_fetch(worker, request, res_tx);
+    let handle = openworkers_runner::event_fetch::run_fetch(worker, request, res_tx, data.log_tx.clone());
 
     // TODO: select! on res_rx, timeout and handle.join()
     let response = match res_rx.await {
@@ -222,18 +223,27 @@ async fn main() -> std::io::Result<()> {
     debug!("connected to Postgres");
 
     // Check NATS connection
-    openworkers_runner::nats::nats_connect()
-        .publish("boot", "0")
+    let nats_client = openworkers_runner::nats::nats_connect().await;
+    nats_client
+        .publish("boot", "0".into())
+        .await
         .expect("Failed to connect to NATS");
     debug!("connected to NATS");
 
-    openworkers_runner::event_scheduled::handle_scheduled(pool.clone());
+    // Start global log publisher
+    let log_tx = openworkers_runner::log::start_log_publisher();
+    debug!("started log publisher");
+
+    openworkers_runner::event_scheduled::handle_scheduled(pool.clone(), log_tx.clone());
 
     HttpServer::new(move || {
         println!("Listening on http://localhost:8080");
 
         App::new()
-            .app_data(Data::new(AppState { db: pool.clone() }))
+            .app_data(Data::new(AppState {
+                db: pool.clone(),
+                log_tx: log_tx.clone(),
+            }))
             .service(
                 web::resource("/health")
                     .guard(actix_web::guard::Header("host", "127.0.0.1:8080"))

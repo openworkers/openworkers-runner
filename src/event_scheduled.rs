@@ -20,12 +20,16 @@ pub struct ScheduledData {
     pub worker_id: String,
 }
 
-fn run_scheduled(data: ScheduledData, script: Script) {
+fn run_scheduled(
+    data: ScheduledData,
+    script: Script,
+    global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
+) {
     let (res_tx, res_rx) = tokio::sync::oneshot::channel::<()>();
 
     let task = Task::Scheduled(Some(ScheduledInit::new(res_tx, data.scheduled_time)));
 
-    let log_tx = crate::log::create_log_handler(data.worker_id);
+    let log_tx = crate::log::create_log_handler(data.worker_id, global_log_tx);
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -66,7 +70,10 @@ fn run_scheduled(data: ScheduledData, script: Script) {
     });
 }
 
-pub fn handle_scheduled(db: sqlx::Pool<sqlx::Postgres>) {
+pub fn handle_scheduled(
+    db: sqlx::Pool<sqlx::Postgres>,
+    global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
+) {
     std::thread::spawn(move || {
         let local = tokio::task::LocalSet::new();
 
@@ -76,6 +83,8 @@ pub fn handle_scheduled(db: sqlx::Pool<sqlx::Postgres>) {
             .unwrap();
 
         let handle = local.spawn_local(async move {
+            use futures::StreamExt;
+
             // Acquire a database connection from the pool.
             let mut conn: sqlx::pool::PoolConnection<sqlx::Postgres> = match db.acquire().await {
                 Ok(db) => db,
@@ -85,23 +94,25 @@ pub fn handle_scheduled(db: sqlx::Pool<sqlx::Postgres>) {
                 }
             };
 
-            let nc = crate::nats::nats_connect();
-            let sub = nc
-                .queue_subscribe("scheduled", "runner")
+            let nc = crate::nats::nats_connect().await;
+            let mut sub = nc
+                .queue_subscribe("scheduled".to_string(), "runner".to_string())
+                .await
                 .expect("failed to subscribe to scheduled");
 
             log::debug!("listening for scheduled tasks");
 
-            while let Some(msg) = sub.next() {
+            while let Some(msg) = sub.next().await {
                 log::debug!("scheduled task received: {:?}", msg);
 
-                let data: ScheduledData = match serde_json::from_slice::<ScheduledData>(&msg.data) {
-                    Ok(msg) => msg,
-                    Err(err) => {
-                        log::error!("failed to parse scheduled task: {:?}", err);
-                        continue;
-                    }
-                };
+                let data: ScheduledData =
+                    match serde_json::from_slice::<ScheduledData>(&msg.payload) {
+                        Ok(msg) => msg,
+                        Err(err) => {
+                            log::error!("failed to parse scheduled task: {:?}", err);
+                            continue;
+                        }
+                    };
 
                 log::debug!("scheduled task parsed: {:?}", data);
 
@@ -122,7 +133,7 @@ pub fn handle_scheduled(db: sqlx::Pool<sqlx::Postgres>) {
                     },
                 };
 
-                run_scheduled(data, script);
+                run_scheduled(data, script, global_log_tx.clone());
             }
 
             log::debug!("scheduled task listener stopped");

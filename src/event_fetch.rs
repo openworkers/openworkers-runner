@@ -20,8 +20,9 @@ pub fn run_fetch(
     worker: WorkerData,
     req: http_v02::Request<Bytes>,
     res_tx: ResTx,
+    global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
 ) -> JoinHandle<()> {
-    let log_tx = crate::log::create_log_handler(worker.id.clone());
+    let log_tx = crate::log::create_log_handler(worker.id.clone(), global_log_tx);
 
     let script = Script {
         code: crate::transform::parse_worker_code(&worker),
