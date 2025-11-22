@@ -29,7 +29,7 @@ fn run_scheduled(
 
     let task = Task::Scheduled(Some(ScheduledInit::new(res_tx, data.scheduled_time)));
 
-    let log_tx = crate::log::create_log_handler(data.worker_id, global_log_tx);
+    let (log_tx, log_handler) = crate::log::create_log_handler(data.worker_id, global_log_tx);
 
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -57,6 +57,9 @@ fn run_scheduled(
                 Ok(()) => log::debug!("exec completed"),
                 Err(err) => log::error!("exec did not complete: {err}"),
             }
+
+            // CRITICAL: Flush logs before worker is dropped to prevent log loss
+            log_handler.flush();
         });
 
         log::debug!("scheduled task listener started");

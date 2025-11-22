@@ -22,7 +22,7 @@ pub fn run_fetch(
     res_tx: ResTx,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
 ) -> JoinHandle<()> {
-    let log_tx = crate::log::create_log_handler(worker.id.clone(), global_log_tx);
+    let (log_tx, log_handler) = crate::log::create_log_handler(worker.id.clone(), global_log_tx);
 
     let script = Script {
         code: crate::transform::parse_worker_code(&worker),
@@ -76,6 +76,9 @@ pub fn run_fetch(
                     // If no response was sent, res_tx will be dropped and client gets an error
                 }
             }
+
+            // CRITICAL: Flush logs before worker is dropped to prevent log loss
+            log_handler.flush();
         });
 
         let rt = tokio::runtime::Builder::new_current_thread()
