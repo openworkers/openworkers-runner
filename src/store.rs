@@ -23,7 +23,10 @@ pub struct WorkerData {
     pub language: WorkerLanguage,
 }
 
-pub async fn get_worker(conn: &mut sqlx::PgConnection, identifier: WorkerIdentifier) -> Option<WorkerData> {
+pub async fn get_worker(
+    conn: &mut sqlx::PgConnection,
+    identifier: WorkerIdentifier,
+) -> Option<WorkerData> {
     log::debug!("get_worker: {:?}", identifier);
 
     let query = format!(
@@ -58,7 +61,12 @@ pub async fn get_worker(conn: &mut sqlx::PgConnection, identifier: WorkerIdentif
         .await
     {
         Ok(worker) => {
-            log::debug!("worker found: id: {}, checksum: {}, language: {:?}", worker.id, worker.checksum, worker.language);
+            log::debug!(
+                "worker found: id: {}, checksum: {}, language: {:?}",
+                worker.id,
+                worker.checksum,
+                worker.language
+            );
             Some(worker)
         }
         Err(err) => {
@@ -68,7 +76,10 @@ pub async fn get_worker(conn: &mut sqlx::PgConnection, identifier: WorkerIdentif
     }
 }
 
-pub async fn get_worker_id_from_domain(conn: &mut sqlx::PgConnection, domain: String) -> Option<String> {
+pub async fn get_worker_id_from_domain(
+    conn: &mut sqlx::PgConnection,
+    domain: String,
+) -> Option<String> {
     let query = sqlx::query_scalar!(
         "SELECT worker_id::text FROM domains WHERE name = $1 LIMIT 1",
         domain

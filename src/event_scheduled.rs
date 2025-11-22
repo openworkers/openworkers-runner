@@ -1,5 +1,6 @@
 use std::ops::Deref;
 
+use openworkers_runtime::RuntimeLimits;
 use openworkers_runtime::ScheduledInit;
 use openworkers_runtime::Script;
 use openworkers_runtime::Task;
@@ -36,7 +37,16 @@ fn run_scheduled(data: ScheduledData, script: Script) {
 
         local.spawn_local(async move {
             log::debug!("create worker");
-            let mut worker = Worker::new(script, Some(log_tx)).await.unwrap();
+
+            let limits = RuntimeLimits {
+                max_cpu_time_ms: 100,           // 100ms CPU time for scheduled tasks
+                max_wall_clock_time_ms: 60_000, // 60s total time for scheduled tasks
+                ..Default::default()
+            };
+
+            let mut worker = Worker::new(script, Some(log_tx), Some(limits))
+                .await
+                .unwrap();
 
             log::debug!("exec scheduled task");
             match worker.exec(task).await {
@@ -47,7 +57,7 @@ fn run_scheduled(data: ScheduledData, script: Script) {
 
         log::debug!("scheduled task listener started");
 
-        match local.block_on(&rt, async { res_rx.await } ) {
+        match local.block_on(&rt, async { res_rx.await }) {
             Ok(()) => {}
             Err(err) => log::error!("failed to wait for end: {err}"),
         }
@@ -108,7 +118,7 @@ pub fn handle_scheduled(db: sqlx::Pool<sqlx::Postgres>) {
                     code: crate::transform::parse_worker_code(&worker),
                     env: match worker.env {
                         Some(env) => Some(env.deref().to_owned()),
-                        None => None
+                        None => None,
                     },
                 };
 

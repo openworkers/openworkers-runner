@@ -1,8 +1,10 @@
 use std::ops::Deref;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use bytes::Bytes;
 use openworkers_runtime::FetchInit;
+use openworkers_runtime::RuntimeLimits;
 use openworkers_runtime::Script;
 use openworkers_runtime::Task;
 use openworkers_runtime::Worker;
@@ -10,6 +12,9 @@ use openworkers_runtime::Worker;
 use crate::store::WorkerData;
 
 type ResTx = tokio::sync::oneshot::Sender<http_v02::Response<Bytes>>;
+
+// Default timeout for fetch events
+const FETCH_TIMEOUT_MS: u64 = 64_000; // 64 seconds
 
 pub fn run_fetch(
     worker: WorkerData,
@@ -31,7 +36,14 @@ pub fn run_fetch(
 
         let tasks = local.spawn_local(async move {
             log::debug!("create worker");
-            let mut worker = match Worker::new(script, Some(log_tx)).await {
+
+            let limits = RuntimeLimits {
+                max_cpu_time_ms: 100,           // 100ms CPU time for fetch tasks
+                max_wall_clock_time_ms: 60_000, // 60s total time for fetch tasks
+                ..Default::default()
+            };
+
+            let mut worker = match Worker::new(script, Some(log_tx), Some(limits)).await {
                 Ok(worker) => worker,
                 Err(err) => {
                     log::error!("failed to create worker: {err}");
@@ -50,10 +62,18 @@ pub fn run_fetch(
 
             let task = Task::Fetch(Some(FetchInit::new(req, res_tx)));
 
-            log::debug!("exec fetch task");
-            match worker.exec(task).await {
-                Ok(()) => log::debug!("exec completed"),
-                Err(err) => log::error!("exec did not complete: {err}"),
+            log::debug!("exec fetch task with {}ms timeout", FETCH_TIMEOUT_MS);
+
+            // Wrap execution with timeout
+            let timeout_duration = Duration::from_millis(FETCH_TIMEOUT_MS);
+            match tokio::time::timeout(timeout_duration, worker.exec(task)).await {
+                Ok(Ok(())) => log::debug!("exec completed"),
+                Ok(Err(err)) => log::error!("exec did not complete: {err}"),
+                Err(_) => {
+                    log::error!("exec timeout after {}ms", FETCH_TIMEOUT_MS);
+                    // Note: Worker may have already sent a response via FetchInit
+                    // If no response was sent, res_tx will be dropped and client gets an error
+                }
             }
         });
 
