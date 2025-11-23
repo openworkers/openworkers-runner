@@ -1,13 +1,26 @@
-FROM rust:1.84 AS builder
+FROM rust:1.91 AS chef
+RUN cargo install cargo-chef
+WORKDIR /build
 
-RUN mkdir -p /build
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
+FROM chef AS builder
 ENV RUST_BACKTRACE=1
 ENV RUNTIME_SNAPSHOT_PATH=/build/snapshot.bin
 
-WORKDIR /build
+RUN touch $RUNTIME_SNAPSHOT_PATH
 
-COPY . /build
+COPY --from=planner /build/recipe.json recipe.json
+# Build dependencies - this is the caching Docker layer!
+RUN --mount=type=cache,target=$CARGO_HOME/git \
+    --mount=type=cache,target=$CARGO_HOME/registry \
+    --mount=type=cache,target=/build/target \
+    cargo chef cook --release --recipe-path recipe.json
+
+# Build application
+COPY . .
 
 RUN touch $RUNTIME_SNAPSHOT_PATH
 

@@ -5,7 +5,7 @@ RUN apt-get update \
     && apt-get install -y ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
-FROM --platform=$BUILDPLATFORM rust:1.84 AS prepare
+FROM --platform=$BUILDPLATFORM rust:1.91 AS prepare
 
 RUN apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
@@ -22,6 +22,14 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 RUN rustup target add x86_64-unknown-linux-gnu \
                       aarch64-unknown-linux-gnu
 
+RUN cargo install cargo-chef
+
+FROM prepare AS planner
+
+WORKDIR /build
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
 FROM prepare AS builder
 
 RUN mkdir -p /build
@@ -31,13 +39,22 @@ ENV RUNTIME_SNAPSHOT_PATH=/build/snapshot.bin
 
 WORKDIR /build
 
-COPY . /build
-
 RUN touch $RUNTIME_SNAPSHOT_PATH
+
+COPY --from=planner /build/recipe.json recipe.json
+
+# Build dependencies - this is the caching Docker layer!
+RUN --mount=type=cache,sharing=locked,target=$CARGO_HOME/git \
+    --mount=type=cache,sharing=locked,target=$CARGO_HOME/registry \
+    --mount=type=cache,sharing=locked,target=/build/target \
+    cargo chef cook --release --recipe-path recipe.json
+
+# Build application
+COPY . /build
 
 RUN --mount=type=cache,sharing=locked,target=$CARGO_HOME/git \
     --mount=type=cache,sharing=locked,target=$CARGO_HOME/registry \
-    --mount=type=cache,sharing=locked,target=/build/openworkers-runner/target \
+    --mount=type=cache,sharing=locked,target=/build/target \
     cargo run --release --bin snapshot
 
 FROM builder AS platform
@@ -46,9 +63,20 @@ ARG TARGETPLATFORM
 
 RUN echo "Building for $TARGETPLATFORM"
 
-RUN --mount=type=cache,id=apt-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/git \
-    --mount=type=cache,id=apt-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/registry \
-    --mount=type=cache,id=apt-$TARGETPLATFORM,sharing=locked,target=/build/openworkers-runner/target \
+# Build dependencies for target platform
+RUN --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/git \
+    --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/registry \
+    --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=/build/target \
+    case "$TARGETPLATFORM" in \
+        "linux/arm64") cargo chef cook --release --target aarch64-unknown-linux-gnu --recipe-path recipe.json ;; \
+        "linux/amd64") cargo chef cook --release --target x86_64-unknown-linux-gnu --recipe-path recipe.json ;; \
+        *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
+    esac
+
+# Build application for target platform
+RUN --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/git \
+    --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/registry \
+    --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=/build/target \
     case "$TARGETPLATFORM" in \
         "linux/arm64") cargo build --release --target aarch64-unknown-linux-gnu && \
                         mv /build/target/aarch64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \
