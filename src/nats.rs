@@ -12,6 +12,7 @@ pub async fn nats_connect() -> async_nats::Client {
             let credentials: Vec<u8> = STANDARD
                 .decode(credentials)
                 .expect("failed to decode credentials");
+
             let credentials_str =
                 String::from_utf8(credentials).expect("failed to convert credentials to string");
 

@@ -1,19 +1,12 @@
 use bytes::Bytes;
 
-use log::debug;
-use log::error;
-use log::warn;
+use log::{debug, error, warn};
 
 use std::time::Duration;
 
 use tokio::sync::oneshot::channel;
 
-use actix_web::{App, HttpServer};
-
-use actix_web::web;
-use actix_web::web::Data;
-use actix_web::HttpRequest;
-use actix_web::HttpResponse;
+use actix_web::{web, web::Data, App, HttpServer};
 
 use sqlx::postgres::PgPoolOptions;
 
@@ -24,7 +17,11 @@ struct AppState {
     log_tx: std::sync::mpsc::Sender<openworkers_runner::log::LogMessage>,
 }
 
-async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> HttpResponse {
+async fn handle_request(
+    data: Data<AppState>,
+    req: actix_web::HttpRequest,
+    body: Bytes,
+) -> actix_web::HttpResponse {
     debug!(
         "handle_request of: {} {} in thread {:?}",
         req.method(),
@@ -37,7 +34,7 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
         Ok(db) => db,
         Err(err) => {
             error!("Failed to acquire a database connection: {}", err);
-            return HttpResponse::InternalServerError()
+            return actix_web::HttpResponse::InternalServerError()
                 .body("Failed to acquire a database connection");
         }
     };
@@ -47,13 +44,13 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
         Some(value) => match value.to_str() {
             Ok(s) => s,
             Err(_) => {
-                return HttpResponse::BadRequest()
+                return actix_web::HttpResponse::BadRequest()
                     .content_type("text/plain")
                     .body("Invalid x-request-id header encoding");
             }
         },
         None => {
-            return HttpResponse::BadRequest()
+            return actix_web::HttpResponse::BadRequest()
                 .content_type("text/plain")
                 .body("Missing request id");
         }
@@ -122,7 +119,7 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
         (None, Some(name)) => WorkerIdentifier::Name(name),
         // If we don't have a worker id or name, we can't continue.
         _ => {
-            return HttpResponse::BadRequest()
+            return actix_web::HttpResponse::BadRequest()
                 .content_type("text/plain")
                 .body("Missing worker id or name")
         }
@@ -135,7 +132,7 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
     let worker = match worker {
         Some(worker) => worker,
         None => {
-            return HttpResponse::NotFound()
+            return actix_web::HttpResponse::NotFound()
                 .content_type("text/plain")
                 .body("Worker not found");
         }
@@ -144,58 +141,21 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
     let start = tokio::time::Instant::now();
 
     // Create a new request to forward to the worker.
-    let request = {
-        let mut request: http_v02::Request<Bytes> = match http_v02::Request::builder()
-            .uri(format!(
-                "{}://{}{}",
-                req.connection_info().scheme(),
-                req.connection_info().host(),
-                req.uri()
-            ))
-            .method(req.method())
-            .body(body)
-        {
-            Ok(r) => r,
-            Err(e) => {
-                error!("Failed to build request: {}", e);
-                return HttpResponse::InternalServerError()
-                    .content_type("text/plain")
-                    .body("Failed to build forwarded request");
-            }
-        };
+    let mut request = openworkers_runtime::HttpRequest::from_actix(&req, body);
 
-        // Copy headers from the incoming request to the forwarded request.
-        let headers = request.headers_mut();
-        for (k, v) in req.headers() {
-            headers.insert(k, v.clone());
-        }
-
-        // If the worker id is not provided, we add it to the headers.
-        if req.headers().get("x-worker-id").is_none() {
-            match http_v02::HeaderValue::from_str(&worker.id) {
-                Ok(header_value) => {
-                    headers.insert("x-worker-id", header_value);
-                }
-                Err(e) => {
-                    error!("Invalid worker id for header: {}", e);
-                }
-            }
-        }
-
-        // If the worker name is not provided, we add it to the headers.
-        if req.headers().get("x-worker-name").is_none() {
-            match http_v02::HeaderValue::from_str(&worker.name) {
-                Ok(header_value) => {
-                    headers.insert("x-worker-name", header_value);
-                }
-                Err(e) => {
-                    error!("Invalid worker name for header: {}", e);
-                }
-            }
-        }
-
+    // If the worker id is not provided, we add it to the headers.
+    if req.headers().get("x-worker-id").is_none() {
         request
-    };
+            .headers
+            .insert("x-worker-id".to_string(), worker.id.clone());
+    }
+
+    // If the worker name is not provided, we add it to the headers.
+    if req.headers().get("x-worker-name").is_none() {
+        request
+            .headers
+            .insert("x-worker-name".to_string(), worker.name.clone());
+    }
 
     // Try to acquire a worker slot from the semaphore with timeout
     let timeout = openworkers_runner::worker_pool::get_worker_wait_timeout();
@@ -210,32 +170,37 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
         Ok(Ok(permit)) => permit,
         Ok(Err(_)) => {
             error!("semaphore closed unexpectedly");
-            return HttpResponse::InternalServerError()
+            return actix_web::HttpResponse::InternalServerError()
                 .content_type("text/plain")
                 .body("Internal server error");
         }
         Err(_) => {
-            debug!("worker pool saturated after {}ms timeout, returning 503", timeout.as_millis());
-            return HttpResponse::ServiceUnavailable()
+            debug!(
+                "worker pool saturated after {}ms timeout, returning 503",
+                timeout.as_millis()
+            );
+            return actix_web::HttpResponse::ServiceUnavailable()
                 .content_type("text/plain")
                 .body("Server is overloaded, please try again later");
         }
     };
 
-    let (res_tx, res_rx) = channel::<http_v02::Response<Bytes>>();
+    let (res_tx, res_rx) = channel::<openworkers_runtime::HttpResponse>();
     let (termination_tx, termination_rx) = channel::<openworkers_runner::TerminationReason>();
 
-    openworkers_runner::event_fetch::run_fetch(worker, request, res_tx, termination_tx, data.log_tx.clone(), permit);
+    openworkers_runner::event_fetch::run_fetch(
+        worker,
+        request,
+        res_tx,
+        termination_tx,
+        data.log_tx.clone(),
+        permit,
+    );
 
     let response = match res_rx.await {
         Ok(res) => {
-            let mut rb = HttpResponse::build(res.status());
-
-            for (k, v) in res.headers() {
-                rb.append_header((k, v));
-            }
-
-            rb.body(res.body().clone())
+            // Convert our HttpResponse to actix_web::HttpResponse
+            res.into()
         }
         Err(_) => {
             // Worker didn't send a response, check termination reason
@@ -251,27 +216,17 @@ async fn handle_request(data: Data<AppState>, req: HttpRequest, body: Bytes) -> 
                     // This shouldn't happen - worker completed but didn't send response
                     "Worker completed but did not send a response (missing fetch event listener?)"
                 }
-                TerminationReason::CpuTimeLimit => {
-                    "Worker exceeded CPU time limit (100ms)"
-                }
+                TerminationReason::CpuTimeLimit => "Worker exceeded CPU time limit (100ms)",
                 TerminationReason::WallClockTimeout => {
                     "Worker exceeded wall-clock time limit (60s)"
                 }
-                TerminationReason::MemoryLimit => {
-                    "Worker exceeded memory limit (128MB)"
-                }
-                TerminationReason::Exception => {
-                    "Worker threw an uncaught exception"
-                }
-                TerminationReason::InitializationError => {
-                    "Worker failed to initialize"
-                }
-                TerminationReason::Terminated => {
-                    "Worker was terminated"
-                }
+                TerminationReason::MemoryLimit => "Worker exceeded memory limit (128MB)",
+                TerminationReason::Exception => "Worker threw an uncaught exception",
+                TerminationReason::InitializationError => "Worker failed to initialize",
+                TerminationReason::Terminated => "Worker was terminated",
             };
 
-            HttpResponse::build(actix_web::http::StatusCode::from_u16(status).unwrap())
+            actix_web::HttpResponse::build(actix_web::http::StatusCode::from_u16(status).unwrap())
                 .content_type("text/plain")
                 .insert_header(("X-Termination-Reason", format!("{:?}", reason)))
                 .body(body)
@@ -332,7 +287,10 @@ async fn main() -> std::io::Result<()> {
                     Err(e) => {
                         error!("Database connection test failed: {}", e);
                         if retry_count >= max_retries {
-                            panic!("Failed to connect to database after {} retries", max_retries);
+                            panic!(
+                                "Failed to connect to database after {} retries",
+                                max_retries
+                            );
                         }
                     }
                 }
@@ -340,11 +298,16 @@ async fn main() -> std::io::Result<()> {
             Err(e) => {
                 retry_count += 1;
                 if retry_count > max_retries {
-                    panic!("Failed to connect to database after {} retries: {}", max_retries, e);
+                    panic!(
+                        "Failed to connect to database after {} retries: {}",
+                        max_retries, e
+                    );
                 }
                 let wait_time = Duration::from_secs(2u64.pow(retry_count.min(5)));
-                warn!("Database connection attempt {} failed: {}. Retrying in {:?}...",
-                      retry_count, e, wait_time);
+                warn!(
+                    "Database connection attempt {} failed: {}. Retrying in {:?}...",
+                    retry_count, e, wait_time
+                );
                 tokio::time::sleep(wait_time).await;
             }
         }
@@ -353,7 +316,11 @@ async fn main() -> std::io::Result<()> {
     // Connect to NATS with retries
     let mut retry_count = 0;
     loop {
-        match openworkers_runner::nats::nats_connect().await.publish("boot", "0".into()).await {
+        match openworkers_runner::nats::nats_connect()
+            .await
+            .publish("boot", "0".into())
+            .await
+        {
             Ok(_) => {
                 debug!("connected to NATS");
                 break;
@@ -361,11 +328,16 @@ async fn main() -> std::io::Result<()> {
             Err(e) => {
                 retry_count += 1;
                 if retry_count > max_retries {
-                    panic!("Failed to connect to NATS after {} retries: {}", max_retries, e);
+                    panic!(
+                        "Failed to connect to NATS after {} retries: {}",
+                        max_retries, e
+                    );
                 }
                 let wait_time = Duration::from_secs(2u64.pow(retry_count.min(5)));
-                warn!("NATS connection attempt {} failed: {}. Retrying in {:?}...",
-                      retry_count, e, wait_time);
+                warn!(
+                    "NATS connection attempt {} failed: {}. Retrying in {:?}...",
+                    retry_count, e, wait_time
+                );
                 tokio::time::sleep(wait_time).await;
             }
         }
@@ -388,8 +360,8 @@ async fn main() -> std::io::Result<()> {
             .service(
                 web::resource("/health")
                     .guard(actix_web::guard::Header("host", "127.0.0.1:8080"))
-                    .route(web::head().to(HttpResponse::Ok))
-                    .route(web::get().to(HttpResponse::Ok)),
+                    .route(web::head().to(actix_web::HttpResponse::Ok))
+                    .route(web::get().to(actix_web::HttpResponse::Ok)),
             )
             .default_service(web::to(handle_request))
     })

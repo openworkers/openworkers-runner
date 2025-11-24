@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.1.12"
+version = "0.2.0"
 edition = "2021"
 default-run = "openworkers-runner"
 
@@ -14,10 +14,10 @@ tokio = "1.43.0"
 tokio-util = { version = "0.7", features = ["rt"] }
 once_cell = "1.19"
 env_logger = "0.11.6"
-http_v02 = { package = "http", version = "0.2.12" }
 sqlx = { version = "0.8.6", features = [ "runtime-tokio", "postgres", "uuid", "bigdecimal", "rust_decimal" ] }
-openworkers-runtime ={ git = "https://github.com/openworkers/openworkers-runtime", tag = "v0.1.12"}
-# openworkers-runtime =  { path = "../openworkers-runtime" }
+# openworkers-runtime ={ git = "https://github.com/openworkers/openworkers-runtime", tag = "v0.1.12"}
+openworkers-runtime =  { path = "../openworkers-runtime", features = ["actix"] }
+# openworkers_runtime =  { package = "openworkers-runtime-jscore", path = "../openworkers-runtime-jscore" }
 async-nats = "0.45.0"
 futures = "0.3"
 serde_json = "1.0.137"
