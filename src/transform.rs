@@ -1,9 +1,9 @@
 use swc_common::{
-    comments::SingleThreadedComments, errors::Handler, sync::Lrc, Globals, Mark, SourceMap, GLOBALS,
+    GLOBALS, Globals, Mark, SourceMap, comments::SingleThreadedComments, errors::Handler, sync::Lrc,
 };
 
-use swc_ecma_codegen::{text_writer::JsWriter, Emitter};
-use swc_ecma_parser::{lexer::Lexer, Parser, StringInput, Syntax, TsSyntax};
+use swc_ecma_codegen::{Emitter, text_writer::JsWriter};
+use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 use swc_ecma_transforms_base::{fixer::fixer, hygiene::hygiene, resolver};
 use swc_ecma_transforms_typescript::strip;
 

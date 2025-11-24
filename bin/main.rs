@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tokio::sync::oneshot::channel;
 
-use actix_web::{web, web::Data, App, HttpServer};
+use actix_web::{App, HttpServer, web, web::Data};
 
 use sqlx::postgres::PgPoolOptions;
 
@@ -121,7 +121,7 @@ async fn handle_request(
         _ => {
             return actix_web::HttpResponse::BadRequest()
                 .content_type("text/plain")
-                .body("Missing worker id or name")
+                .body("Missing worker id or name");
         }
     };
 
@@ -242,30 +242,25 @@ async fn handle_request(
 async fn main() -> std::io::Result<()> {
     dotenv::dotenv().ok();
 
-    if !std::env::var("RUST_LOG").is_ok() {
-        std::env::set_var("RUST_LOG", "info");
-    }
-
     env_logger::init();
 
     debug!("start main");
 
-    if !std::env::var("DATABASE_URL").is_ok() {
-        let host = std::env::var("POSTGRES_HOST").expect("POSTGRES_HOST must be set");
-        let port = std::env::var("POSTGRES_PORT").expect("POSTGRES_PORT must be set");
-        let user = std::env::var("POSTGRES_USER").expect("POSTGRES_USER must be set");
-        let password = std::env::var("POSTGRES_PASSWORD").expect("POSTGRES_PASSWORD must be set");
-        let database = std::env::var("POSTGRES_DB").expect("POSTGRES_DB must be set");
+    let db_url = match std::env::var("DATABASE_URL") {
+        Ok(url) => url,
+        Err(_) => {
+            let host = std::env::var("POSTGRES_HOST").expect("POSTGRES_HOST must be set");
+            let port = std::env::var("POSTGRES_PORT").expect("POSTGRES_PORT must be set");
+            let user = std::env::var("POSTGRES_USER").expect("POSTGRES_USER must be set");
+            let password =
+                std::env::var("POSTGRES_PASSWORD").expect("POSTGRES_PASSWORD must be set");
+            let database = std::env::var("POSTGRES_DB").expect("POSTGRES_DB must be set");
 
-        debug!("DATABASE_URL not set, using POSTGRES_* env vars");
+            debug!("DATABASE_URL not set, using POSTGRES_* env vars");
 
-        std::env::set_var(
-            "DATABASE_URL",
-            format!("postgres://{user}:{password}@{host}:{port}/{database}"),
-        );
-    }
-
-    let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+            format!("postgres://{user}:{password}@{host}:{port}/{database}")
+        }
+    };
 
     // Retry database connection with exponential backoff
     let mut retry_count = 0;
