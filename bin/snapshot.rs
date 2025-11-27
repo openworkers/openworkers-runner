@@ -1,4 +1,9 @@
-use openworkers_runtime::snapshot::create_runtime_snapshot;
+//! Snapshot creation tool
+//!
+//! Creates a V8 snapshot for faster worker startup (deno/v8 runtimes).
+//! Other runtimes have stub implementations that return an error.
+
+use openworkers_runner::runtime::snapshot::create_runtime_snapshot;
 
 use std::env;
 use std::fs::File;

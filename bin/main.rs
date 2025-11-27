@@ -141,7 +141,7 @@ async fn handle_request(
     let start = tokio::time::Instant::now();
 
     // Create a new request to forward to the worker.
-    let mut request = openworkers_runtime::HttpRequest::from_actix(&req, body);
+    let mut request = openworkers_runner::runtime::HttpRequest::from_actix(&req, body);
 
     // If the worker id is not provided, we add it to the headers.
     if req.headers().get("x-worker-id").is_none() {
@@ -185,8 +185,9 @@ async fn handle_request(
         }
     };
 
-    let (res_tx, res_rx) = channel::<openworkers_runtime::HttpResponse>();
-    let (termination_tx, termination_rx) = channel::<openworkers_runner::TerminationReason>();
+    let (res_tx, res_rx) = channel::<openworkers_runner::runtime::HttpResponse>();
+    let (termination_tx, termination_rx) =
+        channel::<Result<(), openworkers_runner::TerminationReason>>();
 
     openworkers_runner::event_fetch::run_fetch(
         worker,
@@ -206,30 +207,29 @@ async fn handle_request(
             // Worker didn't send a response, check termination reason
             use openworkers_runner::TerminationReason;
 
-            let reason = termination_rx.await.unwrap_or(TerminationReason::Exception);
+            let result = termination_rx
+                .await
+                .unwrap_or(Err(TerminationReason::Other("Unknown error".to_string())));
 
-            error!("worker terminated without sending response: {:?}", reason);
-
-            let status = reason.http_status();
-            let body = match reason {
-                TerminationReason::Success => {
-                    // This shouldn't happen - worker completed but didn't send response
-                    "Worker completed but did not send a response (missing fetch event listener?)"
+            match result {
+                Ok(()) => {
+                    // Worker completed successfully but didn't send response
+                    error!("worker completed but did not send response");
+                    actix_web::HttpResponse::InternalServerError()
+                        .content_type("text/plain")
+                        .body("Worker completed but did not send a response (missing fetch event listener?)")
                 }
-                TerminationReason::CpuTimeLimit => "Worker exceeded CPU time limit (100ms)",
-                TerminationReason::WallClockTimeout => {
-                    "Worker exceeded wall-clock time limit (60s)"
-                }
-                TerminationReason::MemoryLimit => "Worker exceeded memory limit (128MB)",
-                TerminationReason::Exception => "Worker threw an uncaught exception",
-                TerminationReason::InitializationError => "Worker failed to initialize",
-                TerminationReason::Terminated => "Worker was terminated",
-            };
+                Err(reason) => {
+                    error!("worker terminated without sending response: {:?}", reason);
 
-            actix_web::HttpResponse::build(actix_web::http::StatusCode::from_u16(status).unwrap())
-                .content_type("text/plain")
-                .insert_header(("X-Termination-Reason", format!("{:?}", reason)))
-                .body(body)
+                    actix_web::HttpResponse::build(
+                        actix_web::http::StatusCode::from_u16(reason.http_status()).unwrap(),
+                    )
+                    .content_type("text/plain")
+                    .insert_header(("X-Termination-Reason", format!("{:?}", reason)))
+                    .body(reason.to_string())
+                }
+            }
         }
     };
 

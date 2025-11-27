@@ -1,11 +1,13 @@
 {
   "cSpell.words": [
     "actix",
+    "bigdecimal",
     "codegen",
     "dotenv",
     "nats",
     "oneshot",
     "openworkers",
+    "quickjs",
     "serde",
     "sqlx"
   ]

@@ -1,4 +1,4 @@
-use openworkers_runtime::LogEvent;
+use crate::runtime::LogEvent;
 use std::time::Duration;
 
 pub enum LogMessage {

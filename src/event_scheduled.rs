@@ -1,10 +1,6 @@
 use std::ops::Deref;
 
-use openworkers_runtime::RuntimeLimits;
-use openworkers_runtime::ScheduledInit;
-use openworkers_runtime::Script;
-use openworkers_runtime::Task;
-use openworkers_runtime::Worker;
+use crate::runtime::{RuntimeLimits, ScheduledInit, Script, Task, Worker};
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -70,18 +66,18 @@ fn run_scheduled(
 
         log::debug!("exec scheduled task");
         match worker.exec(task).await {
-            Ok(reason) => {
-                use openworkers_runtime::TerminationReason;
+            Ok(()) => {
+                log::debug!("scheduled task completed successfully");
+                // Wait for the scheduled event to complete
+                match res_rx.await {
+                    Ok(()) => log::debug!("scheduled task responded"),
+                    Err(err) => log::error!("scheduled task response error: {err}"),
+                }
+            }
+            Err(reason) => {
+                use crate::runtime::TerminationReason;
 
                 match reason {
-                    TerminationReason::Success => {
-                        log::debug!("scheduled task completed successfully");
-                        // Wait for the scheduled event to complete
-                        match res_rx.await {
-                            Ok(()) => log::debug!("scheduled task responded"),
-                            Err(err) => log::error!("scheduled task response error: {err}"),
-                        }
-                    }
                     TerminationReason::CpuTimeLimit => {
                         log::warn!("scheduled task terminated: CPU time limit exceeded");
                     }
@@ -91,15 +87,14 @@ fn run_scheduled(
                     TerminationReason::MemoryLimit => {
                         log::warn!("scheduled task terminated: memory limit exceeded");
                     }
-                    TerminationReason::Exception => {
-                        log::error!("scheduled task terminated: uncaught exception");
+                    TerminationReason::Exception(msg) => {
+                        log::error!("scheduled task terminated: uncaught exception: {}", msg);
                     }
                     _ => {
                         log::error!("scheduled task terminated: {:?}", reason);
                     }
                 }
             }
-            Err(err) => log::error!("scheduled task exec error: {err}"),
         }
 
         // CRITICAL: Flush logs before worker is dropped to prevent log loss

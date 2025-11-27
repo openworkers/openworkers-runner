@@ -2,20 +2,16 @@ use std::ops::Deref;
 use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 
-use openworkers_runtime::FetchInit;
-use openworkers_runtime::HttpRequest;
-use openworkers_runtime::HttpResponse;
-use openworkers_runtime::RuntimeLimits;
-use openworkers_runtime::Script;
-use openworkers_runtime::Task;
-use openworkers_runtime::TerminationReason;
-use openworkers_runtime::Worker;
+use crate::runtime::{
+    FetchInit, HttpRequest, HttpResponse, ResponseBody, RuntimeLimits, Script, Task,
+    TerminationReason, Worker,
+};
 
 use crate::store::WorkerData;
 use crate::worker_pool::WORKER_POOL;
 
 type ResTx = tokio::sync::oneshot::Sender<HttpResponse>;
-type TerminationTx = tokio::sync::oneshot::Sender<TerminationReason>;
+type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>;
 
 // Default timeout for fetch events
 const FETCH_TIMEOUT_MS: u64 = 64_000; // 64 seconds
@@ -38,11 +34,14 @@ pub fn run_fetch(
                 .send(HttpResponse {
                     status: 500,
                     headers: vec![],
-                    body: Some(format!("Failed to parse worker code: {}", e).into()),
+                    body: ResponseBody::Bytes(format!("Failed to parse worker code: {}", e).into()),
                 })
                 .ok(); // Ignore send error
             termination_tx
-                .send(TerminationReason::InitializationError)
+                .send(Err(TerminationReason::InitializationError(format!(
+                    "Failed to parse worker code: {}",
+                    e
+                ))))
                 .ok();
             return;
         }
@@ -78,7 +77,7 @@ pub fn run_fetch(
                     .send(HttpResponse {
                         status: 500,
                         headers: vec![],
-                        body: Some(format!("failed to create worker: {err}").into()),
+                        body: ResponseBody::Bytes(format!("failed to create worker: {err}").into()),
                     })
                     .unwrap();
 
@@ -92,27 +91,22 @@ pub fn run_fetch(
 
         // Wrap execution with timeout
         let timeout_duration = Duration::from_millis(FETCH_TIMEOUT_MS);
-        let termination_reason =
-            match tokio::time::timeout(timeout_duration, worker.exec(task)).await {
-                Ok(Ok(reason)) => {
-                    log::debug!("worker exec completed: reason={:?}", reason);
-                    reason
-                }
-                Ok(Err(err)) => {
-                    log::error!("worker exec error: {err}");
-                    TerminationReason::Exception
-                }
-                Err(_) => {
-                    log::error!(
-                        "worker exec timeout after {}ms (outer timeout)",
-                        FETCH_TIMEOUT_MS
-                    );
-                    TerminationReason::WallClockTimeout
-                }
-            };
+        let result = match tokio::time::timeout(timeout_duration, worker.exec(task)).await {
+            Ok(result) => {
+                log::debug!("worker exec completed: {:?}", result);
+                result
+            }
+            Err(_) => {
+                log::error!(
+                    "worker exec timeout after {}ms (outer timeout)",
+                    FETCH_TIMEOUT_MS
+                );
+                Err(TerminationReason::WallClockTimeout)
+            }
+        };
 
-        // Send termination reason back to the main thread
-        let _ = termination_tx.send(termination_reason);
+        // Send result back to the main thread
+        let _ = termination_tx.send(result);
 
         // CRITICAL: Flush logs before worker is dropped to prevent log loss
         log_handler.flush();
