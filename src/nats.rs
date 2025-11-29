@@ -2,27 +2,27 @@ use base64::engine::Engine;
 use base64::engine::general_purpose::STANDARD;
 
 pub async fn nats_connect() -> async_nats::Client {
-    let nats_servers = std::env::var("NATS_SERVERS").expect("NATS_SERVERS must be set");
+    let nats_servers = std::env::var("NATS_SERVERS").expect("env NATS_SERVERS is required");
 
     log::debug!("connecting to nats: {nats_servers}");
 
-    let conn = match std::env::var("NATS_CREDS") {
+    match std::env::var("NATS_CREDS") {
         Ok(credentials) => {
-            // Decode the base64 encoded credentials
-            let credentials: Vec<u8> = STANDARD
+            let credentials = STANDARD
                 .decode(credentials)
-                .expect("failed to decode credentials");
+                .expect("env NATS_CREDS must be valid base64");
 
             let credentials_str =
-                String::from_utf8(credentials).expect("failed to convert credentials to string");
+                String::from_utf8(credentials).expect("env NATS_CREDS must be valid UTF-8");
 
             async_nats::ConnectOptions::with_credentials(&credentials_str)
-                .expect("failed to create nats options")
+                .expect("invalid NATS credentials format")
                 .connect(&nats_servers)
                 .await
+                .expect("failed to connect to NATS with credentials")
         }
-        Err(_) => async_nats::connect(&nats_servers).await,
-    };
-
-    conn.expect("failed to connect to nats")
+        Err(_) => async_nats::connect(&nats_servers)
+            .await
+            .expect("failed to connect to NATS"),
+    }
 }
