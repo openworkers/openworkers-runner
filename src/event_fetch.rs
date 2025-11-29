@@ -3,14 +3,13 @@ use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::runtime::{
-    FetchInit, HttpRequest, HttpResponse, ResponseBody, RuntimeLimits, Script, Task,
-    TerminationReason, Worker,
+    FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, RuntimeLimits, Script,
+    Task, TerminationReason, Worker,
 };
 
 use crate::store::WorkerData;
 use crate::worker_pool::WORKER_POOL;
 
-type ResTx = tokio::sync::oneshot::Sender<HttpResponse>;
 type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>;
 
 // Default timeout for fetch events
@@ -19,7 +18,7 @@ const FETCH_TIMEOUT_MS: u64 = 64_000; // 64 seconds
 pub fn run_fetch(
     worker: WorkerData,
     req: HttpRequest,
-    res_tx: ResTx,
+    res_tx: ResponseSender,
     termination_tx: TerminationTx,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
     permit: OwnedSemaphorePermit,

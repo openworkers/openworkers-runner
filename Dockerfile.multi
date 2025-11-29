@@ -47,7 +47,7 @@ COPY --from=planner /build/recipe.json recipe.json
 RUN --mount=type=cache,sharing=locked,target=$CARGO_HOME/git \
     --mount=type=cache,sharing=locked,target=$CARGO_HOME/registry \
     --mount=type=cache,sharing=locked,target=/build/target \
-    cargo chef cook --release --recipe-path recipe.json
+    cargo chef cook --release --features=deno --recipe-path recipe.json
 
 # Build application
 COPY . /build
@@ -55,7 +55,7 @@ COPY . /build
 RUN --mount=type=cache,sharing=locked,target=$CARGO_HOME/git \
     --mount=type=cache,sharing=locked,target=$CARGO_HOME/registry \
     --mount=type=cache,sharing=locked,target=/build/target \
-    cargo run --release --bin snapshot
+    cargo run --release --features=deno --bin snapshot
 
 FROM builder AS platform
 
@@ -68,8 +68,8 @@ RUN --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOM
     --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/registry \
     --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=/build/target \
     case "$TARGETPLATFORM" in \
-        "linux/arm64") cargo chef cook --release --target aarch64-unknown-linux-gnu --recipe-path recipe.json ;; \
-        "linux/amd64") cargo chef cook --release --target x86_64-unknown-linux-gnu --recipe-path recipe.json ;; \
+        "linux/arm64") cargo chef cook --release --features=deno --target aarch64-unknown-linux-gnu --recipe-path recipe.json ;; \
+        "linux/amd64") cargo chef cook --release --features=deno --target x86_64-unknown-linux-gnu --recipe-path recipe.json ;; \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac
 
@@ -78,9 +78,9 @@ RUN --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOM
     --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/registry \
     --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=/build/target \
     case "$TARGETPLATFORM" in \
-        "linux/arm64") cargo build --release --target aarch64-unknown-linux-gnu && \
+        "linux/arm64") cargo build --release --features=deno --target aarch64-unknown-linux-gnu && \
                         mv /build/target/aarch64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \
-        "linux/amd64") cargo build --release --target x86_64-unknown-linux-gnu && \
+        "linux/amd64") cargo build --release --features=deno --target x86_64-unknown-linux-gnu && \
                         mv /build/target/x86_64-unknown-linux-gnu/release/openworkers-runner  /build/output ;; \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac

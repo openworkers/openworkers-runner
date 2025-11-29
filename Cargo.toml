@@ -1,13 +1,13 @@
 [package]
 name = "openworkers-runner"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 default-run = "openworkers-runner"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["deno"]
+default = []  # Explicitly choose a runtime: --features=v8, --features=deno, etc.
 deno = ["dep:openworkers-runtime-deno"]
 quickjs = ["dep:openworkers-runtime-quickjs"]
 v8 = ["dep:openworkers-runtime-v8"]
@@ -25,11 +25,11 @@ env_logger = "0.11.6"
 sqlx = { version = "0.8.6", features = [ "runtime-tokio", "postgres", "uuid", "bigdecimal", "rust_decimal" ] }
 
 # Runtime backends (one must be selected via feature flag)
-openworkers-runtime-deno = { git = "https://github.com/openworkers/openworkers-runtime-deno", tag = "v0.4.0", features = ["actix"], optional = true }
-openworkers-runtime-quickjs = { git = "https://github.com/openworkers/openworkers-runtime-quickjs", tag = "v0.4.0", features = ["actix"], optional = true }
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.4.0", features = ["actix"], optional = true }
-openworkers-runtime-boa = { git = "https://github.com/openworkers/openworkers-runtime-boa", tag = "v0.4.0", features = ["actix"], optional = true }
-openworkers-runtime-jsc = { git = "https://github.com/openworkers/openworkers-runtime-jsc", tag = "v0.4.0", features = ["actix"], optional = true }
+openworkers-runtime-deno = { git = "https://github.com/openworkers/openworkers-runtime-deno", tag = "v0.5.0", features = ["actix"], optional = true }
+openworkers-runtime-quickjs = { git = "https://github.com/openworkers/openworkers-runtime-quickjs", tag = "v0.5.0", features = ["actix"], optional = true }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.5.0", features = ["actix"], optional = true }
+openworkers-runtime-boa = { git = "https://github.com/openworkers/openworkers-runtime-boa", tag = "v0.5.0", features = ["actix"], optional = true }
+openworkers-runtime-jsc = { git = "https://github.com/openworkers/openworkers-runtime-jsc", tag = "v0.5.0", features = ["actix"], optional = true }
 
 # openworkers-runtime-deno = { path = "../openworkers-runtime-deno", features = ["actix"], optional = true }
 # openworkers-runtime-quickjs = { path = "../openworkers-runtime-quickjs", features = ["actix"], optional = true }
