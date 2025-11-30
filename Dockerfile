@@ -7,6 +7,9 @@ COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
+
+ARG RUNTIME=deno
+
 ENV RUST_BACKTRACE=1
 ENV RUNTIME_SNAPSHOT_PATH=/build/snapshot.bin
 
@@ -17,7 +20,7 @@ COPY --from=planner /build/recipe.json recipe.json
 RUN --mount=type=cache,target=$CARGO_HOME/git \
     --mount=type=cache,target=$CARGO_HOME/registry \
     --mount=type=cache,target=/build/target \
-    cargo chef cook --release --features=deno --recipe-path recipe.json
+    cargo chef cook --release --features=$RUNTIME --recipe-path recipe.json
 
 # Build application
 COPY . .
@@ -27,9 +30,9 @@ RUN touch $RUNTIME_SNAPSHOT_PATH
 RUN --mount=type=cache,target=$CARGO_HOME/git \
     --mount=type=cache,target=$CARGO_HOME/registry \
     --mount=type=cache,target=/build/target \
-    cargo run --release --features=deno --bin snapshot && \
+    cargo run --release --features=$RUNTIME --bin snapshot && \
     # Build the runner and copy executable out of the cache so it can be used in the next stage
-    cargo build --release --features=deno && cp /build/target/release/openworkers-runner /build/output
+    cargo build --release --features=$RUNTIME && cp /build/target/release/openworkers-runner /build/output
 
 FROM debian:bookworm-slim
 

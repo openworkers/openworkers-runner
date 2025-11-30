@@ -7,6 +7,8 @@ RUN apt-get update \
 
 FROM --platform=$BUILDPLATFORM rust:1.91 AS prepare
 
+ARG RUNTIME=deno
+
 RUN apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
     gcc-x86-64-linux-gnu \
@@ -32,6 +34,8 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM prepare AS builder
 
+ARG RUNTIME=deno
+
 RUN mkdir -p /build
 
 ENV RUST_BACKTRACE=1
@@ -47,7 +51,7 @@ COPY --from=planner /build/recipe.json recipe.json
 RUN --mount=type=cache,sharing=locked,target=$CARGO_HOME/git \
     --mount=type=cache,sharing=locked,target=$CARGO_HOME/registry \
     --mount=type=cache,sharing=locked,target=/build/target \
-    cargo chef cook --release --features=deno --recipe-path recipe.json
+    cargo chef cook --release --features=$RUNTIME --recipe-path recipe.json
 
 # Build application
 COPY . /build
@@ -55,32 +59,33 @@ COPY . /build
 RUN --mount=type=cache,sharing=locked,target=$CARGO_HOME/git \
     --mount=type=cache,sharing=locked,target=$CARGO_HOME/registry \
     --mount=type=cache,sharing=locked,target=/build/target \
-    cargo run --release --features=deno --bin snapshot
+    cargo run --release --features=$RUNTIME --bin snapshot
 
 FROM builder AS platform
 
+ARG RUNTIME=deno
 ARG TARGETPLATFORM
 
-RUN echo "Building for $TARGETPLATFORM"
+RUN echo "Building for $TARGETPLATFORM with runtime $RUNTIME"
 
 # Build dependencies for target platform
-RUN --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/git \
-    --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/registry \
-    --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=/build/target \
+RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/git \
+    --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/registry \
+    --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=/build/target \
     case "$TARGETPLATFORM" in \
-        "linux/arm64") cargo chef cook --release --features=deno --target aarch64-unknown-linux-gnu --recipe-path recipe.json ;; \
-        "linux/amd64") cargo chef cook --release --features=deno --target x86_64-unknown-linux-gnu --recipe-path recipe.json ;; \
+        "linux/arm64") cargo chef cook --release --features=$RUNTIME --target aarch64-unknown-linux-gnu --recipe-path recipe.json ;; \
+        "linux/amd64") cargo chef cook --release --features=$RUNTIME --target x86_64-unknown-linux-gnu --recipe-path recipe.json ;; \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac
 
 # Build application for target platform
-RUN --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/git \
-    --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=$CARGO_HOME/registry \
-    --mount=type=cache,id=cargo-$TARGETPLATFORM,sharing=locked,target=/build/target \
+RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/git \
+    --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/registry \
+    --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=/build/target \
     case "$TARGETPLATFORM" in \
-        "linux/arm64") cargo build --release --features=deno --target aarch64-unknown-linux-gnu && \
+        "linux/arm64") cargo build --release --features=$RUNTIME --target aarch64-unknown-linux-gnu && \
                         mv /build/target/aarch64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \
-        "linux/amd64") cargo build --release --features=deno --target x86_64-unknown-linux-gnu && \
+        "linux/amd64") cargo build --release --features=$RUNTIME --target x86_64-unknown-linux-gnu && \
                         mv /build/target/x86_64-unknown-linux-gnu/release/openworkers-runner  /build/output ;; \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac
