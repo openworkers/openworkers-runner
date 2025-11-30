@@ -3904,8 +3904,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-core"
-version = "0.5.0"
-source = "git+https://github.com/openworkers/openworkers-core?tag=v0.5.0#ecf16f77b45c9ac7ba3dbb0b6fbc92e1ae0d8957"
+version = "0.5.1"
+source = "git+https://github.com/openworkers/openworkers-core?tag=v0.5.1#147da6d6653a52527c4a38d8262cf6150c177499"
 dependencies = [
  "actix-web",
  "bytes",
@@ -3917,7 +3917,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "actix-web",
  "async-nats",
@@ -3949,8 +3949,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-boa"
-version = "0.5.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-boa?tag=v0.5.0#cad992fb556693773dd4f0babffcf98763d9d55a"
+version = "0.5.1"
+source = "git+https://github.com/openworkers/openworkers-runtime-boa?tag=v0.5.1#33b9c7bd9ed43bfd12bd8c4b5ab89210b623a4da"
 dependencies = [
  "actix-web",
  "boa_engine",
@@ -3971,8 +3971,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-deno"
-version = "0.5.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-deno?tag=v0.5.0#9efe5bcaab9e0585291088417ce6d5e0b56ee3f3"
+version = "0.5.1"
+source = "git+https://github.com/openworkers/openworkers-runtime-deno?tag=v0.5.1#67d267b881bb3e0ad8115ff82853a838d5c0c4a4"
 dependencies = [
  "actix-web",
  "bytes",
@@ -4000,8 +4000,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-jsc"
-version = "0.4.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-jsc?tag=v0.5.0#08039274e9d60e5b082867c835f6180d1fa7a1a0"
+version = "0.5.2"
+source = "git+https://github.com/openworkers/openworkers-runtime-jsc?tag=v0.5.1#d58135ebec62592970f80f78efb42b9fa4015e22"
 dependencies = [
  "actix-web",
  "bytes",
@@ -4023,8 +4023,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-quickjs"
-version = "0.5.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-quickjs?tag=v0.5.0#74bd04d63841cc991bea11360dab4c6019fe4655"
+version = "0.5.1"
+source = "git+https://github.com/openworkers/openworkers-runtime-quickjs?tag=v0.5.1#9add34f944b8c0750354b34014ce8c3dd456e294"
 dependencies = [
  "actix-web",
  "bytes",
@@ -4040,8 +4040,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.5.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.5.0#6d0c554c6f36e8e87b55116db4ed3585efb4b1b7"
+version = "0.5.1"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.5.1#7ebcb41b525658bbc3b898fb0d205f06df39fe19"
 dependencies = [
  "actix-web",
  "bytes",
