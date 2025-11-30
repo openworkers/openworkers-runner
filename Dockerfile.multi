@@ -56,10 +56,9 @@ RUN --mount=type=cache,sharing=locked,target=$CARGO_HOME/git \
 # Build application
 COPY . /build
 
-RUN --mount=type=cache,sharing=locked,target=$CARGO_HOME/git \
-    --mount=type=cache,sharing=locked,target=$CARGO_HOME/registry \
-    --mount=type=cache,sharing=locked,target=/build/target \
-    cargo run --release --features=$RUNTIME --bin snapshot
+# Note: We do NOT generate the snapshot here anymore because it would be
+# generated for the build platform (e.g. x86_64), but we might need it for
+# the target platform (e.g. aarch64). V8 snapshots are architecture-dependent.
 
 FROM builder AS platform
 
@@ -79,14 +78,29 @@ RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$
     esac
 
 # Build application for target platform
+# 1. Build the snapshot generator for the TARGET platform
+# 2. Run it (via QEMU emulation if needed) to generate the snapshot.bin
+# 3. Build the final runner which embeds the snapshot.bin
 RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/git \
     --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/registry \
     --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=/build/target \
     case "$TARGETPLATFORM" in \
-        "linux/arm64") cargo build --release --features=$RUNTIME --target aarch64-unknown-linux-gnu && \
-                        mv /build/target/aarch64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \
-        "linux/amd64") cargo build --release --features=$RUNTIME --target x86_64-unknown-linux-gnu && \
-                        mv /build/target/x86_64-unknown-linux-gnu/release/openworkers-runner  /build/output ;; \
+        "linux/arm64") \
+            # Build snapshot generator for target \
+            cargo build --release --features=$RUNTIME --bin snapshot --target aarch64-unknown-linux-gnu && \
+            # Generate snapshot (runs via QEMU) \
+            /build/target/aarch64-unknown-linux-gnu/release/snapshot && \
+            # Build runner \
+            cargo build --release --features=$RUNTIME --target aarch64-unknown-linux-gnu && \
+            mv /build/target/aarch64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \
+        "linux/amd64") \
+            # Build snapshot generator for target \
+            cargo build --release --features=$RUNTIME --bin snapshot --target x86_64-unknown-linux-gnu && \
+            # Generate snapshot \
+            /build/target/x86_64-unknown-linux-gnu/release/snapshot && \
+            # Build runner \
+            cargo build --release --features=$RUNTIME --target x86_64-unknown-linux-gnu && \
+            mv /build/target/x86_64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac
 
