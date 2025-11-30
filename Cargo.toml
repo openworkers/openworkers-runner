@@ -29,7 +29,7 @@ openworkers-runtime-deno = { git = "https://github.com/openworkers/openworkers-r
 openworkers-runtime-quickjs = { git = "https://github.com/openworkers/openworkers-runtime-quickjs", tag = "v0.5.1", features = ["actix"], optional = true }
 openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.5.1", features = ["actix"], optional = true }
 openworkers-runtime-boa = { git = "https://github.com/openworkers/openworkers-runtime-boa", tag = "v0.5.1", features = ["actix"], optional = true }
-openworkers-runtime-jsc = { git = "https://github.com/openworkers/openworkers-runtime-jsc", tag = "v0.5.1", features = ["actix"], optional = true }
+openworkers-runtime-jsc = { git = "https://github.com/openworkers/openworkers-runtime-jsc", tag = "v0.5.3", features = ["actix"], optional = true }
 
 # openworkers-runtime-deno = { path = "../openworkers-runtime-deno", features = ["actix"], optional = true }
 # openworkers-runtime-quickjs = { path = "../openworkers-runtime-quickjs", features = ["actix"], optional = true }

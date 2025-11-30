@@ -4000,8 +4000,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-jsc"
-version = "0.5.2"
-source = "git+https://github.com/openworkers/openworkers-runtime-jsc?tag=v0.5.1#d58135ebec62592970f80f78efb42b9fa4015e22"
+version = "0.5.3"
+source = "git+https://github.com/openworkers/openworkers-runtime-jsc?tag=v0.5.3#08cb476d5855f08aa8f5e91a12009a640f03e9bd"
 dependencies = [
  "actix-web",
  "bytes",
