@@ -5,7 +5,7 @@ RUN apt-get update \
     && apt-get install -y ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
-FROM --platform=$BUILDPLATFORM rust:1.91 AS prepare
+FROM --platform=$BUILDPLATFORM rust:1.91-bookworm AS prepare
 
 ARG RUNTIME=deno
 
@@ -13,7 +13,8 @@ RUN apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
     gcc-x86-64-linux-gnu \
     libc6-dev-amd64-cross \
-    libc6-dev-arm64-cross
+    libc6-dev-arm64-cross \
+    qemu-user-static
 
 ENV CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc
 ENV CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
@@ -32,11 +33,10 @@ WORKDIR /build
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM prepare AS builder
+FROM prepare AS platform
 
 ARG RUNTIME=deno
-
-RUN mkdir -p /build
+ARG TARGETPLATFORM
 
 ENV RUST_BACKTRACE=1
 ENV RUNTIME_SNAPSHOT_PATH=/build/snapshot.bin
@@ -45,25 +45,8 @@ WORKDIR /build
 
 RUN touch $RUNTIME_SNAPSHOT_PATH
 
+# Copy recipe from planner
 COPY --from=planner /build/recipe.json recipe.json
-
-# Build dependencies - this is the caching Docker layer!
-RUN --mount=type=cache,sharing=locked,target=$CARGO_HOME/git \
-    --mount=type=cache,sharing=locked,target=$CARGO_HOME/registry \
-    --mount=type=cache,sharing=locked,target=/build/target \
-    cargo chef cook --release --features=$RUNTIME --recipe-path recipe.json
-
-# Build application
-COPY . /build
-
-# Note: We do NOT generate the snapshot here anymore because it would be
-# generated for the build platform (e.g. x86_64), but we might need it for
-# the target platform (e.g. aarch64). V8 snapshots are architecture-dependent.
-
-FROM builder AS platform
-
-ARG RUNTIME=deno
-ARG TARGETPLATFORM
 
 RUN echo "Building for $TARGETPLATFORM with runtime $RUNTIME"
 
@@ -77,9 +60,12 @@ RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac
 
+# Copy source code AFTER cooking dependencies
+COPY . /build
+
 # Build application for target platform
 # 1. Build the snapshot generator for the TARGET platform
-# 2. Run it (via QEMU emulation if needed) to generate the snapshot.bin
+# 2. Run it (via QEMU emulation explicitly) to generate the snapshot.bin
 # 3. Build the final runner which embeds the snapshot.bin
 RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/git \
     --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/registry \
@@ -88,16 +74,20 @@ RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$
         "linux/arm64") \
             # Build snapshot generator for target \
             cargo build --release --features=$RUNTIME --bin snapshot --target aarch64-unknown-linux-gnu && \
-            # Generate snapshot (runs via QEMU) \
-            /build/target/aarch64-unknown-linux-gnu/release/snapshot && \
+            # Generate snapshot (explicitly using qemu-aarch64-static with cross libs) \
+            QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64-static /build/target/aarch64-unknown-linux-gnu/release/snapshot && \
             # Build runner \
             cargo build --release --features=$RUNTIME --target aarch64-unknown-linux-gnu && \
             mv /build/target/aarch64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \
         "linux/amd64") \
             # Build snapshot generator for target \
             cargo build --release --features=$RUNTIME --bin snapshot --target x86_64-unknown-linux-gnu && \
-            # Generate snapshot \
-            /build/target/x86_64-unknown-linux-gnu/release/snapshot && \
+            # Generate snapshot (direct execution on x86_64, qemu on other archs) \
+            if [ "$(uname -m)" = "x86_64" ]; then \
+                /build/target/x86_64-unknown-linux-gnu/release/snapshot; \
+            else \
+                QEMU_LD_PREFIX=/usr/x86_64-linux-gnu qemu-x86_64-static /build/target/x86_64-unknown-linux-gnu/release/snapshot; \
+            fi && \
             # Build runner \
             cargo build --release --features=$RUNTIME --target x86_64-unknown-linux-gnu && \
             mv /build/target/x86_64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \

@@ -54,11 +54,11 @@ swc_ecma_visit = "18.0.1"
 # https://doc.rust-lang.org/cargo/reference/profiles.html
 # https://github.com/johnthagen/min-sized-rust?tab=readme-ov-file#minimizing-rust-binary-size
 [profile.release]
-strip = true  # Automatically strip symbols from the binary.
-opt-level = "z"  # Optimize for size.
-incremental = true # Enable incremental compilation.
-codegen-units = 1 # Use a single codegen unit to optimize for size.
-lto = true # Enable link-time optimization.
+strip = false  # Debugging size issue
+opt-level = 3  # Standard optimization
+incremental = false # Disable incremental in CI
+codegen-units = 16 # Standard codegen
+lto = "thin" # Faster LTO
 
 [[bin]]
 name = "openworkers-runner"

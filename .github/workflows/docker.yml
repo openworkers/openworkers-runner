@@ -50,6 +50,6 @@ jobs:
           tags: ${{ steps.metadata.outputs.tags }}
           build-args: |
             RUNTIME=${{ matrix.runtime }}
-          # cache-from: type=gha,scope=${{ matrix.runtime }}
-          # cache-to: type=gha,mode=max,scope=${{ matrix.runtime }}
+          cache-from: type=gha,scope=${{ matrix.runtime }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.runtime }}
           platforms: linux/amd64,linux/arm64
