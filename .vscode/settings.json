@@ -5,6 +5,7 @@
     "bigdecimal",
     "codegen",
     "dotenv",
+    "dotenvy",
     "nats",
     "oneshot",
     "openworkers",

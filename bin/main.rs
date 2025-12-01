@@ -240,8 +240,7 @@ async fn handle_request(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    dotenv::dotenv().ok();
-
+    dotenvy::dotenv().ok();
     env_logger::init();
 
     debug!("start main");
