@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.5.4"
+version = "0.5.5"
 edition = "2024"
 default-run = "openworkers-runner"
 
@@ -27,7 +27,7 @@ sqlx = { version = "0.8.6", features = [ "runtime-tokio", "postgres", "uuid", "b
 # Runtime backends (one must be selected via feature flag)
 openworkers-runtime-deno = { git = "https://github.com/openworkers/openworkers-runtime-deno", tag = "v0.5.1", features = ["actix"], optional = true }
 openworkers-runtime-quickjs = { git = "https://github.com/openworkers/openworkers-runtime-quickjs", tag = "v0.5.1", features = ["actix"], optional = true }
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.5.4", features = ["actix"], optional = true }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.5.5", features = ["actix"], optional = true }
 openworkers-runtime-boa = { git = "https://github.com/openworkers/openworkers-runtime-boa", tag = "v0.5.1", features = ["actix"], optional = true }
 openworkers-runtime-jsc = { git = "https://github.com/openworkers/openworkers-runtime-jsc", tag = "v0.5.3", features = ["actix"], optional = true }
 
