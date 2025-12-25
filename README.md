@@ -28,6 +28,7 @@ cargo build --release --no-default-features --features jsc
 ```
 
 Available features:
+
 - `deno` (default) - Full Deno runtime with Web APIs
 - `quickjs` - Lightweight QuickJS engine
 - `v8` - Standalone V8 engine
@@ -59,7 +60,7 @@ NATS_SERVERS='nats://localhost:4222'
 ```bash
 export RUST_LOG=openworkers_runtime=debug,openworkers_runner=debug # Optional
 
-cargo run
+cargo run --features v8|deno|quickjs|boa|jsc
 ```
 
 ### Install sqlx-cli (optional - only for development)
