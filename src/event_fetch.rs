@@ -1,12 +1,13 @@
 use std::ops::Deref;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 
+use crate::ops::RunnerOperations;
 use crate::runtime::{
     FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, RuntimeLimits, Script,
     Task, TerminationReason, Worker,
 };
-
 use crate::store::WorkerData;
 use crate::worker_pool::WORKER_POOL;
 
@@ -23,7 +24,8 @@ pub fn run_fetch(
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
     permit: OwnedSemaphorePermit,
 ) {
-    let (log_tx, log_handler) = crate::log::create_log_handler(worker.id.clone(), global_log_tx);
+    let worker_id = worker.id.clone();
+    let (log_tx, log_handler) = crate::log::create_log_handler(worker_id.clone(), global_log_tx);
 
     let code = match crate::transform::parse_worker_code(&worker) {
         Ok(code) => code,
@@ -68,7 +70,14 @@ pub fn run_fetch(
             ..Default::default()
         };
 
-        let mut worker = match Worker::new(script, Some(log_tx), Some(limits)).await {
+        // Create operations handle for fetch delegation (includes logging)
+        let ops = Arc::new(
+            RunnerOperations::new()
+                .with_worker_id(worker_id)
+                .with_log_tx(log_tx),
+        );
+
+        let mut worker = match Worker::new_with_ops(script, Some(limits), ops).await {
             Ok(worker) => worker,
             Err(err) => {
                 log::error!("failed to create worker: {err}");

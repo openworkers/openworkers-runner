@@ -1,5 +1,7 @@
 use std::ops::Deref;
+use std::sync::Arc;
 
+use crate::ops::RunnerOperations;
 use crate::runtime::{RuntimeLimits, ScheduledInit, Script, Task, Worker};
 
 use serde::Deserialize;
@@ -37,7 +39,8 @@ fn run_scheduled(
         }
     };
 
-    let (log_tx, log_handler) = crate::log::create_log_handler(data.worker_id, global_log_tx);
+    let worker_id = data.worker_id.clone();
+    let (log_tx, log_handler) = crate::log::create_log_handler(worker_id.clone(), global_log_tx);
 
     // Use the global worker pool instead of spawning a new thread
     WORKER_POOL.spawn_pinned(move || async move {
@@ -51,7 +54,14 @@ fn run_scheduled(
             ..Default::default()
         };
 
-        let mut worker = match Worker::new(script, Some(log_tx), Some(limits)).await {
+        // Create operations handle (includes logging)
+        let ops = Arc::new(
+            RunnerOperations::new()
+                .with_worker_id(worker_id)
+                .with_log_tx(log_tx),
+        );
+
+        let mut worker = match Worker::new_with_ops(script, Some(limits), ops).await {
             Ok(worker) => worker,
             Err(err) => {
                 log::error!("failed to create scheduled worker: {err}");
