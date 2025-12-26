@@ -1,5 +1,5 @@
 {
-  "rust-analyzer.cargo.features": ["deno"],
+  "rust-analyzer.cargo.features": ["v8"],
   "cSpell.words": [
     "actix",
     "bigdecimal",

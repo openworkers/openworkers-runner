@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        runtime: [deno, v8]
+        runtime: [v8]  # deno disabled (requires core 0.5, we're on 0.6)
     steps:
       - name: Check Out Repo
         uses: actions/checkout@v4
@@ -30,7 +30,7 @@ jobs:
             ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=${{ matrix.runtime }},enable={{is_default_branch}}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && matrix.runtime == 'deno' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && matrix.runtime == 'v8' }}
             type=ref,event=branch,suffix=-${{ matrix.runtime }}
             type=ref,event=tag,suffix=-${{ matrix.runtime }}
       - name: Set up Docker Buildx

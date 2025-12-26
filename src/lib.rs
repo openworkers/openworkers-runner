@@ -12,4 +12,7 @@ pub mod worker_pool;
 pub use runtime::TerminationReason;
 
 // Re-export Operations for convenience
-pub use ops::{OperationsStats, RunnerOperations};
+pub use ops::{BindingConfigs, DbPool, OperationsStats, RunnerOperations};
+
+// Re-export store types
+pub use store::{AssetsConfig, Binding, KvConfig, StorageConfig, WorkerWithBindings};

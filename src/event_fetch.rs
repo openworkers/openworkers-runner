@@ -1,14 +1,13 @@
-use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 
-use crate::ops::RunnerOperations;
+use crate::ops::{DbPool, RunnerOperations};
 use crate::runtime::{
     FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, RuntimeLimits, Script,
     Task, TerminationReason, Worker,
 };
-use crate::store::WorkerData;
+use crate::store::{WorkerWithBindings, bindings_to_infos};
 use crate::worker_pool::WORKER_POOL;
 
 type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>;
@@ -17,17 +16,18 @@ type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>
 const FETCH_TIMEOUT_MS: u64 = 64_000; // 64 seconds
 
 pub fn run_fetch(
-    worker: WorkerData,
+    worker: WorkerWithBindings,
     req: HttpRequest,
     res_tx: ResponseSender,
     termination_tx: TerminationTx,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
     permit: OwnedSemaphorePermit,
+    db_pool: DbPool,
 ) {
     let worker_id = worker.id.clone();
     let (log_tx, log_handler) = crate::log::create_log_handler(worker_id.clone(), global_log_tx);
 
-    let code = match crate::transform::parse_worker_code(&worker) {
+    let code = match crate::transform::parse_worker_code_str(&worker.script, &worker.language) {
         Ok(code) => code,
         Err(e) => {
             log::error!("Failed to parse worker code: {}", e);
@@ -37,7 +37,7 @@ pub fn run_fetch(
                     headers: vec![],
                     body: ResponseBody::Bytes(format!("Failed to parse worker code: {}", e).into()),
                 })
-                .ok(); // Ignore send error
+                .ok();
             termination_tx
                 .send(Err(TerminationReason::InitializationError(format!(
                     "Failed to parse worker code: {}",
@@ -48,12 +48,20 @@ pub fn run_fetch(
         }
     };
 
+    // Convert bindings to BindingInfo for Script (names + types only)
+    let binding_infos = bindings_to_infos(&worker.bindings);
+
+    // Clone bindings for RunnerOperations (full configs)
+    let bindings_for_ops = worker.bindings.clone();
+
     let script = Script {
         code,
-        env: match worker.env {
-            Some(env) => Some(env.deref().to_owned()),
-            None => None,
+        env: if worker.env.is_empty() {
+            None
+        } else {
+            Some(worker.env.clone())
         },
+        bindings: binding_infos,
     };
 
     // Use the global worker pool instead of spawning a new thread
@@ -70,11 +78,13 @@ pub fn run_fetch(
             ..Default::default()
         };
 
-        // Create operations handle for fetch delegation (includes logging)
+        // Create operations handle for fetch delegation (includes logging and bindings)
         let ops = Arc::new(
             RunnerOperations::new()
                 .with_worker_id(worker_id)
-                .with_log_tx(log_tx),
+                .with_log_tx(log_tx)
+                .with_bindings(bindings_for_ops)
+                .with_db_pool(db_pool),
         );
 
         let mut worker = match Worker::new_with_ops(script, Some(limits), ops).await {

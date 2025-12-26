@@ -1,14 +1,12 @@
-use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::ops::RunnerOperations;
+use crate::ops::{DbPool, RunnerOperations};
 use crate::runtime::{RuntimeLimits, ScheduledInit, Script, Task, Worker};
+use crate::store::{self, Binding, bindings_to_infos};
+use crate::worker_pool::WORKER_POOL;
 
 use serde::Deserialize;
 use serde::Serialize;
-
-use crate::store;
-use crate::worker_pool::WORKER_POOL;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +20,8 @@ pub struct ScheduledData {
 fn run_scheduled(
     data: ScheduledData,
     script: Script,
+    bindings: Vec<Binding>,
+    db_pool: DbPool,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
 ) {
     // Try to acquire a worker slot
@@ -54,11 +54,13 @@ fn run_scheduled(
             ..Default::default()
         };
 
-        // Create operations handle (includes logging)
+        // Create operations handle (includes logging, bindings, and db pool)
         let ops = Arc::new(
             RunnerOperations::new()
                 .with_worker_id(worker_id)
-                .with_log_tx(log_tx),
+                .with_log_tx(log_tx)
+                .with_bindings(bindings)
+                .with_db_pool(db_pool),
         );
 
         let mut worker = match Worker::new_with_ops(script, Some(limits), ops).await {
@@ -161,7 +163,7 @@ pub fn handle_scheduled(
                 log::debug!("scheduled task parsed: {:?}", data);
 
                 let worker_id = store::WorkerIdentifier::Id(data.worker_id.clone());
-                let worker = match store::get_worker(&mut conn, worker_id).await {
+                let worker = match store::get_worker_with_bindings(&mut conn, worker_id).await {
                     Some(worker) => worker,
                     None => {
                         log::error!("worker not found: {:?}", data.worker_id);
@@ -169,23 +171,36 @@ pub fn handle_scheduled(
                     }
                 };
 
-                let code = match crate::transform::parse_worker_code(&worker) {
-                    Ok(code) => code,
-                    Err(e) => {
-                        log::error!("Failed to parse worker code for scheduled task: {}", e);
-                        continue; // Skip this scheduled task
-                    }
-                };
+                let code =
+                    match crate::transform::parse_worker_code_str(&worker.script, &worker.language)
+                    {
+                        Ok(code) => code,
+                        Err(e) => {
+                            log::error!("Failed to parse worker code for scheduled task: {}", e);
+                            continue;
+                        }
+                    };
+
+                // Convert bindings to BindingInfo for Script (names + types only)
+                let binding_infos = bindings_to_infos(&worker.bindings);
 
                 let script = Script {
                     code,
-                    env: match worker.env {
-                        Some(env) => Some(env.deref().to_owned()),
-                        None => None,
+                    env: if worker.env.is_empty() {
+                        None
+                    } else {
+                        Some(worker.env.clone())
                     },
+                    bindings: binding_infos,
                 };
 
-                run_scheduled(data, script, global_log_tx.clone());
+                run_scheduled(
+                    data,
+                    script,
+                    worker.bindings,
+                    db.clone(),
+                    global_log_tx.clone(),
+                );
             }
 
             log::debug!("scheduled task listener stopped");
