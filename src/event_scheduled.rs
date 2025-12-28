@@ -42,8 +42,8 @@ fn run_scheduled(
     let worker_id = data.worker_id.clone();
     let (log_tx, log_handler) = crate::log::create_log_handler(worker_id.clone(), global_log_tx);
 
-    // Use the global worker pool instead of spawning a new thread
-    WORKER_POOL.spawn_pinned(move || async move {
+    // Use the sequential worker pool - ensures ONE V8 isolate per thread at a time
+    WORKER_POOL.spawn(move || async move {
         // Keep the permit alive for the entire worker execution
         let _permit = permit;
         log::debug!("create worker");

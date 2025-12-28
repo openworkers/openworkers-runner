@@ -64,8 +64,8 @@ pub fn run_fetch(
         bindings: binding_infos,
     };
 
-    // Use the global worker pool instead of spawning a new thread
-    WORKER_POOL.spawn_pinned(move || async move {
+    // Use the sequential worker pool - ensures ONE V8 isolate per thread at a time
+    WORKER_POOL.spawn(move || async move {
         // Keep the permit alive for the entire worker execution
         // It will be automatically released when this async block completes
         let _permit = permit;
