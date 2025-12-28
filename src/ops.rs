@@ -31,6 +31,7 @@ use aws_credential_types::Credentials;
 use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign};
 use aws_sigv4::sign::v4;
 use bytes::Bytes;
+use once_cell::sync::Lazy;
 use openworkers_core::{
     HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, OpFuture,
     OperationsHandler, RequestBody, ResponseBody, StorageOp, StorageResult,
@@ -38,10 +39,31 @@ use openworkers_core::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 
 use crate::store::{AssetsConfig, Binding, KvConfig, StorageConfig};
+
+/// Global HTTP client for connection pooling and reuse
+///
+/// Creating a new client per request is expensive:
+/// - New connection pool each time
+/// - No TCP/TLS connection reuse
+/// - DNS resolution on each request
+///
+/// This shared client enables:
+/// - Connection pooling (reuse existing connections)
+/// - Keep-alive connections
+/// - DNS caching
+static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .pool_max_idle_per_host(10)
+        .pool_idle_timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .expect("Failed to create HTTP client")
+});
 
 /// Stats tracked for each worker
 #[derive(Debug, Default)]
@@ -649,8 +671,8 @@ async fn do_fetch(
     stats: &OperationsStats,
     extra_headers: Option<&HashMap<String, String>>,
 ) -> Result<HttpResponse, String> {
-    // Build the HTTP client
-    let client = reqwest::Client::new();
+    // Use global HTTP client for connection pooling
+    let client = &*HTTP_CLIENT;
 
     // Prepare request builder
     let mut req_builder = match request.method {
