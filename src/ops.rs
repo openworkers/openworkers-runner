@@ -529,6 +529,29 @@ impl OperationsHandler for RunnerOperations {
     }
 }
 
+/// Sanitize a path to prevent directory traversal attacks.
+///
+/// Removes `.` and `..` components, preventing escape from prefix boundaries.
+/// Returns None if the path would escape the root (e.g., `../secret`).
+fn sanitize_path(path: &str) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+
+    for part in path.split('/') {
+        match part {
+            "" | "." => continue,
+            ".." => {
+                if parts.pop().is_none() {
+                    // Trying to go above root - reject
+                    return None;
+                }
+            }
+            _ => parts.push(part),
+        }
+    }
+
+    Some(parts.join("/"))
+}
+
 /// Build the actual S3/R2 URL for an assets binding request.
 ///
 /// URL structure: `{endpoint}/{bucket}/{prefix?}/{path}`
@@ -552,13 +575,20 @@ fn build_assets_url(config: &AssetsConfig, path: &str) -> Result<String, String>
         .as_deref()
         .unwrap_or("https://r2.cloudflarestorage.com");
 
-    // Clean up the path (remove leading slash)
-    let path = path.trim_start_matches('/');
-
     // Build full path with prefix if specified
     let full_path = match &config.prefix {
-        Some(prefix) => format!("{}/{}", prefix.trim_matches('/'), path),
-        None => path.to_string(),
+        Some(prefix) => {
+            // Sanitize path to prevent directory traversal (../) only when there's a prefix
+            // This prevents escaping the prefix in multi-tenant shared buckets
+            let sanitized_path = sanitize_path(path)
+                .ok_or_else(|| "Invalid path: traversal not allowed".to_string())?;
+            format!("{}/{}", prefix.trim_matches('/'), sanitized_path)
+        }
+        None => {
+            // BYOS (dedicated bucket) - no prefix, user has full bucket access
+            // No need to sanitize, they can access any path in their own bucket
+            path.trim_start_matches('/').to_string()
+        }
     };
 
     Ok(format!("{}/{}/{}", endpoint, config.bucket, full_path))
