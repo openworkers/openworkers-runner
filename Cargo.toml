@@ -7,8 +7,9 @@ default-run = "openworkers-runner"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = []  # Explicitly choose a runtime: --features=v8
+default = ["database"]
 v8 = ["dep:openworkers-runtime-v8"]
+database = ["dep:postgate"]
 # Disabled runtimes (require core 0.5, we're on 0.6) - kept as empty features to avoid cfg warnings
 deno = []
 quickjs = []
@@ -21,17 +22,22 @@ bytes = "1.11.0"
 log = "0.4.29"
 tokio = "1.43.0"
 tokio-util = { version = "0.7", features = ["rt"] }
-flume = "0.11"
+flume = "0.12.0"
 once_cell = "1.19"
 env_logger = "0.11.6"
 sqlx = { version = "0.8.6", features = [ "runtime-tokio", "postgres", "uuid", "bigdecimal", "rust_decimal" ] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 
 # Core types
-openworkers-core = { path = "../openworkers-core" }
+# openworkers-core = { path = "../openworkers-core" }
+openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.6.0" }
 
 # Runtime backend (v8 only for now, others require core 0.5)
-openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", features = ["actix"], optional = true }
+# openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", features = ["actix"], optional = true }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", branch = "feat/operations", features = ["actix"], optional = true }
+
+# Database bindings (optional)
+postgate = { path = "../postgate", default-features = false, optional = true }
 
 # Disabled runtimes (require openworkers-core 0.5, we're on 0.6)
 # openworkers-runtime-deno = { git = "https://github.com/openworkers/openworkers-runtime-deno", tag = "v0.5.1", features = ["actix"], optional = true }
@@ -47,12 +53,11 @@ openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", features = ["acti
 
 async-nats = "0.45.0"
 futures = "0.3"
-serde_json = "1.0.147"
+serde_json = "1.0.148"
 serde = { version = "1.0.197", features = ["derive"] }
 base64 = "0.22.1"
 aws-sigv4 = "1.2"
 aws-credential-types = "1.2"
-http = "1.2"
 chrono = "0.4"
 sha2 = "0.10"
 hex = "0.4"

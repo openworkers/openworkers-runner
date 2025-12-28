@@ -1,14 +1,16 @@
 {
-  "rust-analyzer.cargo.features": ["v8"],
+  "rust-analyzer.cargo.features": ["v8", "database"],
   "cSpell.words": [
     "actix",
     "bigdecimal",
+    "chrono",
     "codegen",
     "dotenv",
     "dotenvy",
     "nats",
     "oneshot",
     "openworkers",
+    "postgate",
     "quickjs",
     "reqwest",
     "rustls",

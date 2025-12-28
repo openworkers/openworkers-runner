@@ -7,7 +7,7 @@ RUN apt-get update \
 
 FROM --platform=$BUILDPLATFORM rust:1.91-bookworm AS prepare
 
-ARG RUNTIME=deno
+ARG RUNTIME=v8
 
 RUN apt-get update && apt-get install -y \
     gcc-aarch64-linux-gnu \
@@ -35,7 +35,7 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM prepare AS platform
 
-ARG RUNTIME=deno
+ARG RUNTIME=v8
 ARG TARGETPLATFORM
 
 ENV RUST_BACKTRACE=1

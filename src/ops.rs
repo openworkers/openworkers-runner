@@ -32,6 +32,8 @@ use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, si
 use aws_sigv4::sign::v4;
 use bytes::Bytes;
 use once_cell::sync::Lazy;
+#[cfg(feature = "database")]
+use openworkers_core::{DatabaseOp, DatabaseResult};
 use openworkers_core::{
     HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, OpFuture,
     OperationsHandler, RequestBody, ResponseBody, StorageOp, StorageResult,
@@ -42,7 +44,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 
-use crate::store::{AssetsConfig, Binding, KvConfig, StorageConfig};
+use crate::store::{AssetsConfig, Binding, DatabaseConfig, KvConfig, StorageConfig};
 
 /// Global HTTP client for connection pooling and reuse
 ///
@@ -89,6 +91,7 @@ pub struct BindingConfigs {
     pub assets: HashMap<String, AssetsConfig>,
     pub storage: HashMap<String, StorageConfig>,
     pub kv: HashMap<String, KvConfig>,
+    pub database: HashMap<String, DatabaseConfig>,
 }
 
 impl BindingConfigs {
@@ -110,6 +113,9 @@ impl BindingConfigs {
                 }
                 Binding::Kv { key, config } => {
                     configs.kv.insert(key, config);
+                }
+                Binding::Database { key, config } => {
+                    configs.database.insert(key, config);
                 }
                 // Var and Secret are not resource bindings
                 Binding::Var { .. } | Binding::Secret { .. } => {}
@@ -505,6 +511,85 @@ impl OperationsHandler for RunnerOperations {
         })
     }
 
+    /// Handle database operation: `env.DB.query("SELECT ...")`
+    ///
+    /// When the `postgate` feature is enabled, uses postgate to execute
+    /// validated SQL queries. Otherwise, returns "not implemented".
+    #[cfg(feature = "database")]
+    fn handle_binding_database(
+        &self,
+        binding: &str,
+        op: DatabaseOp,
+    ) -> OpFuture<'_, DatabaseResult> {
+        let binding_name = binding.to_string();
+
+        // Check if binding exists in database configs
+        let config = match self.bindings.database.get(binding) {
+            Some(c) => c.clone(),
+            None => {
+                return Box::pin(async move {
+                    DatabaseResult::Error(format!(
+                        "Database binding '{}' not configured",
+                        binding_name
+                    ))
+                });
+            }
+        };
+
+        // Get shared pool for schema mode
+        let shared_pool = self.db_pool.clone();
+
+        Box::pin(async move {
+            match op {
+                DatabaseOp::Query { sql, params } => {
+                    log::debug!(
+                        "[ops] database {} ({}) query: {} (params: {:?})",
+                        binding_name,
+                        config.provider,
+                        sql,
+                        params
+                    );
+
+                    // Validate the SQL using postgate parser (allow all operations)
+                    let allowed_ops = std::collections::HashSet::new();
+
+                    let parsed = match postgate::parse_and_validate(&sql, &allowed_ops) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return DatabaseResult::Error(format!("SQL validation failed: {}", e));
+                        }
+                    };
+
+                    let mode = QueryMode::from_parsed(&parsed);
+
+                    // Execute based on provider mode
+                    let result = if let Some(ref conn_str) = config.connection_string {
+                        // postgres provider: direct connection
+                        execute_with_connection_string(conn_str, &sql, &params, mode).await
+                    } else if let Some(ref schema_name) = config.schema_name {
+                        // platform provider: multi-tenant on shared pool
+                        match shared_pool {
+                            Some(pool) => {
+                                execute_with_schema(&pool, schema_name, &sql, &params, mode).await
+                            }
+                            None => Err("Shared database pool not configured".to_string()),
+                        }
+                    } else {
+                        Err(
+                            "Database config has neither connection_string nor schema_name"
+                                .to_string(),
+                        )
+                    };
+
+                    match result {
+                        Ok(json) => DatabaseResult::Rows(json),
+                        Err(e) => DatabaseResult::Error(e),
+                    }
+                }
+            }
+        })
+    }
+
     /// Handle log: `console.log("message")`
     ///
     /// Sends log to the log channel (for collection) and also logs locally.
@@ -527,6 +612,210 @@ impl OperationsHandler for RunnerOperations {
             LogLevel::Debug | LogLevel::Trace => log::debug!("[worker] {}", message),
         }
     }
+}
+
+/// Execute query with direct connection string
+#[cfg(feature = "database")]
+async fn execute_with_connection_string(
+    connection_string: &str,
+    sql: &str,
+    params: &[String],
+    mode: QueryMode,
+) -> Result<String, String> {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(connection_string)
+        .await
+        .map_err(|e| format!("Database connection failed: {}", e))?;
+
+    match mode {
+        QueryMode::Mutation => execute_mutation(&pool, sql, params).await,
+        _ => execute_json_query(&pool, sql, params, mode).await,
+    }
+}
+
+/// Execute query with schema isolation (SET search_path)
+#[cfg(feature = "database")]
+async fn execute_with_schema(
+    pool: &DbPool,
+    schema_name: &str,
+    sql: &str,
+    params: &[String],
+    mode: QueryMode,
+) -> Result<String, String> {
+    // Use a transaction to set search_path, then execute the query
+    let safe_schema = schema_name.replace('"', "\"\"");
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("Failed to start transaction: {}", e))?;
+
+    // Set the search_path for this transaction
+    sqlx::query(&format!("SET LOCAL search_path TO \"{}\"", safe_schema))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("Failed to set search_path: {}", e))?;
+
+    // Execute the user query
+    let result = match mode {
+        QueryMode::Mutation => execute_mutation_tx(&mut tx, sql, params).await?,
+        _ => execute_json_query_tx(&mut tx, sql, params, mode).await?,
+    };
+
+    // Commit the transaction
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+    Ok(result)
+}
+
+/// Query execution mode
+#[cfg(feature = "database")]
+#[derive(Clone, Copy)]
+enum QueryMode {
+    /// SELECT query - wrap as subquery
+    Select,
+    /// INSERT/UPDATE/DELETE with RETURNING - wrap as CTE
+    ReturningMutation,
+    /// INSERT/UPDATE/DELETE without RETURNING - return rows affected
+    Mutation,
+}
+
+#[cfg(feature = "database")]
+impl QueryMode {
+    fn from_parsed(parsed: &postgate::ParsedQuery) -> Self {
+        if !parsed.returns_rows {
+            QueryMode::Mutation
+        } else if parsed.operation == postgate::SqlOperation::Select {
+            QueryMode::Select
+        } else {
+            QueryMode::ReturningMutation
+        }
+    }
+}
+
+/// Wrap user query to return JSON directly from PostgreSQL
+#[cfg(feature = "database")]
+fn wrap_query_as_json(sql: &str, mode: QueryMode) -> String {
+    let trimmed = sql.trim().trim_end_matches(';');
+
+    match mode {
+        QueryMode::Select => {
+            // SELECT can be used as a subquery
+            format!(
+                "SELECT COALESCE(jsonb_agg(row_to_json(t)), '[]'::jsonb) as result FROM ({}) t",
+                trimmed
+            )
+        }
+        QueryMode::ReturningMutation => {
+            // INSERT/UPDATE/DELETE with RETURNING needs a CTE
+            format!(
+                "WITH t AS ({}) SELECT COALESCE(jsonb_agg(row_to_json(t)), '[]'::jsonb) as result FROM t",
+                trimmed
+            )
+        }
+        QueryMode::Mutation => {
+            unreachable!("Mutation queries should not be wrapped")
+        }
+    }
+}
+
+/// Execute wrapped JSON query and extract result
+#[cfg(feature = "database")]
+async fn execute_json_query(
+    pool: &DbPool,
+    sql: &str,
+    params: &[String],
+    mode: QueryMode,
+) -> Result<String, String> {
+    use sqlx::Row;
+
+    let wrapped = wrap_query_as_json(sql, mode);
+    let mut query = sqlx::query(&wrapped);
+
+    for param in params {
+        query = query.bind(param);
+    }
+
+    let row = query
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("Query execution failed: {}", e))?;
+
+    let result: serde_json::Value = row
+        .try_get("result")
+        .map_err(|e| format!("Failed to get result: {}", e))?;
+
+    serde_json::to_string(&result).map_err(|e| format!("Failed to serialize result: {}", e))
+}
+
+/// Execute wrapped JSON query within a transaction
+#[cfg(feature = "database")]
+async fn execute_json_query_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    sql: &str,
+    params: &[String],
+    mode: QueryMode,
+) -> Result<String, String> {
+    use sqlx::Row;
+
+    let wrapped = wrap_query_as_json(sql, mode);
+    let mut query = sqlx::query(&wrapped);
+
+    for param in params {
+        query = query.bind(param);
+    }
+
+    let row = query
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| format!("Query execution failed: {}", e))?;
+
+    let result: serde_json::Value = row
+        .try_get("result")
+        .map_err(|e| format!("Failed to get result: {}", e))?;
+
+    serde_json::to_string(&result).map_err(|e| format!("Failed to serialize result: {}", e))
+}
+
+/// Execute mutation (INSERT/UPDATE/DELETE) and return rows affected
+#[cfg(feature = "database")]
+async fn execute_mutation(pool: &DbPool, sql: &str, params: &[String]) -> Result<String, String> {
+    let mut query = sqlx::query(sql);
+
+    for param in params {
+        query = query.bind(param);
+    }
+
+    let result = query
+        .execute(pool)
+        .await
+        .map_err(|e| format!("Query execution failed: {}", e))?;
+
+    Ok(format!("{{\"rowsAffected\":{}}}", result.rows_affected()))
+}
+
+/// Execute mutation within a transaction
+#[cfg(feature = "database")]
+async fn execute_mutation_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    sql: &str,
+    params: &[String],
+) -> Result<String, String> {
+    let mut query = sqlx::query(sql);
+
+    for param in params {
+        query = query.bind(param);
+    }
+
+    let result = query
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("Query execution failed: {}", e))?;
+
+    Ok(format!("{{\"rowsAffected\":{}}}", result.rows_affected()))
 }
 
 /// Sanitize a path to prevent directory traversal attacks.

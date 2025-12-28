@@ -22,6 +22,7 @@ pub enum BindingType {
     Assets,
     Storage,
     Kv,
+    Database,
 }
 
 /// Assets binding config (static file serving from S3/R2)
@@ -55,6 +56,23 @@ pub struct KvConfig {
     pub name: String,
 }
 
+/// Database binding config (multi-provider)
+#[derive(Clone, Debug)]
+pub struct DatabaseConfig {
+    pub id: String,
+    pub name: String,
+    /// Provider: 'platform' (shared multi-tenant) or 'postgres' (direct connection)
+    pub provider: String,
+    /// Connection string (for postgres provider)
+    pub connection_string: Option<String>,
+    /// Schema name (for platform provider - multi-tenant on shared pool)
+    pub schema_name: Option<String>,
+    /// Maximum rows returned per query
+    pub max_rows: i32,
+    /// Query timeout in seconds
+    pub timeout_seconds: i32,
+}
+
 /// A worker binding (environment variable or resource binding)
 #[derive(Clone, Debug)]
 pub enum Binding {
@@ -68,6 +86,8 @@ pub enum Binding {
     Storage { key: String, config: StorageConfig },
     /// KV binding
     Kv { key: String, config: KvConfig },
+    /// Database binding (PostgreSQL)
+    Database { key: String, config: DatabaseConfig },
 }
 
 impl Binding {
@@ -81,6 +101,9 @@ impl Binding {
                 Some(openworkers_core::BindingInfo::storage(key.clone()))
             }
             Binding::Kv { key, .. } => Some(openworkers_core::BindingInfo::kv(key.clone())),
+            Binding::Database { key, .. } => {
+                Some(openworkers_core::BindingInfo::database(key.clone()))
+            }
         }
     }
 }
@@ -335,6 +358,17 @@ pub async fn get_worker_with_bindings(
                     }
                 }
             }
+
+            BindingType::Database => {
+                if let Some(config_id) = row.value {
+                    if let Some(config) = fetch_database_config(&mut *conn, &config_id).await {
+                        bindings.push(Binding::Database {
+                            key: row.key,
+                            config,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -471,6 +505,49 @@ async fn fetch_kv_config(conn: &mut sqlx::PgConnection, config_id: &str) -> Opti
         }),
         Err(err) => {
             log::warn!("failed to fetch kv_config {}: {:?}", config_id, err);
+            None
+        }
+    }
+}
+
+/// Fetch database config by ID
+async fn fetch_database_config(
+    conn: &mut sqlx::PgConnection,
+    config_id: &str,
+) -> Option<DatabaseConfig> {
+    #[derive(Debug, FromRow)]
+    struct Row {
+        id: String,
+        name: String,
+        provider: String,
+        connection_string: Option<String>,
+        schema_name: Option<String>,
+        max_rows: i32,
+        timeout_seconds: i32,
+    }
+
+    let query = r#"
+        SELECT id::text, name, provider, connection_string, schema_name, max_rows, timeout_seconds
+        FROM database_configs
+        WHERE id::text = $1
+    "#;
+
+    match sqlx::query_as::<_, Row>(query)
+        .bind(config_id)
+        .fetch_one(conn)
+        .await
+    {
+        Ok(row) => Some(DatabaseConfig {
+            id: row.id,
+            name: row.name,
+            provider: row.provider,
+            connection_string: row.connection_string,
+            schema_name: row.schema_name,
+            max_rows: row.max_rows,
+            timeout_seconds: row.timeout_seconds,
+        }),
+        Err(err) => {
+            log::warn!("failed to fetch database_config {}: {:?}", config_id, err);
             None
         }
     }
