@@ -712,7 +712,10 @@ async fn do_fetch(
         .fetch_bytes_in
         .store(fetch_bytes_in, Ordering::Relaxed);
 
-    tokio::spawn(async move {
+    // Use spawn_local to keep the streaming task on the same thread as the V8 isolate.
+    // This works because the entire call chain (worker -> event_loop -> ops) uses spawn_local,
+    // keeping everything within the same LocalSet.
+    tokio::task::spawn_local(async move {
         use futures::StreamExt;
         let mut stream = response.bytes_stream();
 
