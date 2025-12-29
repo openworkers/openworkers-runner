@@ -2281,7 +2281,6 @@ checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 [[package]]
 name = "openworkers-core"
 version = "0.6.0"
-source = "git+https://github.com/openworkers/openworkers-core?tag=v0.6.0#3837801683f1fd2bcb1d538ea845ab0322f04e66"
 dependencies = [
  "actix-web",
  "bytes",
@@ -2331,7 +2330,6 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8"
 version = "0.6.3"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.6.3#1352b6a5cc519d0c1e6fd05aa56dde901c61d454"
 dependencies = [
  "actix-web",
  "bytes",

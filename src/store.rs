@@ -23,6 +23,7 @@ pub enum BindingType {
     Storage,
     Kv,
     Database,
+    Worker,
 }
 
 #[derive(Clone, Debug, PartialEq, sqlx::Type)]
@@ -80,6 +81,13 @@ pub struct DatabaseConfig {
     pub timeout_seconds: i32,
 }
 
+/// Worker binding config (worker-to-worker calls)
+#[derive(Clone, Debug)]
+pub struct WorkerBindingConfig {
+    pub id: String,
+    pub name: String,
+}
+
 /// A worker binding (environment variable or resource binding)
 #[derive(Clone, Debug)]
 pub enum Binding {
@@ -95,6 +103,11 @@ pub enum Binding {
     Kv { key: String, config: KvConfig },
     /// Database binding (PostgreSQL)
     Database { key: String, config: DatabaseConfig },
+    /// Worker binding (worker-to-worker calls)
+    Worker {
+        key: String,
+        config: WorkerBindingConfig,
+    },
 }
 
 impl Binding {
@@ -111,6 +124,7 @@ impl Binding {
             Binding::Database { key, .. } => {
                 Some(openworkers_core::BindingInfo::database(key.clone()))
             }
+            Binding::Worker { key, .. } => Some(openworkers_core::BindingInfo::worker(key.clone())),
         }
     }
 }
@@ -376,6 +390,18 @@ pub async fn get_worker_with_bindings(
                     }
                 }
             }
+
+            BindingType::Worker => {
+                if let Some(worker_id) = row.value {
+                    if let Some(config) = fetch_worker_binding_config(&mut *conn, &worker_id).await
+                    {
+                        bindings.push(Binding::Worker {
+                            key: row.key,
+                            config,
+                        });
+                    }
+                }
+            }
         }
     }
 
@@ -555,6 +581,39 @@ async fn fetch_database_config(
         }),
         Err(err) => {
             log::warn!("failed to fetch database_config {}: {:?}", config_id, err);
+            None
+        }
+    }
+}
+
+/// Fetch worker binding config by worker ID
+async fn fetch_worker_binding_config(
+    conn: &mut sqlx::PgConnection,
+    worker_id: &str,
+) -> Option<WorkerBindingConfig> {
+    #[derive(Debug, FromRow)]
+    struct Row {
+        id: String,
+        name: String,
+    }
+
+    let query = r#"
+        SELECT id::text, name
+        FROM workers
+        WHERE id::text = $1
+    "#;
+
+    match sqlx::query_as::<_, Row>(query)
+        .bind(worker_id)
+        .fetch_one(conn)
+        .await
+    {
+        Ok(row) => Some(WorkerBindingConfig {
+            id: row.id,
+            name: row.name,
+        }),
+        Err(err) => {
+            log::warn!("failed to fetch worker_binding {}: {:?}", worker_id, err);
             None
         }
     }

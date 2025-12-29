@@ -44,7 +44,30 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 
-use crate::store::{AssetsConfig, Binding, DatabaseConfig, KvConfig, StorageConfig};
+use crate::store::{
+    AssetsConfig, Binding, DatabaseConfig, KvConfig, StorageConfig, WorkerBindingConfig,
+};
+
+/// Worker domains for internal routing (e.g., "workers.rocks,workers.dev.localhost")
+/// URLs matching `*.{domain}` will be routed internally instead of going through DNS.
+static WORKER_DOMAINS: Lazy<Vec<String>> = Lazy::new(|| {
+    std::env::var("WORKER_DOMAINS")
+        .unwrap_or_else(|_| "workers.rocks".to_string())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+});
+
+/// Generate a unique request ID (32 chars total: prefix_hex)
+fn generate_request_id(prefix: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let hex_len = 31 - prefix.len();
+    format!("{}_{:0width$x}", prefix, nanos, width = hex_len)
+}
 
 /// Global HTTP client for connection pooling and reuse
 ///
@@ -92,6 +115,7 @@ pub struct BindingConfigs {
     pub storage: HashMap<String, StorageConfig>,
     pub kv: HashMap<String, KvConfig>,
     pub database: HashMap<String, DatabaseConfig>,
+    pub worker: HashMap<String, WorkerBindingConfig>,
 }
 
 impl BindingConfigs {
@@ -116,6 +140,9 @@ impl BindingConfigs {
                 }
                 Binding::Database { key, config } => {
                     configs.database.insert(key, config);
+                }
+                Binding::Worker { key, config } => {
+                    configs.worker.insert(key, config);
                 }
                 // Var and Secret are not resource bindings
                 Binding::Var { .. } | Binding::Secret { .. } => {}
@@ -191,11 +218,50 @@ impl Default for RunnerOperations {
     }
 }
 
+/// Check if a fetch URL matches internal worker patterns and route directly.
+///
+/// Patterns are configured via WORKER_DOMAINS env var (default: "workers.rocks,workers.dev.localhost")
+/// URLs matching `*.{domain}` will be routed internally.
+///
+/// Returns a modified request with internal routing if matched.
+fn try_internal_worker_route(request: &HttpRequest) -> Option<HttpRequest> {
+    let url = url::Url::parse(&request.url).ok()?;
+    let host = url.host_str()?;
+
+    // Check for internal worker patterns from WORKER_DOMAINS
+    let worker_name = WORKER_DOMAINS.iter().find_map(|domain| {
+        let suffix = format!(".{}", domain);
+        host.strip_suffix(&suffix)
+    })?;
+
+    // Build internal URL
+    let path_and_query = match url.query() {
+        Some(q) => format!("{}?{}", url.path(), q),
+        None => url.path().to_string(),
+    };
+    let internal_url = format!("http://127.0.0.1:8080{}", path_and_query);
+
+    // Create request with x-worker-name header
+    let mut headers = request.headers.clone();
+    headers.insert("x-worker-name".to_string(), worker_name.to_string());
+    headers.insert("x-request-id".to_string(), generate_request_id("internal"));
+
+    Some(HttpRequest {
+        url: internal_url,
+        method: request.method.clone(),
+        headers,
+        body: request.body.clone(),
+    })
+}
+
 impl OperationsHandler for RunnerOperations {
     /// Handle direct fetch: `fetch("https://example.com")`
     ///
     /// This is a pass-through fetch with no auth modification.
     /// Used when worker code calls the global `fetch()` function.
+    ///
+    /// Special case: URLs matching `*.workers.rocks` or `*.workers.dev.localhost`
+    /// are routed internally to avoid DNS lookup and external network hop.
     fn handle_fetch(&self, request: HttpRequest) -> OpFuture<'_, Result<HttpResponse, String>> {
         Box::pin(async move {
             self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
@@ -207,6 +273,15 @@ impl OperationsHandler for RunnerOperations {
                 self.user_id,
                 self.worker_id
             );
+
+            // Check if this is an internal worker URL that should be routed directly
+            if let Some(internal_request) = try_internal_worker_route(&request) {
+                log::debug!(
+                    "[ops] fetch shortcut: {} -> internal routing via x-worker-name",
+                    request.url
+                );
+                return do_fetch(internal_request, &self.stats, None).await;
+            }
 
             do_fetch(request, &self.stats, None).await
         })
@@ -587,6 +662,61 @@ impl OperationsHandler for RunnerOperations {
                     }
                 }
             }
+        })
+    }
+
+    /// Handle worker binding: `env.SERVICE.fetch(request)`
+    ///
+    /// Executes a worker-to-worker call by making an internal HTTP request
+    /// to the runner with x-worker-id header to route to the target worker.
+    fn handle_binding_worker(
+        &self,
+        binding: &str,
+        request: HttpRequest,
+    ) -> OpFuture<'_, Result<HttpResponse, String>> {
+        let binding_name = binding.to_string();
+
+        // Check if binding exists in worker configs
+        let config = match self.bindings.worker.get(binding) {
+            Some(c) => c.clone(),
+            None => {
+                return Box::pin(async move {
+                    Err(format!("Worker binding '{}' not configured", binding_name))
+                });
+            }
+        };
+
+        Box::pin(async move {
+            log::debug!(
+                "[ops] worker binding {} -> {} ({})",
+                binding_name,
+                config.name,
+                config.id
+            );
+
+            // Build the internal URL for the target worker
+            // Runner listens on port 8080
+            let path = if request.url.starts_with('/') {
+                request.url.clone()
+            } else {
+                format!("/{}", request.url)
+            };
+            let internal_url = format!("http://127.0.0.1:8080{}", path);
+
+            // Create the request with x-worker-id header to route to target
+            let mut headers = request.headers.clone();
+            headers.insert("x-worker-id".to_string(), config.id.clone());
+            headers.insert("x-request-id".to_string(), generate_request_id("binding"));
+
+            let internal_request = HttpRequest {
+                url: internal_url,
+                method: request.method,
+                headers,
+                body: request.body,
+            };
+
+            // Execute the request through the runner
+            do_fetch(internal_request, &OperationsStats::new(), None).await
         })
     }
 

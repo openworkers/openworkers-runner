@@ -55,6 +55,38 @@ DATABASE_URL='postgres://openworkers:password@localhost:5432/openworkers'
 NATS_SERVERS='nats://localhost:4222'
 ```
 
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | - | PostgreSQL connection string |
+| `NATS_SERVERS` | - | NATS server URL |
+| `WORKER_DOMAINS` | `workers.rocks` | Comma-separated list of worker domains for internal routing |
+
+#### Internal Routing (`WORKER_DOMAINS`)
+
+When a worker calls `fetch()` to a URL matching `*.{domain}`, the request is routed internally instead of going through DNS and external network. This improves latency and avoids external bandwidth costs.
+
+```javascript
+// These are routed internally (no DNS lookup):
+fetch('https://my-api.workers.rocks/endpoint')
+
+// This goes through external network:
+fetch('https://example.com/api')
+```
+
+Configure for your environment:
+```bash
+# Production (default)
+WORKER_DOMAINS=workers.rocks
+
+# Local development
+WORKER_DOMAINS=workers.dev.localhost
+
+# Both
+WORKER_DOMAINS=workers.rocks,workers.dev.localhost
+```
+
 ### Run
 
 ```bash
