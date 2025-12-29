@@ -80,12 +80,16 @@ fn generate_request_id(prefix: &str) -> String {
 /// - Connection pooling (reuse existing connections)
 /// - Keep-alive connections
 /// - DNS caching
+///
+/// Timeouts:
+/// - connect_timeout: 2s (DNS + TCP handshake)
+/// - timeout: 10s (total request)
 static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
         .pool_max_idle_per_host(10)
         .pool_idle_timeout(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(60))
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(10))
         .build()
         .expect("Failed to create HTTP client")
 });
