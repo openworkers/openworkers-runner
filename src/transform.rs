@@ -7,12 +7,14 @@ use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 use swc_ecma_transforms_base::{fixer::fixer, hygiene::hygiene, resolver};
 use swc_ecma_transforms_typescript::strip;
 
-use crate::store::WorkerData;
 use crate::store::WorkerLanguage;
 
-pub(crate) fn parse_worker_code(worker: &WorkerData) -> Result<String, String> {
-    match worker.language {
-        WorkerLanguage::Javascript => Ok(worker.script.clone()),
+pub(crate) fn parse_worker_code_str(
+    script: &str,
+    language: &WorkerLanguage,
+) -> Result<String, String> {
+    match language {
+        WorkerLanguage::Javascript => Ok(script.to_string()),
         WorkerLanguage::Typescript => {
             let cm: Lrc<SourceMap> = Default::default();
             let handler =
@@ -21,7 +23,7 @@ pub(crate) fn parse_worker_code(worker: &WorkerData) -> Result<String, String> {
             // Create source file
             let fm = cm.new_source_file(
                 Lrc::new(swc_common::FileName::Custom("script.ts".into())),
-                worker.script.clone(),
+                script.to_string(),
             );
 
             // Parse and transform with GLOBALS context

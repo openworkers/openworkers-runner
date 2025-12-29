@@ -125,7 +125,8 @@ async fn handle_request(
         }
     };
 
-    let worker = openworkers_runner::store::get_worker(&mut conn, worker_identifier).await;
+    let worker =
+        openworkers_runner::store::get_worker_with_bindings(&mut conn, worker_identifier).await;
 
     debug!("worker found: {:?}", worker.is_some());
 
@@ -196,6 +197,7 @@ async fn handle_request(
         termination_tx,
         data.log_tx.clone(),
         permit,
+        data.db.clone(),
     );
 
     let response = match res_rx.await {

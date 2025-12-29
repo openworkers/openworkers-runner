@@ -1,18 +1,20 @@
 [package]
 name = "openworkers-runner"
-version = "0.5.10"
+version = "0.6.0"
 edition = "2024"
 default-run = "openworkers-runner"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = []  # Explicitly choose a runtime: --features=v8, --features=deno, etc.
-deno = ["dep:openworkers-runtime-deno"]
-quickjs = ["dep:openworkers-runtime-quickjs"]
+default = ["database"]
 v8 = ["dep:openworkers-runtime-v8"]
-boa = ["dep:openworkers-runtime-boa"]
-jsc = ["dep:openworkers-runtime-jsc"]
+database = ["dep:postgate"]
+# Disabled runtimes (require core 0.5, we're on 0.6) - kept as empty features to avoid cfg warnings
+deno = []
+quickjs = []
+boa = []
+jsc = []
 
 [dependencies]
 actix-web = "4.12.1"
@@ -20,28 +22,46 @@ bytes = "1.11.0"
 log = "0.4.29"
 tokio = "1.43.0"
 tokio-util = { version = "0.7", features = ["rt"] }
+flume = "0.12.0"
 once_cell = "1.19"
 env_logger = "0.11.6"
 sqlx = { version = "0.8.6", features = [ "runtime-tokio", "postgres", "uuid", "bigdecimal", "rust_decimal" ] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 
-# Runtime backends (one must be selected via feature flag)
-openworkers-runtime-deno = { git = "https://github.com/openworkers/openworkers-runtime-deno", tag = "v0.5.1", features = ["actix"], optional = true }
-openworkers-runtime-quickjs = { git = "https://github.com/openworkers/openworkers-runtime-quickjs", tag = "v0.5.1", features = ["actix"], optional = true }
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.5.10", features = ["actix"], optional = true }
-openworkers-runtime-boa = { git = "https://github.com/openworkers/openworkers-runtime-boa", tag = "v0.5.1", features = ["actix"], optional = true }
-openworkers-runtime-jsc = { git = "https://github.com/openworkers/openworkers-runtime-jsc", tag = "v0.5.3", features = ["actix"], optional = true }
+# Core types
+# openworkers-core = { path = "../openworkers-core" }
+openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.6.0" }
 
+# Runtime backend (v8 only for now, others require core 0.5)
+# openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", features = ["actix"], optional = true }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.6.0", features = ["actix"], optional = true }
+
+# Database bindings (optional)
+postgate = { path = "../postgate", default-features = false, optional = true }
+
+# Disabled runtimes (require openworkers-core 0.5, we're on 0.6)
+# openworkers-runtime-deno = { git = "https://github.com/openworkers/openworkers-runtime-deno", tag = "v0.5.1", features = ["actix"], optional = true }
+# openworkers-runtime-quickjs = { git = "https://github.com/openworkers/openworkers-runtime-quickjs", tag = "v0.5.1", features = ["actix"], optional = true }
+# openworkers-runtime-boa = { git = "https://github.com/openworkers/openworkers-runtime-boa", tag = "v0.5.1", features = ["actix"], optional = true }
+# openworkers-runtime-jsc = { git = "https://github.com/openworkers/openworkers-runtime-jsc", tag = "v0.5.3", features = ["actix"], optional = true }
+
+# Local paths (for development)
 # openworkers-runtime-deno = { path = "../openworkers-runtime-deno", features = ["actix"], optional = true }
 # openworkers-runtime-quickjs = { path = "../openworkers-runtime-quickjs", features = ["actix"], optional = true }
-# openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", features = ["actix"], optional = true }
 # openworkers-runtime-boa = { path = "../openworkers-runtime-boa", features = ["actix"], optional = true }
 # openworkers-runtime-jsc = { path = "../openworkers-runtime-jsc", features = ["actix"], optional = true }
 
 async-nats = "0.45.0"
 futures = "0.3"
-serde_json = "1.0.147"
+serde_json = "1.0.148"
 serde = { version = "1.0.197", features = ["derive"] }
 base64 = "0.22.1"
+aws-sigv4 = "1.2"
+aws-credential-types = "1.2"
+chrono = "0.4"
+sha2 = "0.10"
+hex = "0.4"
+url = "2.5"
 swc_common = "17.0.1"
 swc_ecma_ast = "18.0.0"
 swc_ecma_parser = "27.0.7"
