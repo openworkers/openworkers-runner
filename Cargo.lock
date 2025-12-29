@@ -2331,7 +2331,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8"
 version = "0.6.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?branch=feat%2Foperations#39b1fc97c42e6c0eb60bb83bfc68193cf2b5a179"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.6.0#a4971a95468fcb058bb745a51408cc8f0b638d19"
 dependencies = [
  "actix-web",
  "bytes",
