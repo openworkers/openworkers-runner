@@ -38,6 +38,7 @@ FROM prepare AS platform
 ARG RUNTIME=v8
 ARG TARGETPLATFORM
 
+ENV FEATURES=$RUNTIME,database
 ENV RUST_BACKTRACE=1
 ENV RUNTIME_SNAPSHOT_PATH=/build/snapshot.bin
 
@@ -48,15 +49,15 @@ RUN touch $RUNTIME_SNAPSHOT_PATH
 # Copy recipe from planner
 COPY --from=planner /build/recipe.json recipe.json
 
-RUN echo "Building for $TARGETPLATFORM with runtime $RUNTIME"
+RUN echo "Building for $TARGETPLATFORM with features $FEATURES"
 
 # Build dependencies for target platform
 RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/git \
     --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/registry \
     --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=/build/target \
     case "$TARGETPLATFORM" in \
-        "linux/arm64") cargo chef cook --release --features=$RUNTIME --target aarch64-unknown-linux-gnu --recipe-path recipe.json ;; \
-        "linux/amd64") cargo chef cook --release --features=$RUNTIME --target x86_64-unknown-linux-gnu --recipe-path recipe.json ;; \
+        "linux/arm64") cargo chef cook --release --features=$FEATURES --target aarch64-unknown-linux-gnu --recipe-path recipe.json ;; \
+        "linux/amd64") cargo chef cook --release --features=$FEATURES --target x86_64-unknown-linux-gnu --recipe-path recipe.json ;; \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac
 
@@ -73,15 +74,15 @@ RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$
     case "$TARGETPLATFORM" in \
         "linux/arm64") \
             # Build snapshot generator for target \
-            cargo build --release --features=$RUNTIME --bin snapshot --target aarch64-unknown-linux-gnu && \
+            cargo build --release --features=$FEATURES --bin snapshot --target aarch64-unknown-linux-gnu && \
             # Generate snapshot (explicitly using qemu-aarch64-static with cross libs) \
             QEMU_LD_PREFIX=/usr/aarch64-linux-gnu qemu-aarch64-static /build/target/aarch64-unknown-linux-gnu/release/snapshot && \
             # Build runner \
-            cargo build --release --features=$RUNTIME --target aarch64-unknown-linux-gnu && \
+            cargo build --release --features=$FEATURES --target aarch64-unknown-linux-gnu && \
             mv /build/target/aarch64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \
         "linux/amd64") \
             # Build snapshot generator for target \
-            cargo build --release --features=$RUNTIME --bin snapshot --target x86_64-unknown-linux-gnu && \
+            cargo build --release --features=$FEATURES --bin snapshot --target x86_64-unknown-linux-gnu && \
             # Generate snapshot (direct execution on x86_64, qemu on other archs) \
             if [ "$(uname -m)" = "x86_64" ]; then \
                 /build/target/x86_64-unknown-linux-gnu/release/snapshot; \
@@ -89,7 +90,7 @@ RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$
                 QEMU_LD_PREFIX=/usr/x86_64-linux-gnu qemu-x86_64-static /build/target/x86_64-unknown-linux-gnu/release/snapshot; \
             fi && \
             # Build runner \
-            cargo build --release --features=$RUNTIME --target x86_64-unknown-linux-gnu && \
+            cargo build --release --features=$FEATURES --target x86_64-unknown-linux-gnu && \
             mv /build/target/x86_64-unknown-linux-gnu/release/openworkers-runner /build/output ;; \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac

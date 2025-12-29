@@ -2292,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "actix-web",
  "async-nats",
@@ -2330,8 +2330,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.6.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.6.0#a4971a95468fcb058bb745a51408cc8f0b638d19"
+version = "0.6.1"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.6.1#ac9caa219484a54302a4184c84ce2706ee8d7420"
 dependencies = [
  "actix-web",
  "bytes",
@@ -2343,7 +2343,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
- "signal-hook 0.4.1",
+ "signal-hook",
  "signal-hook-tokio",
  "tokio",
  "tokio-stream",
@@ -2535,6 +2535,7 @@ dependencies = [
 [[package]]
 name = "postgate"
 version = "0.1.1"
+source = "git+https://github.com/openworkers/postgate?tag=v0.1.1#e5e91137d2d613660071ee51c0342bec70072552"
 dependencies = [
  "chrono",
  "hex",
@@ -3270,16 +3271,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "signal-hook"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a37d01603c37b5466f808de79f845c7116049b0579adb70a6b7d47c1fa3a952"
-dependencies = [
- "libc",
- "signal-hook-registry",
-]
-
-[[package]]
 name = "signal-hook-registry"
 version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3297,7 +3288,7 @@ checksum = "213241f76fb1e37e27de3b6aa1b068a2c333233b59cca6634f634b80a27ecf1e"
 dependencies = [
  "futures-core",
  "libc",
- "signal-hook 0.3.18",
+ "signal-hook",
  "tokio",
 ]
 
