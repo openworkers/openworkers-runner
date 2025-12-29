@@ -2,57 +2,149 @@ use swc_common::{
     GLOBALS, Globals, Mark, SourceMap, comments::SingleThreadedComments, errors::Handler, sync::Lrc,
 };
 
+use swc_ecma_ast::{
+    AssignExpr, AssignOp, Expr, ExprStmt, Ident, MemberExpr, MemberProp, ModuleItem, Stmt,
+};
 use swc_ecma_codegen::{Emitter, text_writer::JsWriter};
 use swc_ecma_parser::{Parser, StringInput, Syntax, TsSyntax, lexer::Lexer};
 use swc_ecma_transforms_base::{fixer::fixer, hygiene::hygiene, resolver};
 use swc_ecma_transforms_typescript::strip;
+use swc_ecma_visit::{VisitMut, VisitMutWith};
 
 use crate::store::WorkerLanguage;
+
+/// Transforms `export default X` to `globalThis.default = X`
+struct ExportDefaultTransform;
+
+impl VisitMut for ExportDefaultTransform {
+    fn visit_mut_module_items(&mut self, items: &mut Vec<ModuleItem>) {
+        let mut new_items = Vec::with_capacity(items.len());
+
+        for item in items.drain(..) {
+            match item {
+                // export default { ... } or export default someExpr
+                ModuleItem::ModuleDecl(swc_ecma_ast::ModuleDecl::ExportDefaultExpr(export)) => {
+                    // Transform to: globalThis.default = <expr>;
+                    let assign = create_globalthis_default_assign(*export.expr);
+                    new_items.push(ModuleItem::Stmt(Stmt::Expr(ExprStmt {
+                        span: export.span,
+                        expr: Box::new(assign),
+                    })));
+                }
+
+                // export default function foo() {} or export default class Foo {}
+                ModuleItem::ModuleDecl(swc_ecma_ast::ModuleDecl::ExportDefaultDecl(export)) => {
+                    let span = export.span;
+
+                    match export.decl {
+                        // export default function() {} or export default function foo() {}
+                        swc_ecma_ast::DefaultDecl::Fn(fn_expr) => {
+                            let func_expr = Expr::Fn(fn_expr);
+                            let assign = create_globalthis_default_assign(func_expr);
+                            new_items.push(ModuleItem::Stmt(Stmt::Expr(ExprStmt {
+                                span,
+                                expr: Box::new(assign),
+                            })));
+                        }
+
+                        // export default class {} or export default class Foo {}
+                        swc_ecma_ast::DefaultDecl::Class(class_expr) => {
+                            let class_expr = Expr::Class(class_expr);
+                            let assign = create_globalthis_default_assign(class_expr);
+                            new_items.push(ModuleItem::Stmt(Stmt::Expr(ExprStmt {
+                                span,
+                                expr: Box::new(assign),
+                            })));
+                        }
+
+                        _ => {
+                            // Keep as-is for other cases
+                            new_items.push(ModuleItem::ModuleDecl(
+                                swc_ecma_ast::ModuleDecl::ExportDefaultDecl(export),
+                            ));
+                        }
+                    }
+                }
+
+                // Keep all other items as-is
+                other => new_items.push(other),
+            }
+        }
+
+        *items = new_items;
+    }
+}
+
+/// Creates: globalThis.default = <expr>
+fn create_globalthis_default_assign(expr: Expr) -> Expr {
+    Expr::Assign(AssignExpr {
+        span: Default::default(),
+        op: AssignOp::Assign,
+        left: swc_ecma_ast::AssignTarget::Simple(swc_ecma_ast::SimpleAssignTarget::Member(
+            MemberExpr {
+                span: Default::default(),
+                obj: Box::new(Expr::Ident(Ident::new_no_ctxt(
+                    "globalThis".into(),
+                    Default::default(),
+                ))),
+                prop: MemberProp::Ident(swc_ecma_ast::IdentName::new(
+                    "default".into(),
+                    Default::default(),
+                )),
+            },
+        )),
+        right: Box::new(expr),
+    })
+}
 
 pub(crate) fn parse_worker_code_str(
     script: &str,
     language: &WorkerLanguage,
 ) -> Result<String, String> {
-    match language {
-        WorkerLanguage::Javascript => Ok(script.to_string()),
-        WorkerLanguage::Typescript => {
-            let cm: Lrc<SourceMap> = Default::default();
-            let handler =
-                Handler::with_emitter_writer(Box::new(std::io::stderr()), Some(cm.clone()));
+    let cm: Lrc<SourceMap> = Default::default();
+    let handler = Handler::with_emitter_writer(Box::new(std::io::stderr()), Some(cm.clone()));
 
-            // Create source file
-            let fm = cm.new_source_file(
-                Lrc::new(swc_common::FileName::Custom("script.ts".into())),
-                script.to_string(),
-            );
+    let (filename, syntax) = match language {
+        WorkerLanguage::Javascript => ("script.js", Syntax::Es(Default::default())),
+        WorkerLanguage::Typescript => (
+            "script.ts",
+            Syntax::Typescript(TsSyntax {
+                tsx: false,
+                ..Default::default()
+            }),
+        ),
+    };
 
-            // Parse and transform with GLOBALS context
-            let globals = Globals::default();
-            GLOBALS.set(&globals, || typescript_to_javascript(cm, handler, fm))
-        }
-    }
+    let fm = cm.new_source_file(
+        Lrc::new(swc_common::FileName::Custom(filename.into())),
+        script.to_string(),
+    );
+
+    let globals = Globals::default();
+    GLOBALS.set(&globals, || {
+        transform_code(cm, handler, fm, syntax, language)
+    })
 }
 
-fn typescript_to_javascript(
+fn transform_code(
     cm: Lrc<SourceMap>,
     handler: Handler,
     fm: Lrc<swc_common::SourceFile>,
+    syntax: Syntax,
+    language: &WorkerLanguage,
 ) -> Result<String, String> {
     // Setup comments tracking
     let comments = SingleThreadedComments::default();
 
-    // Create lexer for TypeScript parsing
+    // Create lexer
     let lexer = Lexer::new(
-        Syntax::Typescript(TsSyntax {
-            tsx: false, // Not handling TSX for now
-            ..Default::default()
-        }),
+        syntax,
         Default::default(),
         StringInput::from(&*fm),
         Some(&comments),
     );
 
-    // Parse the TypeScript code
+    // Parse the code
     let mut parser = Parser::new_from(lexer);
 
     // Collect any parse errors
@@ -60,25 +152,26 @@ fn typescript_to_javascript(
         e.into_diagnostic(&handler).emit();
     }
 
-    // Parse the program - handle error without borrowing after move
+    // Parse the program
     let program = parser.parse_program().map_err(|e| {
-        let error_msg = format!("TypeScript parse error: {:?}", e);
+        let error_msg = format!("Parse error: {:?}", e);
         e.into_diagnostic(&handler).emit();
         error_msg
     })?;
 
-    // Apply transformations using the chain pattern from the example
     let unresolved_mark = Mark::new();
     let top_level_mark = Mark::new();
-
-    // Chain all transformations together like in the SWC example
-    // Note: In newer SWC versions, we need to use a different pattern for strip
 
     // Apply resolver transformation
     let mut program = program.apply(resolver(unresolved_mark, top_level_mark, true));
 
-    // Apply TypeScript stripping
-    program = program.apply(strip(unresolved_mark, top_level_mark));
+    // Apply TypeScript stripping (only for TS)
+    if matches!(language, WorkerLanguage::Typescript) {
+        program = program.apply(strip(unresolved_mark, top_level_mark));
+    }
+
+    // Transform export default to globalThis.default
+    program.visit_mut_with(&mut ExportDefaultTransform);
 
     // Apply hygiene
     program = program.apply(hygiene());

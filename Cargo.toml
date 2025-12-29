@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.6.3"
+version = "0.6.4"
 edition = "2024"
 default-run = "openworkers-runner"
 
