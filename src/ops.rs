@@ -543,7 +543,7 @@ impl OperationsHandler for RunnerOperations {
             match op {
                 DatabaseOp::Query { sql, params } => {
                     log::debug!(
-                        "[ops] database {} ({}) query: {} (params: {:?})",
+                        "[ops] database {} ({:?}) query: {} (params: {:?})",
                         binding_name,
                         config.provider,
                         sql,

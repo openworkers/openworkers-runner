@@ -25,6 +25,13 @@ pub enum BindingType {
     Database,
 }
 
+#[derive(Clone, Debug, PartialEq, sqlx::Type)]
+#[sqlx(type_name = "enum_database_provider", rename_all = "lowercase")]
+pub enum DatabaseProvider {
+    Platform,
+    Postgres,
+}
+
 /// Assets binding config (static file serving from S3/R2)
 #[derive(Clone, Debug)]
 pub struct AssetsConfig {
@@ -61,8 +68,8 @@ pub struct KvConfig {
 pub struct DatabaseConfig {
     pub id: String,
     pub name: String,
-    /// Provider: 'platform' (shared multi-tenant) or 'postgres' (direct connection)
-    pub provider: String,
+    /// Provider: platform (shared multi-tenant) or postgres (direct connection)
+    pub provider: DatabaseProvider,
     /// Connection string (for postgres provider)
     pub connection_string: Option<String>,
     /// Schema name (for platform provider - multi-tenant on shared pool)
@@ -519,7 +526,7 @@ async fn fetch_database_config(
     struct Row {
         id: String,
         name: String,
-        provider: String,
+        provider: DatabaseProvider,
         connection_string: Option<String>,
         schema_name: Option<String>,
         max_rows: i32,
