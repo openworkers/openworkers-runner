@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.6.6"
+version = "0.7.0"
 edition = "2024"
 default-run = "openworkers-runner"
 
@@ -10,7 +10,7 @@ default-run = "openworkers-runner"
 default = ["database"]
 v8 = ["dep:openworkers-runtime-v8"]
 database = ["dep:postgate"]
-# Disabled runtimes (require core 0.5, we're on 0.6) - kept as empty features to avoid cfg warnings
+# Disabled runtimes (require core 0.5, we're on 0.7) - kept as empty features to avoid cfg warnings
 deno = []
 quickjs = []
 boa = []
@@ -30,17 +30,17 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 
 # Core types
 # openworkers-core = { path = "../openworkers-core" }
-openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.6.1" }
+openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.7.0" }
 
 # Runtime backend (v8 only for now, others require core 0.5)
 # openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", features = ["actix"], optional = true }
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.6.4", features = ["actix"], optional = true }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.7.0", features = ["actix"], optional = true }
 
 # Database bindings (optional)
 # postgate = { path = "../postgate", default-features = false, optional = true }
 postgate = { git = "https://github.com/openworkers/postgate", tag = "v0.1.1", default-features = false, optional = true }
 
-# Disabled runtimes (require openworkers-core 0.5, we're on 0.6)
+# Disabled runtimes (require openworkers-core 0.5, we're on 0.7)
 # openworkers-runtime-deno = { git = "https://github.com/openworkers/openworkers-runtime-deno", tag = "v0.5.1", features = ["actix"], optional = true }
 # openworkers-runtime-quickjs = { git = "https://github.com/openworkers/openworkers-runtime-quickjs", tag = "v0.5.1", features = ["actix"], optional = true }
 # openworkers-runtime-boa = { git = "https://github.com/openworkers/openworkers-runtime-boa", tag = "v0.5.1", features = ["actix"], optional = true }
@@ -81,6 +81,9 @@ incremental = true # Enable incremental compilation.
 codegen-units = 1 # Use a single codegen unit to optimize for size.
 lto = true # Enable link-time optimization.
 
+[dev-dependencies]
+criterion = { version = "0.8.1", features = ["async_tokio"] }
+
 [[bin]]
 name = "openworkers-runner"
 path = "bin/main.rs"
@@ -88,3 +91,7 @@ path = "bin/main.rs"
 [[bin]]
 name = "snapshot"
 path = "bin/snapshot.rs"
+
+[[bench]]
+name = "generic_benchmark"
+harness = false

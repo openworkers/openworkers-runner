@@ -348,58 +348,57 @@ pub async fn get_worker_with_bindings(
             }
 
             BindingType::Assets => {
-                if let Some(config_id) = row.value {
-                    if let Some(config) = fetch_assets_config(&mut *conn, &config_id).await {
-                        bindings.push(Binding::Assets {
-                            key: row.key,
-                            config,
-                        });
-                    }
+                if let Some(config_id) = row.value
+                    && let Some(config) = fetch_assets_config(&mut *conn, &config_id).await
+                {
+                    bindings.push(Binding::Assets {
+                        key: row.key,
+                        config,
+                    });
                 }
             }
 
             BindingType::Storage => {
-                if let Some(config_id) = row.value {
-                    if let Some(config) = fetch_storage_config(&mut *conn, &config_id).await {
-                        bindings.push(Binding::Storage {
-                            key: row.key,
-                            config,
-                        });
-                    }
+                if let Some(config_id) = row.value
+                    && let Some(config) = fetch_storage_config(&mut *conn, &config_id).await
+                {
+                    bindings.push(Binding::Storage {
+                        key: row.key,
+                        config,
+                    });
                 }
             }
 
             BindingType::Kv => {
-                if let Some(config_id) = row.value {
-                    if let Some(config) = fetch_kv_config(&mut *conn, &config_id).await {
-                        bindings.push(Binding::Kv {
-                            key: row.key,
-                            config,
-                        });
-                    }
+                if let Some(config_id) = row.value
+                    && let Some(config) = fetch_kv_config(&mut *conn, &config_id).await
+                {
+                    bindings.push(Binding::Kv {
+                        key: row.key,
+                        config,
+                    });
                 }
             }
 
             BindingType::Database => {
-                if let Some(config_id) = row.value {
-                    if let Some(config) = fetch_database_config(&mut *conn, &config_id).await {
-                        bindings.push(Binding::Database {
-                            key: row.key,
-                            config,
-                        });
-                    }
+                if let Some(config_id) = row.value
+                    && let Some(config) = fetch_database_config(&mut *conn, &config_id).await
+                {
+                    bindings.push(Binding::Database {
+                        key: row.key,
+                        config,
+                    });
                 }
             }
 
             BindingType::Worker => {
-                if let Some(worker_id) = row.value {
-                    if let Some(config) = fetch_worker_binding_config(&mut *conn, &worker_id).await
-                    {
-                        bindings.push(Binding::Worker {
-                            key: row.key,
-                            config,
-                        });
-                    }
+                if let Some(worker_id) = row.value
+                    && let Some(config) = fetch_worker_binding_config(&mut *conn, &worker_id).await
+                {
+                    bindings.push(Binding::Worker {
+                        key: row.key,
+                        config,
+                    });
                 }
             }
         }

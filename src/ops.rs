@@ -963,10 +963,8 @@ fn sanitize_path(path: &str) -> Option<String> {
         match part {
             "" | "." => continue,
             ".." => {
-                if parts.pop().is_none() {
-                    // Trying to go above root - reject
-                    return None;
-                }
+                // Trying to go above root - reject
+                parts.pop()?;
             }
             _ => parts.push(part),
         }
