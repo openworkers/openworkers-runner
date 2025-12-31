@@ -985,10 +985,7 @@ async fn test_tee_branch1_only() {
         let (task, rx) = Task::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
-        assert!(
-            exec_result.is_ok(),
-            "Reading from branch1 only should work"
-        );
+        assert!(exec_result.is_ok(), "Reading from branch1 only should work");
         exec_result.unwrap().expect("Task should execute");
 
         let response = tokio::time::timeout(Duration::from_secs(2), rx)
@@ -1063,10 +1060,7 @@ async fn test_tee_branch2_only() {
         let (task, rx) = Task::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
-        assert!(
-            exec_result.is_ok(),
-            "Reading from branch2 only should work"
-        );
+        assert!(exec_result.is_ok(), "Reading from branch2 only should work");
         exec_result.unwrap().expect("Task should execute");
 
         let response = tokio::time::timeout(Duration::from_secs(2), rx)
@@ -1143,10 +1137,7 @@ async fn test_stream_async_pull() {
         let (task, rx) = Task::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
-        assert!(
-            exec_result.is_ok(),
-            "Async pull should work"
-        );
+        assert!(exec_result.is_ok(), "Async pull should work");
         exec_result.unwrap().expect("Task should execute");
 
         let response = tokio::time::timeout(Duration::from_secs(2), rx)
@@ -1233,10 +1224,7 @@ async fn test_stream_async_pull_nested() {
         let (task, rx) = Task::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
-        assert!(
-            exec_result.is_ok(),
-            "Nested async pull should work"
-        );
+        assert!(exec_result.is_ok(), "Nested async pull should work");
         exec_result.unwrap().expect("Task should execute");
 
         let response = tokio::time::timeout(Duration::from_secs(2), rx)
@@ -1465,10 +1453,7 @@ async fn test_inline_tee_logic() {
         let (task, rx) = Task::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
-        assert!(
-            exec_result.is_ok(),
-            "Inline tee logic should work"
-        );
+        assert!(exec_result.is_ok(), "Inline tee logic should work");
         exec_result.unwrap().expect("Task should execute");
 
         let response = tokio::time::timeout(Duration::from_secs(2), rx)
@@ -1572,12 +1557,8 @@ async fn test_tee_debug() {
         let body_str = String::from_utf8_lossy(&body);
 
         println!("Debug output: {}", body_str);
-        
-        assert!(
-            body_str.contains("logs"),
-            "Should have logs: {}",
-            body_str
-        );
+
+        assert!(body_str.contains("logs"), "Should have logs: {}", body_str);
     })
     .await;
 }

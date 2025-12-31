@@ -33,8 +33,8 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.7.1" }
 
 # Runtime backend (v8 only for now, others require core 0.5)
-# openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", features = ["actix"], optional = true }
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.7.2", features = ["actix"], optional = true }
+openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", features = ["actix"], optional = true }
+# openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.7.2", features = ["actix"], optional = true }
 
 # Database bindings (optional)
 # postgate = { path = "../postgate", default-features = false, optional = true }
