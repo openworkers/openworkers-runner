@@ -454,7 +454,7 @@ impl OperationsHandler for RunnerOperations {
         Box::pin(async move {
             match op {
                 KvOp::Get { key } => {
-                    let result = sqlx::query_scalar::<_, String>(
+                    let result = sqlx::query_scalar::<_, serde_json::Value>(
                         r#"
                         SELECT value FROM kv_data
                         WHERE namespace_id = $1::uuid AND key = $2
@@ -480,6 +480,23 @@ impl OperationsHandler for RunnerOperations {
                     value,
                     expires_in,
                 } => {
+                    // Check value size (100KB limit)
+                    const MAX_VALUE_SIZE: usize = 100 * 1024;
+                    let value_str = match serde_json::to_string(&value) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            return KvResult::Error(format!("Invalid JSON value: {}", e));
+                        }
+                    };
+
+                    if value_str.len() > MAX_VALUE_SIZE {
+                        return KvResult::Error(format!(
+                            "Value too large: {} bytes (max {} bytes)",
+                            value_str.len(),
+                            MAX_VALUE_SIZE
+                        ));
+                    }
+
                     // Calculate expires_at from expires_in (seconds from now)
                     let result = if let Some(ttl) = expires_in {
                         sqlx::query(

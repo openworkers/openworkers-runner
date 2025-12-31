@@ -2431,19 +2431,20 @@ checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
 name = "openworkers-core"
-version = "0.7.0"
-source = "git+https://github.com/openworkers/openworkers-core?tag=v0.7.0#2b0cb27e86321d045c6e04ee7756e0d954f735a3"
+version = "0.7.1"
+source = "git+https://github.com/openworkers/openworkers-core?tag=v0.7.1#8de42cd6785b2df290fd24deff764ac96d5b5203"
 dependencies = [
  "actix-web",
  "bytes",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-stream",
 ]
 
 [[package]]
 name = "openworkers-runner"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "actix-web",
  "async-nats",
@@ -2482,8 +2483,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.7.1"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.7.1#d87128faff614461fa372326d610762afcee8038"
+version = "0.7.2"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.7.2#9ad6e7141cf90fdb9ec7c132aba7ad67a3ee1ac0"
 dependencies = [
  "actix-web",
  "bytes",
