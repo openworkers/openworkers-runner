@@ -2443,7 +2443,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "actix-web",
  "async-nats",
@@ -2482,8 +2482,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.7.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.7.0#9bf2db53be3a705601286835f3108a5df0db70f5"
+version = "0.7.1"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.7.1#d87128faff614461fa372326d610762afcee8038"
 dependencies = [
  "actix-web",
  "bytes",
