@@ -5,7 +5,6 @@ pub mod nats;
 pub mod ops;
 pub mod runtime;
 pub mod store;
-pub mod testing;
 mod transform;
 pub mod worker_pool;
 

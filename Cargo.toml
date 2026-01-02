@@ -93,5 +93,5 @@ name = "snapshot"
 path = "bin/snapshot.rs"
 
 [[bench]]
-name = "generic_benchmark"
+name = "worker_benchmark"
 harness = false

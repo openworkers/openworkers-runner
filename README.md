@@ -2,7 +2,7 @@
 
 OpenWorkers is a runtime for running javascript code in a serverless environment.
 
-This runner manages instances of [OpenWorkers Runtime](https://github.com/openworkers/openworkers-runtime).
+This runner manages instances of [OpenWorkers Runtime](https://github.com/openworkers/openworkers-runtime-v8).
 
 ## Usage
 
