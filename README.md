@@ -8,37 +8,33 @@ This runner manages instances of [OpenWorkers Runtime](https://github.com/openwo
 
 ### Build
 
-The runner supports multiple JavaScript runtime backends via feature flags:
+The runner supports multiple JavaScript runtime backends via feature flags.
+
+**V8 is the recommended runtime** for production use.
 
 ```bash
-# Deno runtime (default)
-cargo build --release
+# V8 runtime (recommended)
+cargo build --release --features v8
 
-# QuickJS runtime
-cargo build --release --no-default-features --features quickjs
-
-# V8 runtime (standalone, without Deno)
-cargo build --release --no-default-features --features v8
-
-# Boa runtime (pure Rust)
-cargo build --release --no-default-features --features boa
-
-# JavaScriptCore runtime (macOS/iOS)
-cargo build --release --no-default-features --features jsc
+# Alternative runtimes (experimental)
+cargo build --release --features quickjs   # QuickJS - lightweight
+cargo build --release --features boa       # Boa - pure Rust
+cargo build --release --features jsc       # JavaScriptCore (macOS/iOS)
+cargo build --release --features deno      # Deno - legacy
 ```
 
 Available features:
 
-- `deno` (default) - Full Deno runtime with Web APIs
+- `v8` - **Recommended** - Standalone V8 engine with full Web API support
 - `quickjs` - Lightweight QuickJS engine
-- `v8` - Standalone V8 engine
-- `boa` - Pure Rust JS engine
+- `boa` - Pure Rust JS engine (experimental)
 - `jsc` - JavaScriptCore (Apple platforms)
+- `deno` - Full Deno runtime (legacy, not actively maintained)
 
-### Snapshot the runtime
+### Snapshot the runtime (V8 only)
 
 ```bash
-cargo run --bin snapshot
+cargo run --features v8 --bin snapshot
 ```
 
 ### Prepare the database
@@ -92,7 +88,7 @@ WORKER_DOMAINS=workers.rocks,workers.dev.localhost
 ```bash
 export RUST_LOG=openworkers_runtime=debug,openworkers_runner=debug # Optional
 
-cargo run --features v8|deno|quickjs|boa|jsc
+cargo run --features v8
 ```
 
 ### Install sqlx-cli (optional - only for development)
