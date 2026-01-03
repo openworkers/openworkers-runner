@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.7.3"
+version = "0.7.5"
 edition = "2024"
 default-run = "openworkers-runner"
 
@@ -20,7 +20,7 @@ jsc = []
 actix-web = "4.12.1"
 bytes = "1.11.0"
 log = "0.4.29"
-tokio = "1.43.0"
+tokio = "1.49.0"
 tokio-util = { version = "0.7", features = ["rt"] }
 flume = "0.12.0"
 once_cell = "1.19"
@@ -34,7 +34,7 @@ openworkers-core = { git = "https://github.com/openworkers/openworkers-core", ta
 
 # Runtime backend (v8 only for now, others require core 0.5)
 # openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", features = ["actix"], optional = true }
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.7.3", features = ["actix"], optional = true }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.7.5", features = ["actix"], optional = true }
 
 # Database bindings (optional)
 # postgate = { path = "../postgate", default-features = false, optional = true }

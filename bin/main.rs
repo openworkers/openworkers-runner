@@ -353,6 +353,7 @@ async fn main() -> std::io::Result<()> {
                 db: pool.clone(),
                 log_tx: log_tx.clone(),
             }))
+            .app_data(web::PayloadConfig::new(4 * 1024 * 1024)) // 4MB body limit
             .service(
                 web::resource("/health")
                     .guard(actix_web::guard::Header("host", "127.0.0.1:8080"))
