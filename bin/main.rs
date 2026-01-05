@@ -7,7 +7,7 @@ use hyper_util::rt::TokioIo;
 use log::{debug, error, warn};
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::net::TcpListener;
+use tokio::net::TcpSocket;
 use tokio::sync::oneshot::channel;
 
 use openworkers_core::{HttpRequest, HyperBody};
@@ -359,24 +359,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = std::sync::Arc::new(AppState { db: pool, log_tx });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let listener = TcpListener::bind(addr).await?;
-    println!("Listening on http://{}", addr);
+    let num_listeners = 4;
 
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let io = TokioIo::new(stream);
+    println!(
+        "Listening on http://{} with {} listeners",
+        addr, num_listeners
+    );
+
+    for i in 0..num_listeners {
+        let socket = TcpSocket::new_v4()?;
+        socket.set_reuseport(true)?;
+        socket.bind(addr)?;
+
+        let listener = socket.listen(1024)?;
         let state = state.clone();
 
-        tokio::task::spawn(async move {
-            let service = service_fn(move |req| {
-                let state = state.clone();
-                async move { handle_request(&state, req).await }
-            });
+        tokio::spawn(async move {
+            debug!("Listener {} started", i);
 
-            if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
-                // Connection errors are normal (client disconnect, etc.)
-                debug!("Connection error: {:?}", err);
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(conn) => conn,
+                    Err(e) => {
+                        error!("Accept error on listener {}: {:?}", i, e);
+                        continue;
+                    }
+                };
+
+                let io = TokioIo::new(stream);
+                let state = state.clone();
+
+                tokio::spawn(async move {
+                    let service = service_fn(move |req| {
+                        let state = state.clone();
+                        async move { handle_request(&state, req).await }
+                    });
+
+                    if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+                        // Connection errors are normal (client disconnect, etc.)
+                        debug!("Connection error: {:?}", err);
+                    }
+                });
             }
         });
     }
+
+    // Keep main alive
+    std::future::pending::<()>().await;
+
+    Ok(())
 }
