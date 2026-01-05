@@ -1,4 +1,4 @@
-//! Integration tests with real actix-web server
+//! Integration tests with real hyper server
 //!
 //! These tests spawn a real HTTP server to test stream cancellation
 //! in conditions closer to production.
@@ -6,60 +6,72 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use actix_web::{App, HttpServer, web};
 use bytes::Bytes;
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use http_body_util::BodyExt;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response};
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+
+use openworkers_core::{HttpMethod, HttpRequest, HyperBody, RequestBody, Script, Task};
 use openworkers_runner::RunnerOperations;
 use openworkers_runner::worker_pool::WORKER_POOL;
-use tokio::sync::oneshot;
 
 #[cfg(feature = "v8")]
 use openworkers_runtime_v8::Worker;
 
-/// Spawn an actix server that runs a worker for each request
+/// Spawn a hyper server that runs a worker for each request
 /// Returns the server address and a shutdown signal
 #[cfg(feature = "v8")]
 async fn spawn_test_server(
     script: Script,
-) -> Result<(String, oneshot::Sender<()>), Box<dyn std::error::Error>> {
-    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+) -> Result<(String, oneshot::Sender<()>), Box<dyn std::error::Error + Send + Sync>> {
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     let (addr_tx, addr_rx) = oneshot::channel::<String>();
 
     let script = Arc::new(script);
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+    tokio::spawn(async move {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _ = addr_tx.send(format!("http://{}", addr));
 
-        rt.block_on(async {
-            let script_clone = script.clone();
-
-            let server = HttpServer::new(move || {
-                let script = script_clone.clone();
-
-                App::new()
-                    .app_data(web::Data::new(script))
-                    .default_service(web::to(
-                        |script: web::Data<Arc<Script>>,
-                         req: actix_web::HttpRequest,
-                         body: Bytes| async move {
-                            handle_request(script, req, body).await
-                        },
-                    ))
-            })
-            .workers(1)
-            .bind("127.0.0.1:0")
-            .unwrap();
-
-            let addr = server.addrs().first().unwrap().to_string();
-            let _ = addr_tx.send(format!("http://{}", addr));
-
-            let server = server.run();
-
+        loop {
             tokio::select! {
-                _ = server => {},
-                _ = shutdown_rx => {},
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((stream, _)) => {
+                            let io = TokioIo::new(stream);
+                            let script = script.clone();
+
+                            tokio::spawn(async move {
+                                let service = service_fn(move |req| {
+                                    let script = script.clone();
+                                    async move { handle_request(script, req).await }
+                                });
+
+                                if let Err(e) = http1::Builder::new()
+                                    .serve_connection(io, service)
+                                    .await
+                                {
+                                    // Connection errors are normal (client disconnect)
+                                    eprintln!("[SERVER] Connection error: {:?}", e);
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            eprintln!("[SERVER] Accept error: {:?}", e);
+                            break;
+                        }
+                    }
+                }
+                _ = &mut shutdown_rx => {
+                    break;
+                }
             }
-        });
+        }
     });
 
     let addr = addr_rx.await?;
@@ -68,14 +80,24 @@ async fn spawn_test_server(
 
 #[cfg(feature = "v8")]
 async fn handle_request(
-    script: web::Data<Arc<Script>>,
-    req: actix_web::HttpRequest,
-    body: Bytes,
-) -> actix_web::HttpResponse {
-    let script: Script = (**script.get_ref()).clone();
+    script: Arc<Script>,
+    req: Request<hyper::body::Incoming>,
+) -> Result<Response<HyperBody>, std::convert::Infallible> {
+    let script: Script = (*script).clone();
+
+    // Extract parts before consuming body
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let headers = req.headers().clone();
+
+    // Collect body
+    let body = match req.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(_) => Bytes::new(),
+    };
 
     let http_request = HttpRequest {
-        method: match req.method().as_str() {
+        method: match method.as_str() {
             "GET" => HttpMethod::Get,
             "POST" => HttpMethod::Post,
             "PUT" => HttpMethod::Put,
@@ -85,9 +107,8 @@ async fn handle_request(
             "OPTIONS" => HttpMethod::Options,
             _ => HttpMethod::Get,
         },
-        url: req.uri().to_string(),
-        headers: req
-            .headers()
+        url: uri.to_string(),
+        headers: headers
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect(),
@@ -133,19 +154,27 @@ async fn handle_request(
 
     // Wait for response
     match tokio::time::timeout(Duration::from_secs(30), res_rx).await {
-        Ok(Ok(Ok(response))) => response.into(),
-        Ok(Ok(Err(e))) => actix_web::HttpResponse::InternalServerError().body(e),
-        Ok(Err(_)) => {
-            actix_web::HttpResponse::InternalServerError().body("Response channel closed")
-        }
-        Err(_) => actix_web::HttpResponse::GatewayTimeout().body("Worker timeout"),
+        Ok(Ok(Ok(response))) => Ok(response.into_hyper()),
+        Ok(Ok(Err(e))) => Ok(error_response(500, &e)),
+        Ok(Err(_)) => Ok(error_response(500, "Response channel closed")),
+        Err(_) => Ok(error_response(504, "Worker timeout")),
     }
 }
 
-/// Test that verifies stream cancellation works through the full actix stack
+fn error_response(status: u16, message: &str) -> Response<HyperBody> {
+    Response::builder()
+        .status(status)
+        .header("content-type", "text/plain")
+        .body(HyperBody::Full(http_body_util::Full::new(Bytes::from(
+            message.to_string(),
+        ))))
+        .unwrap()
+}
+
+/// Test that verifies stream cancellation works through the full hyper stack
 #[tokio::test]
 #[cfg(feature = "v8")]
-async fn test_actix_stream_cancellation() {
+async fn test_hyper_stream_cancellation() {
     let script = Script::new(
         r#"
         globalThis.__emitCount = 0;
@@ -245,7 +274,7 @@ async fn test_actix_stream_cancellation() {
 /// Simpler test: just verify the server can handle streaming responses
 #[tokio::test]
 #[cfg(feature = "v8")]
-async fn test_actix_streaming_works() {
+async fn test_hyper_streaming_works() {
     let script = Script::new(
         r#"
         globalThis.default = {

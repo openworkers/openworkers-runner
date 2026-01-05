@@ -87,7 +87,7 @@ fn run_scheduled(
                 }
             }
             Err(reason) => {
-                use crate::runtime::TerminationReason;
+                use openworkers_core::TerminationReason;
 
                 match reason {
                     TerminationReason::CpuTimeLimit => {

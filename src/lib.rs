@@ -9,7 +9,7 @@ mod transform;
 pub mod worker_pool;
 
 // Re-export TerminationReason for use in bin/main.rs
-pub use runtime::TerminationReason;
+pub use openworkers_core::TerminationReason;
 
 // Re-export Operations for convenience
 pub use ops::{BindingConfigs, DbPool, OperationsStats, RunnerOperations};
