@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.7.6"
+version = "0.7.8"
 edition = "2024"
 license = "MIT"
 default-run = "openworkers-runner"
@@ -34,11 +34,11 @@ reqwest = { version = "0.13.1", default-features = false, features = ["rustls", 
 
 # Core types
 # openworkers-core = { path = "../openworkers-core", features = ["hyper"] }
-openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.7.2", features = ["hyper"] }
+openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.7.3", features = ["hyper"] }
 
 # Runtime backend (v8 only for now, others require core 0.5)
 # openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", optional = true }
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.7.6", optional = true }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.7.8", optional = true }
 
 # Database bindings (optional)
 # postgate = { path = "../postgate", default-features = false, optional = true }
