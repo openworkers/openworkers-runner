@@ -44,6 +44,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 
+use crate::limiter::BindingLimiters;
 use crate::store::{
     AssetsConfig, Binding, DatabaseConfig, KvConfig, StorageConfig, WorkerBindingConfig,
 };
@@ -176,6 +177,8 @@ pub struct RunnerOperations {
     pub bindings: BindingConfigs,
     /// Database pool for KV operations
     pub db_pool: Option<DbPool>,
+    /// Binding limiters (rate limiting for fetch, KV, database, storage)
+    pub limiters: BindingLimiters,
 }
 
 impl RunnerOperations {
@@ -187,7 +190,14 @@ impl RunnerOperations {
             log_tx: None,
             bindings: BindingConfigs::new(),
             db_pool: None,
+            limiters: BindingLimiters::default(),
         }
+    }
+
+    /// Create with custom limiters based on RuntimeLimits
+    pub fn with_limiters(mut self, limiters: BindingLimiters) -> Self {
+        self.limiters = limiters;
+        self
     }
 
     pub fn with_user_id(mut self, user_id: String) -> Self {
@@ -268,6 +278,14 @@ impl OperationsHandler for RunnerOperations {
     /// are routed internally to avoid DNS lookup and external network hop.
     fn handle_fetch(&self, request: HttpRequest) -> OpFuture<'_, Result<HttpResponse, String>> {
         Box::pin(async move {
+            // Acquire fetch limiter permit (blocks if at concurrent limit, errors if total exceeded)
+            let _guard = self
+                .limiters
+                .fetch
+                .acquire()
+                .await
+                .map_err(|e| e.to_string())?;
+
             self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
 
             log::debug!(
@@ -312,6 +330,14 @@ impl OperationsHandler for RunnerOperations {
             let binding_name = binding.to_string();
 
             return Box::pin(async move {
+                // Acquire fetch limiter permit
+                let _guard = self
+                    .limiters
+                    .fetch
+                    .acquire()
+                    .await
+                    .map_err(|e| e.to_string())?;
+
                 self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
 
                 log::debug!(
@@ -351,6 +377,14 @@ impl OperationsHandler for RunnerOperations {
             let binding_name = binding.to_string();
 
             return Box::pin(async move {
+                // Acquire storage limiter permit (storage fetch uses storage limiter)
+                let _guard = self
+                    .limiters
+                    .storage
+                    .acquire()
+                    .await
+                    .map_err(|e| e.to_string())?;
+
                 self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
 
                 log::debug!(
@@ -406,6 +440,11 @@ impl OperationsHandler for RunnerOperations {
             };
 
             return Box::pin(async move {
+                // Acquire storage limiter permit
+                if let Err(e) = self.limiters.storage.acquire().await {
+                    return StorageResult::Error(e.to_string());
+                }
+
                 log::debug!(
                     "[ops] storage {} {} (not yet implemented)",
                     binding_name,
@@ -452,6 +491,11 @@ impl OperationsHandler for RunnerOperations {
         let namespace_id = config.id.clone();
 
         Box::pin(async move {
+            // Acquire KV limiter permit
+            if let Err(e) = self.limiters.kv.acquire().await {
+                return KvResult::Error(e.to_string());
+            }
+
             match op {
                 KvOp::Get { key } => {
                     let result = sqlx::query_scalar::<_, serde_json::Value>(
@@ -636,6 +680,11 @@ impl OperationsHandler for RunnerOperations {
         let shared_pool = self.db_pool.clone();
 
         Box::pin(async move {
+            // Acquire database limiter permit
+            if let Err(e) = self.limiters.database.acquire().await {
+                return DatabaseResult::Error(e.to_string());
+            }
+
             match op {
                 DatabaseOp::Query { sql, params } => {
                     log::debug!(
