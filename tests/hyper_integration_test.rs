@@ -3,6 +3,8 @@
 //! These tests spawn a real HTTP server to test stream cancellation
 //! in conditions closer to production.
 
+#![cfg(not(feature = "wasm"))]
+
 use std::sync::Arc;
 use std::time::Duration;
 

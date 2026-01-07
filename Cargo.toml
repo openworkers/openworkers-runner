@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 license = "MIT"
 default-run = "openworkers-runner"
@@ -10,6 +10,7 @@ default-run = "openworkers-runner"
 [features]
 default = ["database"]
 v8 = ["dep:openworkers-runtime-v8"]
+wasm = ["dep:openworkers-runtime-wasm", "openworkers-core/wasm"]
 database = ["dep:postgate"]
 # Disabled runtimes (require core 0.5, we're on 0.7) - kept as empty features to avoid cfg warnings
 deno = []
@@ -34,11 +35,15 @@ reqwest = { version = "0.13.1", default-features = false, features = ["rustls", 
 
 # Core types
 # openworkers-core = { path = "../openworkers-core", features = ["hyper"] }
-openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.8.0", features = ["hyper"] }
+openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.8.1", features = ["hyper"] }
 
 # Runtime backend (v8 only for now, others require core 0.5)
 # openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", optional = true }
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.8.0", optional = true }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.8.1", optional = true }
+
+# WASM runtime (optional)
+# openworkers-runtime-wasm = { path = "../openworkers-runtime-wasm", optional = true }
+openworkers-runtime-wasm = {  git = "https://github.com/openworkers/openworkers-runtime-wasm", tag = "v0.1.0", optional = true }
 
 # Database bindings (optional)
 # postgate = { path = "../postgate", default-features = false, optional = true }
@@ -87,6 +92,7 @@ lto = true # Enable link-time optimization.
 
 [dev-dependencies]
 criterion = { version = "0.8.1", features = ["async_tokio"] }
+wat = "1.0"
 
 [[bin]]
 name = "openworkers-runner"

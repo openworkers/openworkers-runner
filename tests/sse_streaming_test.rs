@@ -5,6 +5,8 @@
 //!
 //! Bug reproduction: curl -v 'https://cpu-limit.workers.rocks/slow?target=5' was hanging
 
+#![cfg(not(feature = "wasm"))]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

@@ -3,13 +3,13 @@ use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::ops::{DbPool, RunnerOperations};
-use crate::runtime::Worker;
-use crate::store::{WorkerWithBindings, bindings_to_infos};
+use crate::store::WorkerWithBindings;
+use crate::worker::{create_worker, prepare_script};
 use crate::worker_pool::WORKER_POOL;
 
 use openworkers_core::{
-    FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, RuntimeLimits, Script,
-    Task, TerminationReason, WorkerCode,
+    FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, RuntimeLimits, Task,
+    TerminationReason,
 };
 
 type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>;
@@ -18,7 +18,7 @@ type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>
 const FETCH_TIMEOUT_MS: u64 = 64_000; // 64 seconds
 
 pub fn run_fetch(
-    worker: WorkerWithBindings,
+    worker_data: WorkerWithBindings,
     req: HttpRequest,
     res_tx: ResponseSender,
     termination_tx: TerminationTx,
@@ -26,45 +26,28 @@ pub fn run_fetch(
     permit: OwnedSemaphorePermit,
     db_pool: DbPool,
 ) {
-    let worker_id = worker.id.clone();
-    let (log_tx, log_handler) = crate::log::create_log_handler(worker_id.clone(), global_log_tx);
+    let worker_id = worker_data.id.clone();
+    let bindings = worker_data.bindings.clone();
+    let code_type = worker_data.code_type.clone();
 
-    let code = match crate::transform::parse_worker_code_str(&worker.script, &worker.language) {
-        Ok(code) => WorkerCode::js(code),
-        Err(e) => {
-            log::error!("Failed to parse worker code: {}", e);
+    // Parse script before spawning (fail fast)
+    let script = match prepare_script(&worker_data) {
+        Ok(s) => s,
+        Err(err) => {
+            log::error!("Failed to prepare script: {err:?}");
             res_tx
                 .send(HttpResponse {
                     status: 500,
                     headers: vec![],
-                    body: ResponseBody::Bytes(format!("Failed to parse worker code: {}", e).into()),
+                    body: ResponseBody::Bytes(format!("Failed to prepare script: {err:?}").into()),
                 })
                 .ok();
-            termination_tx
-                .send(Err(TerminationReason::InitializationError(format!(
-                    "Failed to parse worker code: {}",
-                    e
-                ))))
-                .ok();
+            termination_tx.send(Err(err)).ok();
             return;
         }
     };
 
-    // Convert bindings to BindingInfo for Script (names + types only)
-    let binding_infos = bindings_to_infos(&worker.bindings);
-
-    // Clone bindings for RunnerOperations (full configs)
-    let bindings_for_ops = worker.bindings.clone();
-
-    let script = Script {
-        code,
-        env: if worker.env.is_empty() {
-            None
-        } else {
-            Some(worker.env.clone())
-        },
-        bindings: binding_infos,
-    };
+    let (log_tx, log_handler) = crate::log::create_log_handler(worker_id.clone(), global_log_tx);
 
     // Use the sequential worker pool - ensures ONE V8 isolate per thread at a time
     WORKER_POOL.spawn(move || async move {
@@ -85,28 +68,31 @@ pub fn run_fetch(
             RunnerOperations::new()
                 .with_worker_id(worker_id)
                 .with_log_tx(log_tx)
-                .with_bindings(bindings_for_ops)
+                .with_bindings(bindings)
                 .with_db_pool(db_pool),
         );
 
-        let mut worker = match Worker::new_with_ops(script, Some(limits), ops).await {
-            Ok(worker) => worker,
+        // Create worker
+        let mut worker = match create_worker(script, limits, ops, &code_type).await {
+            Ok(w) => w,
             Err(err) => {
-                log::error!("failed to create worker: {err}");
+                log::error!("failed to create worker: {err:?}");
                 res_tx
                     .send(HttpResponse {
                         status: 500,
                         headers: vec![],
-                        body: ResponseBody::Bytes(format!("failed to create worker: {err}").into()),
+                        body: ResponseBody::Bytes(
+                            format!("failed to create worker: {err:?}").into(),
+                        ),
                     })
-                    .unwrap();
-
+                    .ok();
+                termination_tx.send(Err(err)).ok();
+                log_handler.flush();
                 return;
             }
         };
 
         let task = Task::Fetch(Some(FetchInit::new(req, res_tx)));
-
         log::debug!("exec fetch task with {}ms timeout", FETCH_TIMEOUT_MS);
 
         // Wrap execution with timeout

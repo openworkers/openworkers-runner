@@ -10,6 +10,8 @@
 //! - Immediate disconnect (before first chunk)
 //! - exec() completion timing
 
+#![cfg(not(feature = "wasm"))]
+
 use std::collections::HashMap;
 use std::time::Duration;
 

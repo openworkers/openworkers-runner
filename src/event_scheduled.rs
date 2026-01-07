@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::ops::{DbPool, RunnerOperations};
-use crate::runtime::Worker;
-use crate::store::{self, Binding, bindings_to_infos};
+use crate::store::{self, WorkerWithBindings};
+use crate::worker::{create_worker, prepare_script};
 use crate::worker_pool::WORKER_POOL;
 
-use openworkers_core::{RuntimeLimits, ScheduledInit, Script, Task, WorkerCode};
+use openworkers_core::{RuntimeLimits, ScheduledInit, Task, TerminationReason};
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -21,11 +21,19 @@ pub struct ScheduledData {
 
 fn run_scheduled(
     data: ScheduledData,
-    script: Script,
-    bindings: Vec<Binding>,
+    worker_data: WorkerWithBindings,
     db_pool: DbPool,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
 ) {
+    // Parse script before spawning (fail fast)
+    let script = match prepare_script(&worker_data) {
+        Ok(s) => s,
+        Err(err) => {
+            log::error!("Failed to prepare script for scheduled task: {err:?}");
+            return;
+        }
+    };
+
     // Try to acquire a worker slot
     let permit = match crate::worker_pool::WORKER_SEMAPHORE
         .clone()
@@ -41,7 +49,9 @@ fn run_scheduled(
         }
     };
 
-    let worker_id = data.worker_id.clone();
+    let worker_id = worker_data.id.clone();
+    let bindings = worker_data.bindings.clone();
+    let code_type = worker_data.code_type.clone();
     let (log_tx, log_handler) = crate::log::create_log_handler(worker_id.clone(), global_log_tx);
 
     // Use the sequential worker pool - ensures ONE V8 isolate per thread at a time
@@ -65,10 +75,11 @@ fn run_scheduled(
                 .with_db_pool(db_pool),
         );
 
-        let mut worker = match Worker::new_with_ops(script, Some(limits), ops).await {
-            Ok(worker) => worker,
+        // Create worker
+        let mut worker = match create_worker(script, limits, ops, &code_type).await {
+            Ok(w) => w,
             Err(err) => {
-                log::error!("failed to create scheduled worker: {err}");
+                log::error!("failed to create scheduled worker: {err:?}");
                 log_handler.flush();
                 return;
             }
@@ -79,6 +90,7 @@ fn run_scheduled(
         let task = Task::Scheduled(Some(ScheduledInit::new(res_tx, data.scheduled_time)));
 
         log::debug!("exec scheduled task");
+
         match worker.exec(task).await {
             Ok(()) => {
                 log::debug!("scheduled task completed successfully");
@@ -88,27 +100,23 @@ fn run_scheduled(
                     Err(err) => log::error!("scheduled task response error: {err}"),
                 }
             }
-            Err(reason) => {
-                use openworkers_core::TerminationReason;
-
-                match reason {
-                    TerminationReason::CpuTimeLimit => {
-                        log::warn!("scheduled task terminated: CPU time limit exceeded");
-                    }
-                    TerminationReason::WallClockTimeout => {
-                        log::warn!("scheduled task terminated: wall-clock timeout");
-                    }
-                    TerminationReason::MemoryLimit => {
-                        log::warn!("scheduled task terminated: memory limit exceeded");
-                    }
-                    TerminationReason::Exception(msg) => {
-                        log::error!("scheduled task terminated: uncaught exception: {}", msg);
-                    }
-                    _ => {
-                        log::error!("scheduled task terminated: {:?}", reason);
-                    }
+            Err(reason) => match reason {
+                TerminationReason::CpuTimeLimit => {
+                    log::warn!("scheduled task terminated: CPU time limit exceeded");
                 }
-            }
+                TerminationReason::WallClockTimeout => {
+                    log::warn!("scheduled task terminated: wall-clock timeout");
+                }
+                TerminationReason::MemoryLimit => {
+                    log::warn!("scheduled task terminated: memory limit exceeded");
+                }
+                TerminationReason::Exception(msg) => {
+                    log::error!("scheduled task terminated: uncaught exception: {}", msg);
+                }
+                _ => {
+                    log::error!("scheduled task terminated: {:?}", reason);
+                }
+            },
         }
 
         // CRITICAL: Flush logs before worker is dropped to prevent log loss
@@ -165,44 +173,16 @@ pub fn handle_scheduled(
                 log::debug!("scheduled task parsed: {:?}", data);
 
                 let worker_id = store::WorkerIdentifier::Id(data.worker_id.clone());
-                let worker = match store::get_worker_with_bindings(&mut conn, worker_id).await {
-                    Some(worker) => worker,
+                let worker_data = match store::get_worker_with_bindings(&mut conn, worker_id).await
+                {
+                    Some(w) => w,
                     None => {
                         log::error!("worker not found: {:?}", data.worker_id);
                         continue;
                     }
                 };
 
-                let code =
-                    match crate::transform::parse_worker_code_str(&worker.script, &worker.language)
-                    {
-                        Ok(code) => WorkerCode::js(code),
-                        Err(e) => {
-                            log::error!("Failed to parse worker code for scheduled task: {}", e);
-                            continue;
-                        }
-                    };
-
-                // Convert bindings to BindingInfo for Script (names + types only)
-                let binding_infos = bindings_to_infos(&worker.bindings);
-
-                let script = Script {
-                    code,
-                    env: if worker.env.is_empty() {
-                        None
-                    } else {
-                        Some(worker.env.clone())
-                    },
-                    bindings: binding_infos,
-                };
-
-                run_scheduled(
-                    data,
-                    script,
-                    worker.bindings,
-                    db.clone(),
-                    global_log_tx.clone(),
-                );
+                run_scheduled(data, worker_data, db.clone(), global_log_tx.clone());
             }
 
             log::debug!("scheduled task listener stopped");

@@ -25,12 +25,29 @@ pub use openworkers_runtime_boa::*;
 #[cfg(feature = "jsc")]
 pub use openworkers_runtime_jsc::*;
 
-// Compile-time check: ensure exactly one runtime is selected
+// Snapshot stub for WASM runtime (WASM doesn't need/support snapshots)
+#[cfg(feature = "wasm")]
+pub mod snapshot {
+    /// Snapshot output structure (stub for compatibility)
+    pub struct SnapshotOutput {
+        pub output: Vec<u8>,
+    }
+
+    /// Create a runtime snapshot (stub - WASM doesn't need/support snapshots)
+    pub fn create_runtime_snapshot() -> Result<SnapshotOutput, String> {
+        Err("WASM runtime does not support snapshots".to_string())
+    }
+}
+
+// Compile-time check: ensure at least one runtime is selected
 #[cfg(not(any(
     feature = "deno",
     feature = "quickjs",
     feature = "v8",
     feature = "boa",
-    feature = "jsc"
+    feature = "jsc",
+    feature = "wasm"
 )))]
-compile_error!("At least one runtime feature must be enabled: deno, quickjs, v8, boa, or jsc");
+compile_error!(
+    "At least one runtime feature must be enabled: deno, quickjs, v8, boa, jsc, or wasm"
+);

@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::net::TcpSocket;
 use tokio::sync::oneshot::channel;
 
-use openworkers_core::{HttpRequest, HyperBody};
+use openworkers_core::{HttpRequest, HttpResponse, HyperBody};
 use openworkers_runner::store::WorkerIdentifier;
 
 use sqlx::postgres::PgPoolOptions;
@@ -181,7 +181,7 @@ async fn handle_request(
         }
     };
 
-    let (res_tx, res_rx) = channel::<openworkers_runner::runtime::HttpResponse>();
+    let (res_tx, res_rx) = channel::<HttpResponse>();
     let (termination_tx, termination_rx) =
         channel::<Result<(), openworkers_core::TerminationReason>>();
 

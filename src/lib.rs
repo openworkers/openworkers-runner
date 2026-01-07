@@ -6,7 +6,9 @@ pub mod nats;
 pub mod ops;
 pub mod runtime;
 pub mod store;
+#[cfg(feature = "v8")]
 mod transform;
+pub mod worker;
 pub mod worker_pool;
 
 // Re-export TerminationReason for use in bin/main.rs

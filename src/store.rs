@@ -8,10 +8,12 @@ pub enum WorkerIdentifier {
 }
 
 #[derive(Clone, Debug, PartialEq, sqlx::Type)]
-#[sqlx(type_name = "enum_workers_language", rename_all = "lowercase")]
-pub enum WorkerLanguage {
+#[sqlx(type_name = "enum_code_type", rename_all = "lowercase")]
+pub enum CodeType {
     Javascript,
     Typescript,
+    Wasm,
+    Snapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, sqlx::Type)]
@@ -142,9 +144,9 @@ pub struct WorkerData {
     pub id: String,
     pub name: String,
     pub env: Option<sqlx::types::Json<std::collections::HashMap<String, String>>>,
-    pub script: String,
+    pub code: Vec<u8>,
+    pub code_type: CodeType,
     pub checksum: i64,
-    pub language: WorkerLanguage,
 }
 
 /// Extended worker data with binding configs
@@ -152,9 +154,9 @@ pub struct WorkerData {
 pub struct WorkerWithBindings {
     pub id: String,
     pub name: String,
-    pub script: String,
+    pub code: Vec<u8>,
+    pub code_type: CodeType,
     pub checksum: i64,
-    pub language: WorkerLanguage,
     /// Simple env vars (for backwards compatibility)
     pub env: HashMap<String, String>,
     /// All bindings (vars, secrets, and resource bindings)
@@ -177,9 +179,9 @@ impl From<WorkerData> for WorkerWithBindings {
         Self {
             id: data.id,
             name: data.name,
-            script: data.script,
+            code: data.code,
+            code_type: data.code_type,
             checksum: data.checksum,
-            language: data.language,
             env,
             bindings,
         }
@@ -197,15 +199,16 @@ pub async fn get_worker(
         SELECT
             W.id::text,
             W.name,
-            W.script,
-            W.language,
-            cast(extract(epoch from W.updated_at) + COALESCE(extract(epoch from max(V.updated_at)), 0) as BIGINT) as checksum,
+            D.code,
+            D.code_type,
+            cast(extract(epoch from D.deployed_at) + COALESCE(extract(epoch from max(V.updated_at)), 0) as BIGINT) as checksum,
             json_object_agg(V.key, V.value) FILTER (WHERE V IS NOT NULL) AS env
         FROM workers AS W
+        JOIN worker_deployments AS D ON D.worker_id = W.id AND D.version = W.current_version
         LEFT OUTER JOIN environment_values AS V ON W.environment_id=V.environment_id AND W.user_id=V.user_id
         LEFT OUTER JOIN environments AS E ON W.environment_id=E.id AND W.user_id=E.user_id
         WHERE {}
-        GROUP BY W.id, E.id
+        GROUP BY W.id, E.id, D.code, D.code_type, D.deployed_at
         "#,
         match identifier {
             WorkerIdentifier::Id(_) => "W.id::text = $1",
@@ -225,10 +228,10 @@ pub async fn get_worker(
     {
         Ok(worker) => {
             log::debug!(
-                "worker found: id: {}, checksum: {}, language: {:?}",
+                "worker found: id: {}, checksum: {}, code_type: {:?}",
                 worker.id,
                 worker.checksum,
-                worker.language
+                worker.code_type
             );
             Some(worker)
         }
@@ -254,16 +257,17 @@ pub async fn get_worker_with_bindings(
 ) -> Option<WorkerWithBindings> {
     log::debug!("get_worker_with_bindings: {:?}", identifier);
 
-    // First get the basic worker data
+    // First get the basic worker data with code from deployments
     let worker_query = format!(
         r#"
         SELECT
             W.id::text,
             W.name,
-            W.script,
-            W.language,
-            cast(extract(epoch from W.updated_at) as BIGINT) as checksum
+            D.code,
+            D.code_type,
+            cast(extract(epoch from D.deployed_at) as BIGINT) as checksum
         FROM workers AS W
+        JOIN worker_deployments AS D ON D.worker_id = W.id AND D.version = W.current_version
         WHERE {}
         "#,
         match &identifier {
@@ -281,8 +285,8 @@ pub async fn get_worker_with_bindings(
     struct BasicWorker {
         id: String,
         name: String,
-        script: String,
-        language: WorkerLanguage,
+        code: Vec<u8>,
+        code_type: CodeType,
         checksum: i64,
     }
 
@@ -414,9 +418,9 @@ pub async fn get_worker_with_bindings(
     Some(WorkerWithBindings {
         id: basic.id,
         name: basic.name,
-        script: basic.script,
+        code: basic.code,
+        code_type: basic.code_type,
         checksum: basic.checksum,
-        language: basic.language,
         env,
         bindings,
     })

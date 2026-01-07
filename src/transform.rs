@@ -11,7 +11,7 @@ use swc_ecma_transforms_base::{fixer::fixer, hygiene::hygiene, resolver};
 use swc_ecma_transforms_typescript::strip;
 use swc_ecma_visit::{VisitMut, VisitMutWith};
 
-use crate::store::WorkerLanguage;
+use crate::store::CodeType;
 
 /// Transforms `export default X` to `globalThis.default = X`
 struct ExportDefaultTransform;
@@ -97,22 +97,26 @@ fn create_globalthis_default_assign(expr: Expr) -> Expr {
     })
 }
 
-pub(crate) fn parse_worker_code_str(
-    script: &str,
-    language: &WorkerLanguage,
-) -> Result<String, String> {
+pub(crate) fn parse_worker_code(code: &[u8], code_type: &CodeType) -> Result<String, String> {
+    // Convert bytes to string for JS/TS
+    let script =
+        std::str::from_utf8(code).map_err(|e| format!("Invalid UTF-8 in worker code: {}", e))?;
+
     let cm: Lrc<SourceMap> = Default::default();
     let handler = Handler::with_emitter_writer(Box::new(std::io::stderr()), Some(cm.clone()));
 
-    let (filename, syntax) = match language {
-        WorkerLanguage::Javascript => ("script.js", Syntax::Es(Default::default())),
-        WorkerLanguage::Typescript => (
+    let (filename, syntax) = match code_type {
+        CodeType::Javascript => ("script.js", Syntax::Es(Default::default())),
+        CodeType::Typescript => (
             "script.ts",
             Syntax::Typescript(TsSyntax {
                 tsx: false,
                 ..Default::default()
             }),
         ),
+        CodeType::Wasm | CodeType::Snapshot => {
+            return Err("parse_worker_code called with non-JS code type".to_string());
+        }
     };
 
     let fm = cm.new_source_file(
@@ -122,7 +126,7 @@ pub(crate) fn parse_worker_code_str(
 
     let globals = Globals::default();
     GLOBALS.set(&globals, || {
-        transform_code(cm, handler, fm, syntax, language)
+        transform_code(cm, handler, fm, syntax, code_type)
     })
 }
 
@@ -131,7 +135,7 @@ fn transform_code(
     handler: Handler,
     fm: Lrc<swc_common::SourceFile>,
     syntax: Syntax,
-    language: &WorkerLanguage,
+    code_type: &CodeType,
 ) -> Result<String, String> {
     // Setup comments tracking
     let comments = SingleThreadedComments::default();
@@ -166,7 +170,7 @@ fn transform_code(
     let mut program = program.apply(resolver(unresolved_mark, top_level_mark, true));
 
     // Apply TypeScript stripping (only for TS)
-    if matches!(language, WorkerLanguage::Typescript) {
+    if matches!(code_type, CodeType::Typescript) {
         program = program.apply(strip(unresolved_mark, top_level_mark));
     }
 

@@ -1,6 +1,6 @@
-//! Worker tests for V8 runtime
+//! Worker tests for JavaScript runtimes
 
-#![cfg(feature = "v8")]
+#![cfg(not(feature = "wasm"))]
 
 use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
 use openworkers_runtime_v8::Worker;
