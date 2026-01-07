@@ -2182,7 +2182,8 @@ checksum = "9f50d9b3dabb09ecd771ad0aa242ca6894994c130308ca3d7684634df8037391"
 
 [[package]]
 name = "openworkers-core"
-version = "0.7.4"
+version = "0.8.0"
+source = "git+https://github.com/openworkers/openworkers-core?tag=v0.8.0#db406edec93aeccf146dc52e1b100404c23a0203"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -2195,7 +2196,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.7.10"
+version = "0.8.0"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2236,7 +2237,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.7.9"
+version = "0.8.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.0#003dfbdf0806400686b423d993f51348e915f48e"
 dependencies = [
  "bytes",
  "env_logger",

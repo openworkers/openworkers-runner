@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
 use crate::ops::{DbPool, RunnerOperations};
-use crate::runtime::{RuntimeLimits, ScheduledInit, Script, Task, Worker};
+use crate::runtime::Worker;
 use crate::store::{self, Binding, bindings_to_infos};
 use crate::worker_pool::WORKER_POOL;
+
+use openworkers_core::{RuntimeLimits, ScheduledInit, Script, Task, WorkerCode};
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -174,7 +176,7 @@ pub fn handle_scheduled(
                 let code =
                     match crate::transform::parse_worker_code_str(&worker.script, &worker.language)
                     {
-                        Ok(code) => code,
+                        Ok(code) => WorkerCode::js(code),
                         Err(e) => {
                             log::error!("Failed to parse worker code for scheduled task: {}", e);
                             continue;

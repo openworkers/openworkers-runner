@@ -3,12 +3,14 @@ use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::ops::{DbPool, RunnerOperations};
-use crate::runtime::{
-    FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, RuntimeLimits, Script,
-    Task, TerminationReason, Worker,
-};
+use crate::runtime::Worker;
 use crate::store::{WorkerWithBindings, bindings_to_infos};
 use crate::worker_pool::WORKER_POOL;
+
+use openworkers_core::{
+    FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, RuntimeLimits, Script,
+    Task, TerminationReason, WorkerCode,
+};
 
 type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>;
 
@@ -28,7 +30,7 @@ pub fn run_fetch(
     let (log_tx, log_handler) = crate::log::create_log_handler(worker_id.clone(), global_log_tx);
 
     let code = match crate::transform::parse_worker_code_str(&worker.script, &worker.language) {
-        Ok(code) => code,
+        Ok(code) => WorkerCode::js(code),
         Err(e) => {
             log::error!("Failed to parse worker code: {}", e);
             res_tx
