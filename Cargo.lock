@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.8.1"
+version = "0.8.4"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2711,8 +2711,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.8.1"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.1#a98705f258550cb8ffaa8062a02edc818f084c1e"
+version = "0.8.4"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.4#49cbf315ec168718b5cf33c7a104ba4fd1977677"
 dependencies = [
  "bytes",
  "env_logger",
