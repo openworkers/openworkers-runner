@@ -546,3 +546,37 @@ async fn test_respond_with_wins_over_return() {
     })
     .await;
 }
+
+// =============================================================================
+// Bundler output tests - export { x as default }
+// =============================================================================
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_export_as_default_bundler_pattern_transformed() {
+    // This is what `export { index_default as default }` becomes after transformation.
+    // The transformation is: `export { x as default }` -> `globalThis.default = x`
+    run_local(|| async {
+        let script = Script::new(
+            r#"
+            const index_default = {
+                fetch(request) {
+                    return new Response('from bundler pattern');
+                }
+            };
+            globalThis.default = index_default;
+            "#,
+        );
+
+        let mut worker = Worker::new(script, None)
+            .await
+            .expect("Worker should initialize");
+
+        let (status, body) = fetch_with_timeout(&mut worker, 2)
+            .await
+            .expect("Should get response");
+
+        assert_eq!(status, 200);
+        assert_eq!(body, "from bundler pattern");
+    })
+    .await;
+}
