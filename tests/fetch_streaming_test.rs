@@ -31,7 +31,7 @@ where
 }
 
 /// Test basic fetch - worker fetches external URL and returns result
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_fetch_basic() {
     run_in_local(|| async {
         let script = Script::new(
@@ -95,7 +95,7 @@ async fn test_fetch_basic() {
 }
 
 /// Test fetch with streaming body read
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_fetch_streaming_read() {
     run_in_local(|| async {
         let script = Script::new(
@@ -184,7 +184,7 @@ async fn test_fetch_streaming_read() {
 }
 
 /// Test fetch forward - proxy pattern
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_fetch_forward() {
     run_in_local(|| async {
         let script = Script::new(
@@ -250,7 +250,7 @@ async fn test_fetch_forward() {
 }
 
 /// Test POST fetch with body
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_fetch_post_with_body() {
     run_in_local(|| async {
         let script = Script::new(
@@ -323,7 +323,7 @@ async fn test_fetch_post_with_body() {
 }
 
 /// Test that fetch forward returns a streaming response
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_fetch_forward_streaming() {
     run_in_local(|| async {
         let script = Script::new(
@@ -376,7 +376,7 @@ async fn test_fetch_forward_streaming() {
 }
 
 /// Test streaming response with chunked reading
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_streaming_response_chunked() {
     run_in_local(|| async {
         let script = Script::new(
@@ -423,7 +423,7 @@ async fn test_streaming_response_chunked() {
 }
 
 /// Test that processed fetch (not forward) still works
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_processed_fetch_response() {
     run_in_local(|| async {
         let script = Script::new(
@@ -477,7 +477,7 @@ async fn test_processed_fetch_response() {
 /// Test Response.clone() after fetch
 /// This tests the tee() implementation used by clone()
 /// Bug report: Response.clone() causes worker to hang in caching scenarios
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_response_clone_after_fetch() {
     run_in_local(|| async {
         let script = Script::new(
@@ -563,7 +563,7 @@ async fn test_response_clone_after_fetch() {
 
 /// Test Response.clone() in caching scenario
 /// Reproduces the exact bug: cache response, return clone
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_response_clone_cache_pattern() {
     run_in_local(|| async {
         let script = Script::new(
@@ -660,7 +660,7 @@ async fn test_response_clone_cache_pattern() {
 
 /// Test fetch() with a ReadableStream as body
 /// This is a critical edge case: streaming body in outgoing fetch requests
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 async fn test_fetch_with_streaming_body() {
     run_in_local(|| async {
         let script = Script::new(
@@ -744,7 +744,7 @@ async fn test_fetch_with_streaming_body() {
 }
 
 /// Test basic tee() without fetch - isolates the stream issue
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_basic_stream_tee() {
     run_in_local(|| async {
         let script = Script::new(
@@ -848,7 +848,7 @@ async fn test_basic_stream_tee() {
 }
 
 /// Test basic ReadableStream without tee - sanity check
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_basic_stream_no_tee() {
     run_in_local(|| async {
         let script = Script::new(
@@ -937,7 +937,7 @@ async fn test_basic_stream_no_tee() {
 }
 
 /// Test tee() reading from branch1 only
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_tee_branch1_only() {
     run_in_local(|| async {
         let script = Script::new(
@@ -1012,7 +1012,7 @@ async fn test_tee_branch1_only() {
 }
 
 /// Test tee() reading from branch2 only
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_tee_branch2_only() {
     run_in_local(|| async {
         let script = Script::new(
@@ -1087,7 +1087,7 @@ async fn test_tee_branch2_only() {
 }
 
 /// Test ReadableStream with async pull
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_stream_async_pull() {
     run_in_local(|| async {
         let script = Script::new(
@@ -1164,7 +1164,7 @@ async fn test_stream_async_pull() {
 }
 
 /// Test ReadableStream with async pull that awaits another stream
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_stream_async_pull_nested() {
     run_in_local(|| async {
         let script = Script::new(
@@ -1251,7 +1251,7 @@ async fn test_stream_async_pull_nested() {
 }
 
 /// Test two streams sharing a reader (similar to tee)
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_two_streams_shared_reader() {
     run_in_local(|| async {
         let script = Script::new(
@@ -1369,7 +1369,7 @@ async fn test_two_streams_shared_reader() {
 }
 
 /// Inline tee logic test - exactly what tee() does
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_inline_tee_logic() {
     run_in_local(|| async {
         let script = Script::new(
@@ -1480,7 +1480,7 @@ async fn test_inline_tee_logic() {
 }
 
 /// Debug test to see where tee hangs
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_tee_debug() {
     run_in_local(|| async {
         let script = Script::new(

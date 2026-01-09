@@ -30,7 +30,7 @@ where
 
 /// Test SSE streaming response with ReadableStream start() - THE ORIGINAL BUG
 /// This is the exact pattern from cpu-limit.workers.rocks/slow
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_sse_streaming_with_start() {
     run_in_local(|| async {
         let script = Script::new(
@@ -132,7 +132,7 @@ async fn test_sse_streaming_with_start() {
 }
 
 /// Test SSE with ReadableStream pull() pattern
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_sse_with_readable_stream_pull() {
     run_in_local(|| async {
         let script = Script::new(
@@ -212,7 +212,7 @@ async fn test_sse_with_readable_stream_pull() {
 }
 
 /// Test that streaming chunks are received incrementally (not buffered)
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_sse_chunks_received_incrementally() {
     run_in_local(|| async {
         let script = Script::new(
@@ -297,7 +297,7 @@ async fn test_sse_chunks_received_incrementally() {
 }
 
 /// Test longer SSE stream (simulates real-world usage)
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_sse_longer_stream() {
     run_in_local(|| async {
         let script = Script::new(

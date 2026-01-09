@@ -50,7 +50,7 @@ where
 /// This test FAILS when the bug exists:
 /// - Bug behavior: Worker emits all 10 chunks even when client disconnects after 2
 /// - Expected behavior: Worker stops within 1-2 chunks after disconnect
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 #[cfg(feature = "v8")]
 async fn test_stream_stops_on_consumer_disconnect() {
     run_in_local(|| async {
@@ -191,7 +191,7 @@ async fn test_stream_stops_on_consumer_disconnect() {
 }
 
 /// Test that directly verifies the emit count after disconnect.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 #[cfg(feature = "v8")]
 async fn test_emit_count_after_disconnect() {
     run_in_local(|| async {
@@ -304,7 +304,7 @@ async fn test_emit_count_after_disconnect() {
 
 /// Test that enqueue() throws when client disconnects (throw-based detection).
 /// Worker does NOT check signal.aborted - relies on enqueue throwing.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 #[cfg(feature = "v8")]
 async fn test_enqueue_throws_on_disconnect() {
     run_in_local(|| async {
@@ -393,7 +393,7 @@ async fn test_enqueue_throws_on_disconnect() {
 /// Test that signal is aborted when client disconnects.
 /// Note: When exec() exits due to disconnect, the event loop stops,
 /// so cleanup code in pending awaits won't run. The signal IS set though.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 #[cfg(feature = "v8")]
 async fn test_signal_is_aborted_on_disconnect() {
     run_in_local(|| async {
@@ -482,7 +482,7 @@ async fn test_signal_is_aborted_on_disconnect() {
 }
 
 /// Test immediate disconnect - drop receiver before reading any chunks.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 #[cfg(feature = "v8")]
 async fn test_immediate_disconnect() {
     run_in_local(|| async {
@@ -568,7 +568,7 @@ async fn test_immediate_disconnect() {
 }
 
 /// Test that exec() completes quickly after disconnect (no hanging).
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 #[cfg(feature = "v8")]
 async fn test_exec_completes_quickly_after_disconnect() {
     run_in_local(|| async {
@@ -652,7 +652,7 @@ async fn test_exec_completes_quickly_after_disconnect() {
 }
 
 /// Test normal stream completion (no disconnect) still works.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 #[cfg(feature = "v8")]
 async fn test_normal_stream_completion() {
     run_in_local(|| async {

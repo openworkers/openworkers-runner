@@ -73,7 +73,7 @@ async fn fetch_with_timeout(
 // addEventListener tests
 // =============================================================================
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_add_event_listener_with_respond_with() {
     run_local(|| async {
         let script = Script::new(
@@ -96,7 +96,7 @@ async fn test_add_event_listener_with_respond_with() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_add_event_listener_with_return() {
     run_local(|| async {
         let script = Script::new(
@@ -119,7 +119,7 @@ async fn test_add_event_listener_with_return() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_add_event_listener_async_with_respond_with() {
     run_local(|| async {
         let script = Script::new(
@@ -143,7 +143,7 @@ async fn test_add_event_listener_async_with_respond_with() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_add_event_listener_async_with_return() {
     run_local(|| async {
         let script = Script::new(
@@ -170,7 +170,7 @@ async fn test_add_event_listener_async_with_return() {
 // globalThis.default = { fetch } tests (ES Modules style, post-transform)
 // =============================================================================
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_global_default_fetch() {
     run_local(|| async {
         // This is what `export default { fetch() { ... } }` becomes after SWC transform
@@ -196,7 +196,7 @@ async fn test_global_default_fetch() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_global_default_async_fetch() {
     run_local(|| async {
         let script = Script::new(
@@ -225,7 +225,7 @@ async fn test_global_default_async_fetch() {
 // 501 error cases - no valid fetch handler
 // =============================================================================
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_global_default_empty_returns_501() {
     run_local(|| async {
         // `export default {}` becomes `globalThis.default = {}`
@@ -245,7 +245,7 @@ async fn test_global_default_empty_returns_501() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_global_default_scheduled_only_returns_501_for_fetch() {
     run_local(|| async {
         let script = Script::new(
@@ -270,7 +270,7 @@ async fn test_global_default_scheduled_only_returns_501_for_fetch() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_no_handler_at_all_returns_501() {
     run_local(|| async {
         let script = Script::new(
@@ -296,7 +296,7 @@ async fn test_no_handler_at_all_returns_501() {
 // Priority tests - when multiple handlers are defined
 // =============================================================================
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_add_event_listener_takes_priority_over_empty_global_default() {
     run_local(|| async {
         let script = Script::new(
@@ -321,7 +321,7 @@ async fn test_add_event_listener_takes_priority_over_empty_global_default() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_global_default_fetch_takes_priority_over_add_event_listener() {
     run_local(|| async {
         let script = Script::new(
@@ -354,7 +354,7 @@ async fn test_global_default_fetch_takes_priority_over_add_event_listener() {
 // Edge cases
 // =============================================================================
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_global_default_null_returns_501() {
     run_local(|| async {
         let script = Script::new(r#"globalThis.default = null;"#);
@@ -373,7 +373,7 @@ async fn test_global_default_null_returns_501() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_global_default_number_returns_501() {
     run_local(|| async {
         let script = Script::new(r#"globalThis.default = 42;"#);
@@ -392,7 +392,7 @@ async fn test_global_default_number_returns_501() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_global_default_string_returns_501() {
     run_local(|| async {
         let script = Script::new(r#"globalThis.default = "hello";"#);
@@ -411,7 +411,7 @@ async fn test_global_default_string_returns_501() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_global_default_fetch_not_a_function_returns_501() {
     run_local(|| async {
         let script = Script::new(r#"globalThis.default = { fetch: "not a function" };"#);
@@ -434,7 +434,7 @@ async fn test_global_default_fetch_not_a_function_returns_501() {
 // Regression tests - respondWith should not be overwritten by async return
 // =============================================================================
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_async_handler_respond_with_not_overwritten() {
     // This tests that when an async handler calls respondWith(),
     // the implicit Promise return doesn't overwrite responsePromise
@@ -461,7 +461,7 @@ async fn test_async_handler_respond_with_not_overwritten() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_async_handler_respond_with_after_await() {
     // respondWith called after an await - should still work
     run_local(|| async {
@@ -486,7 +486,7 @@ async fn test_async_handler_respond_with_after_await() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_async_handler_respond_with_delayed_promise() {
     // respondWith receives a Promise that takes time to resolve
     // The async handler's implicit Promise return should NOT interfere
@@ -520,7 +520,7 @@ async fn test_async_handler_respond_with_delayed_promise() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_respond_with_wins_over_return() {
     // When both respondWith and return are used, respondWith should win
     // (This is the Service Worker spec behavior)
@@ -551,7 +551,7 @@ async fn test_respond_with_wins_over_return() {
 // Bundler output tests - export { x as default }
 // =============================================================================
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_export_as_default_bundler_pattern_transformed() {
     // This is what `export { index_default as default }` becomes after transformation.
     // The transformation is: `export { x as default }` -> `globalThis.default = x`
