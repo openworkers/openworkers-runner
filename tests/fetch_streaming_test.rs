@@ -31,7 +31,7 @@ where
 }
 
 /// Test basic fetch - worker fetches external URL and returns result
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_fetch_basic() {
     run_in_local(|| async {
         let script = Script::new(
@@ -66,7 +66,7 @@ async fn test_fetch_basic() {
         let (task, rx) = Task::fetch(request);
 
         // Execute with timeout since this makes a network request
-        let exec_result = tokio::time::timeout(Duration::from_secs(30), worker.exec(task)).await;
+        let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(
             exec_result.is_ok(),
@@ -95,7 +95,7 @@ async fn test_fetch_basic() {
 }
 
 /// Test fetch with streaming body read
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_fetch_streaming_read() {
     run_in_local(|| async {
         let script = Script::new(
@@ -145,7 +145,7 @@ async fn test_fetch_streaming_read() {
 
         let (task, rx) = Task::fetch(request);
 
-        let exec_result = tokio::time::timeout(Duration::from_secs(30), worker.exec(task)).await;
+        let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(
             exec_result.is_ok(),
@@ -184,7 +184,7 @@ async fn test_fetch_streaming_read() {
 }
 
 /// Test fetch forward - proxy pattern
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_fetch_forward() {
     run_in_local(|| async {
         let script = Script::new(
@@ -221,7 +221,7 @@ async fn test_fetch_forward() {
 
         let (task, rx) = Task::fetch(request);
 
-        let exec_result = tokio::time::timeout(Duration::from_secs(30), worker.exec(task)).await;
+        let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(
             exec_result.is_ok(),
@@ -250,7 +250,7 @@ async fn test_fetch_forward() {
 }
 
 /// Test POST fetch with body
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_fetch_post_with_body() {
     run_in_local(|| async {
         let script = Script::new(
@@ -295,7 +295,7 @@ async fn test_fetch_post_with_body() {
 
         let (task, rx) = Task::fetch(request);
 
-        let exec_result = tokio::time::timeout(Duration::from_secs(30), worker.exec(task)).await;
+        let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(
             exec_result.is_ok(),
@@ -323,7 +323,7 @@ async fn test_fetch_post_with_body() {
 }
 
 /// Test that fetch forward returns a streaming response
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_fetch_forward_streaming() {
     run_in_local(|| async {
         let script = Script::new(
@@ -348,10 +348,10 @@ async fn test_fetch_forward_streaming() {
         };
 
         let (task, rx) = Task::fetch(request);
-        let _result = tokio::time::timeout(Duration::from_secs(30), worker.exec(task)).await;
+        let _result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         // Wait for response with timeout
-        let response = tokio::time::timeout(Duration::from_secs(10), rx)
+        let response = tokio::time::timeout(Duration::from_secs(5), rx)
             .await
             .expect("Timeout waiting for response")
             .expect("Channel error");
@@ -376,7 +376,7 @@ async fn test_fetch_forward_streaming() {
 }
 
 /// Test streaming response with chunked reading
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_streaming_response_chunked() {
     run_in_local(|| async {
         let script = Script::new(
@@ -401,7 +401,11 @@ async fn test_streaming_response_chunked() {
         };
 
         let (task, rx) = Task::fetch(request);
-        let _result = tokio::time::timeout(Duration::from_secs(30), worker.exec(task)).await;
+        let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
+        if let Ok(Err(e)) = &exec_result {
+            eprintln!("EXEC_ERROR: {:?}", e);
+        }
+        let _result = exec_result;
 
         let response = tokio::time::timeout(Duration::from_secs(15), rx)
             .await
@@ -419,7 +423,7 @@ async fn test_streaming_response_chunked() {
 }
 
 /// Test that processed fetch (not forward) still works
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_processed_fetch_response() {
     run_in_local(|| async {
         let script = Script::new(
@@ -448,9 +452,9 @@ async fn test_processed_fetch_response() {
         };
 
         let (task, rx) = Task::fetch(request);
-        let _result = tokio::time::timeout(Duration::from_secs(30), worker.exec(task)).await;
+        let _result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
-        let response = tokio::time::timeout(Duration::from_secs(10), rx)
+        let response = tokio::time::timeout(Duration::from_secs(5), rx)
             .await
             .expect("Timeout")
             .expect("Channel error");
@@ -473,7 +477,7 @@ async fn test_processed_fetch_response() {
 /// Test Response.clone() after fetch
 /// This tests the tee() implementation used by clone()
 /// Bug report: Response.clone() causes worker to hang in caching scenarios
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_response_clone_after_fetch() {
     run_in_local(|| async {
         let script = Script::new(
@@ -525,7 +529,7 @@ async fn test_response_clone_after_fetch() {
         let (task, rx) = Task::fetch(request);
 
         // Use timeout - this is where the hang would occur
-        let exec_result = tokio::time::timeout(Duration::from_secs(30), worker.exec(task)).await;
+        let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(
             exec_result.is_ok(),
@@ -559,7 +563,7 @@ async fn test_response_clone_after_fetch() {
 
 /// Test Response.clone() in caching scenario
 /// Reproduces the exact bug: cache response, return clone
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_response_clone_cache_pattern() {
     run_in_local(|| async {
         let script = Script::new(
@@ -627,7 +631,7 @@ async fn test_response_clone_cache_pattern() {
         let (task, rx) = Task::fetch(request);
 
         // This is where the hang occurs - timeout will catch it
-        let exec_result = tokio::time::timeout(Duration::from_secs(30), worker.exec(task)).await;
+        let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(
             exec_result.is_ok(),
@@ -656,7 +660,7 @@ async fn test_response_clone_cache_pattern() {
 
 /// Test fetch() with a ReadableStream as body
 /// This is a critical edge case: streaming body in outgoing fetch requests
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_fetch_with_streaming_body() {
     run_in_local(|| async {
         let script = Script::new(
@@ -707,7 +711,7 @@ async fn test_fetch_with_streaming_body() {
         let (task, rx) = Task::fetch(request);
 
         // Use timeout since this makes a network request
-        let exec_result = tokio::time::timeout(Duration::from_secs(30), worker.exec(task)).await;
+        let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(
             exec_result.is_ok(),
@@ -1543,7 +1547,7 @@ async fn test_tee_debug() {
         };
 
         let (task, rx) = Task::fetch(request);
-        let exec_result = tokio::time::timeout(Duration::from_secs(10), worker.exec(task)).await;
+        let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         if exec_result.is_err() {
             panic!("Test timed out at worker.exec()");
