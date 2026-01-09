@@ -6,6 +6,7 @@ pub mod nats;
 pub mod ops;
 pub mod runtime;
 pub mod store;
+pub mod task_executor;
 #[cfg(feature = "v8")]
 mod transform;
 pub mod worker;

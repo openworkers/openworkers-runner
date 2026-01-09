@@ -1,11 +1,9 @@
-use std::sync::Arc;
-
-use crate::ops::{DbPool, RunnerOperations};
+use crate::ops::DbPool;
 use crate::store::{self, WorkerWithBindings};
-use crate::worker::{create_worker, prepare_script};
-use crate::worker_pool::{TaskPermit, WORKER_POOL};
+use crate::task_executor::{self, TaskExecutionConfig};
+use crate::worker::prepare_script;
 
-use openworkers_core::{RuntimeLimits, ScheduledInit, Task, TerminationReason};
+use openworkers_core::{ScheduledInit, Task};
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -26,13 +24,10 @@ fn run_scheduled(
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
 ) {
     // Parse script before spawning (fail fast)
-    let script = match prepare_script(&worker_data) {
-        Ok(s) => s,
-        Err(err) => {
-            log::error!("Failed to prepare script for scheduled task: {err:?}");
-            return;
-        }
-    };
+    if let Err(err) = prepare_script(&worker_data) {
+        log::error!("Failed to prepare script for scheduled task: {err:?}");
+        return;
+    }
 
     // Try to acquire a worker slot
     let permit = match crate::worker_pool::WORKER_SEMAPHORE
@@ -49,81 +44,40 @@ fn run_scheduled(
         }
     };
 
-    let worker_id = worker_data.id.clone();
-    let bindings = worker_data.bindings.clone();
-    let code_type = worker_data.code_type.clone();
-    let (log_tx, log_handler) = crate::log::create_log_handler(worker_id.clone(), global_log_tx);
-
-    // Use the sequential worker pool - ensures ONE V8 isolate per thread at a time
-    WORKER_POOL.spawn(move || async move {
-        // Wrap permit to automatically notify drain monitor on drop
-        let _permit = TaskPermit::new(permit);
-        log::debug!("create worker");
-
-        let limits = RuntimeLimits {
-            max_cpu_time_ms: 100,           // 100ms CPU time for scheduled tasks
-            max_wall_clock_time_ms: 60_000, // 60s total time for scheduled tasks
-            ..Default::default()
-        };
-
-        // Create operations handle (includes logging, bindings, and db pool)
-        let ops = Arc::new(
-            RunnerOperations::new()
-                .with_worker_id(worker_id)
-                .with_log_tx(log_tx)
-                .with_bindings(bindings)
-                .with_db_pool(db_pool),
-        );
-
-        // Create worker
-        let mut worker = match create_worker(script, limits, ops, &code_type).await {
-            Ok(w) => w,
-            Err(err) => {
-                log::error!("failed to create scheduled worker: {err:?}");
-                log_handler.flush();
-                return;
-            }
-        };
-
-        // Create the oneshot channel INSIDE the async block so the receiver stays alive
+    // Execute task using common executor (fire-and-forget)
+    // Note: scheduled tasks create their own response channel internally
+    tokio::spawn(async move {
+        // Create the oneshot channel for scheduled event response
         let (res_tx, res_rx) = tokio::sync::oneshot::channel::<()>();
         let task = Task::Scheduled(Some(ScheduledInit::new(res_tx, data.scheduled_time)));
 
-        log::debug!("exec scheduled task");
+        let config = TaskExecutionConfig {
+            worker_data,
+            permit,
+            task,
+            db_pool,
+            global_log_tx,
+            limits: task_executor::TaskExecutionConfig::default_limits(),
+            external_timeout_ms: None, // No external timeout for scheduled tasks
+        };
 
-        match worker.exec(task).await {
+        // Execute the task
+        let result = task_executor::execute_task_await(config).await;
+
+        // Log the execution result
+        match result {
             Ok(()) => {
-                log::debug!("scheduled task completed successfully");
-                // Wait for the scheduled event to complete
+                log::debug!("scheduled task exec completed successfully");
+                // Wait for the scheduled event handler to respond
                 match res_rx.await {
                     Ok(()) => log::debug!("scheduled task responded"),
                     Err(err) => log::error!("scheduled task response error: {err}"),
                 }
             }
-            Err(reason) => match reason {
-                TerminationReason::CpuTimeLimit => {
-                    log::warn!("scheduled task terminated: CPU time limit exceeded");
-                }
-                TerminationReason::WallClockTimeout => {
-                    log::warn!("scheduled task terminated: wall-clock timeout");
-                }
-                TerminationReason::MemoryLimit => {
-                    log::warn!("scheduled task terminated: memory limit exceeded");
-                }
-                TerminationReason::Exception(msg) => {
-                    log::error!("scheduled task terminated: uncaught exception: {}", msg);
-                }
-                _ => {
-                    log::error!("scheduled task terminated: {:?}", reason);
-                }
-            },
+            Err(reason) => {
+                log::error!("scheduled task terminated: {:?}", reason);
+            }
         }
-
-        // CRITICAL: Flush logs before worker is dropped to prevent log loss
-        log_handler.flush();
-
-        // TaskPermit is automatically dropped here, releasing the semaphore
-        // and notifying the drain monitor
     });
 }
 
