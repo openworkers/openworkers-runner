@@ -1,5 +1,7 @@
 pub mod event_fetch;
 pub mod event_scheduled;
+#[cfg(feature = "v8")]
+pub mod isolate_pool;
 pub mod limiter;
 pub mod log;
 pub mod nats;
