@@ -1,11 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::OwnedSemaphorePermit;
 
 use crate::ops::{DbPool, RunnerOperations};
 use crate::store::WorkerWithBindings;
 use crate::worker::{create_worker, prepare_script};
-use crate::worker_pool::WORKER_POOL;
+use crate::worker_pool::{TaskPermit, WORKER_POOL};
 
 use openworkers_core::{
     FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, RuntimeLimits, Task,
@@ -23,7 +22,7 @@ pub fn run_fetch(
     res_tx: ResponseSender,
     termination_tx: TerminationTx,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
-    permit: OwnedSemaphorePermit,
+    permit: tokio::sync::OwnedSemaphorePermit,
     db_pool: DbPool,
 ) {
     let worker_id = worker_data.id.clone();
@@ -51,9 +50,8 @@ pub fn run_fetch(
 
     // Use the sequential worker pool - ensures ONE V8 isolate per thread at a time
     WORKER_POOL.spawn(move || async move {
-        // Keep the permit alive for the entire worker execution
-        // It will be automatically released when this async block completes
-        let _permit = permit;
+        // Wrap permit to automatically notify drain monitor on drop
+        let _permit = TaskPermit::new(permit);
 
         log::debug!("create worker");
 
@@ -117,6 +115,7 @@ pub fn run_fetch(
         // CRITICAL: Flush logs before worker is dropped to prevent log loss
         log_handler.flush();
 
-        // Permit is automatically released here when _permit goes out of scope
+        // TaskPermit is automatically dropped here, releasing the semaphore
+        // and notifying the drain monitor
     });
 }

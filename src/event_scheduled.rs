@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::ops::{DbPool, RunnerOperations};
 use crate::store::{self, WorkerWithBindings};
 use crate::worker::{create_worker, prepare_script};
-use crate::worker_pool::WORKER_POOL;
+use crate::worker_pool::{TaskPermit, WORKER_POOL};
 
 use openworkers_core::{RuntimeLimits, ScheduledInit, Task, TerminationReason};
 
@@ -56,8 +56,8 @@ fn run_scheduled(
 
     // Use the sequential worker pool - ensures ONE V8 isolate per thread at a time
     WORKER_POOL.spawn(move || async move {
-        // Keep the permit alive for the entire worker execution
-        let _permit = permit;
+        // Wrap permit to automatically notify drain monitor on drop
+        let _permit = TaskPermit::new(permit);
         log::debug!("create worker");
 
         let limits = RuntimeLimits {
@@ -122,7 +122,8 @@ fn run_scheduled(
         // CRITICAL: Flush logs before worker is dropped to prevent log loss
         log_handler.flush();
 
-        // Permit is automatically released here when _permit goes out of scope
+        // TaskPermit is automatically dropped here, releasing the semaphore
+        // and notifying the drain monitor
     });
 }
 
@@ -158,7 +159,26 @@ pub fn handle_scheduled(
 
             log::debug!("listening for scheduled tasks");
 
-            while let Some(msg) = sub.next().await {
+            let notify = crate::worker_pool::TASK_COMPLETION_NOTIFY.clone();
+
+            loop {
+                // Listen to both NATS messages and task completion events
+                // This allows immediate reaction to draining state changes:
+                // - If draining starts while waiting for NATS message, we stop listening immediately
+                // - Messages stay in NATS queue for other runners to process
+                // - No messages are lost or dequeued during shutdown
+                let msg = tokio::select! {
+                    Some(msg) = sub.next() => msg,
+                    _ = notify.notified() => {
+                        // Check if draining and stop listening
+                        if crate::worker_pool::is_draining() {
+                            log::info!("Runner is draining - stopping scheduled task listener");
+                            break;
+                        }
+                        continue;
+                    }
+                };
+
                 log::debug!("scheduled task received: {:?}", msg);
 
                 let data: ScheduledData =

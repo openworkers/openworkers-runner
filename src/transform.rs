@@ -364,8 +364,7 @@ mod tests {
     #[test]
     fn test_export_default_arrow_iife() {
         // export default (() => ({ fetch: () => new Response('hi') }))()
-        let result =
-            transform(r#"export default (() => ({ fetch: () => new Response('hi') }))()"#);
+        let result = transform(r#"export default (() => ({ fetch: () => new Response('hi') }))()"#);
         println!("Arrow IIFE result: {}", result);
         assert!(result.contains("globalThis.default"));
     }

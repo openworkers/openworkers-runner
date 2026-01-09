@@ -8,6 +8,7 @@ use log::{debug, error, warn};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpSocket;
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::oneshot::channel;
 
 use openworkers_core::{HttpRequest, HttpResponse, HyperBody};
@@ -18,29 +19,83 @@ use sqlx::postgres::PgPoolOptions;
 struct AppState {
     db: sqlx::Pool<sqlx::Postgres>,
     log_tx: std::sync::mpsc::Sender<openworkers_runner::log::LogMessage>,
+    shutdown_tx: tokio::sync::mpsc::Sender<()>,
 }
 
 async fn handle_request(
     state: &AppState,
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<HyperBody>, std::convert::Infallible> {
-    // Health check endpoint (only for local requests, not worker domains)
-    if req.uri().path() == "/health" {
-        let is_local = req
-            .headers()
-            .get("host")
-            .and_then(|h| h.to_str().ok())
-            .map(|h| h == "127.0.0.1:8080")
-            .unwrap_or(false);
+    let is_local = req
+        .headers()
+        .get("host")
+        .and_then(|h| h.to_str().ok())
+        .map(|h| h == "127.0.0.1:8080" || h.starts_with("localhost"))
+        .unwrap_or(false);
 
-        if is_local {
+    // Admin endpoints (only for local requests)
+    if is_local {
+        let path = req.uri().path();
+
+        // Health check endpoint
+        if path == "/health" {
             return Ok(Response::builder()
                 .status(200)
-                .body(HyperBody::Full(http_body_util::Full::new(Bytes::from(
-                    "OK",
-                ))))
+                .body(full_body("OK"))
                 .unwrap());
         }
+
+        // POST /admin/drain - Put runner in draining mode
+        if path == "/admin/drain" && req.method() == hyper::Method::POST {
+            openworkers_runner::worker_pool::set_draining(true);
+
+            // Check if already no active tasks - shutdown immediately
+            if openworkers_runner::worker_pool::get_active_tasks() == 0 {
+                debug!("Drain called with 0 active tasks - shutting down immediately");
+                let _ = state.shutdown_tx.send(()).await;
+            }
+
+            return Ok(Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(full_body(r#"{"draining":true}"#))
+                .unwrap());
+        }
+
+        // GET /admin/tasks - Get number of active tasks
+        if path == "/admin/tasks" && req.method() == hyper::Method::GET {
+            let active = openworkers_runner::worker_pool::get_active_tasks();
+            let body = format!(r#"{{"active_tasks":{}}}"#, active);
+            return Ok(Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(full_body(body))
+                .unwrap());
+        }
+
+        // GET /admin/stats - Get runner stats
+        if path == "/admin/stats" && req.method() == hyper::Method::GET {
+            let active = openworkers_runner::worker_pool::get_active_tasks();
+            let draining = openworkers_runner::worker_pool::is_draining();
+            let body = format!(r#"{{"active_tasks":{},"draining":{}}}"#, active, draining);
+            return Ok(Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(full_body(body))
+                .unwrap());
+        }
+    }
+
+    // Check if runner is draining - refuse new worker requests
+    if openworkers_runner::worker_pool::is_draining() {
+        warn!("Refusing request while draining");
+        return Ok(Response::builder()
+            .status(503)
+            .header("content-type", "text/plain")
+            .body(full_body(
+                "503 - Runner is draining - not accepting new requests",
+            ))
+            .unwrap());
     }
 
     debug!(
@@ -244,13 +299,15 @@ async fn handle_request(
     Ok(response)
 }
 
+fn full_body(content: impl Into<Bytes>) -> HyperBody {
+    HyperBody::Full(http_body_util::Full::new(content.into()))
+}
+
 fn error_response(status: u16, message: &str) -> Response<HyperBody> {
     Response::builder()
         .status(status)
         .header("content-type", "text/plain")
-        .body(HyperBody::Full(http_body_util::Full::new(Bytes::from(
-            message.to_string(),
-        ))))
+        .body(full_body(message.to_string()))
         .unwrap()
 }
 
@@ -356,7 +413,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     openworkers_runner::event_scheduled::handle_scheduled(pool.clone(), log_tx.clone());
 
-    let state = std::sync::Arc::new(AppState { db: pool, log_tx });
+    // Shutdown signal channel
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let shutdown_tx_signal = shutdown_tx.clone();
+    let shutdown_tx_drain = shutdown_tx.clone();
+
+    let state = std::sync::Arc::new(AppState {
+        db: pool,
+        log_tx,
+        shutdown_tx,
+    });
+
+    // Signal handler for SIGINT/SIGTERM - graceful on first, forced on second
+    tokio::spawn(async move {
+        let mut sigterm = signal(SignalKind::terminate()).expect("Failed to setup SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("Failed to setup SIGINT handler");
+
+        // First signal
+        tokio::select! {
+            _ = sigterm.recv() => {},
+            _ = sigint.recv() => {},
+        }
+
+        log::info!(
+            "Received signal - initiating graceful drain (press Ctrl+C again to force exit)"
+        );
+        openworkers_runner::worker_pool::set_draining(true);
+
+        // Check if already no active tasks
+        if openworkers_runner::worker_pool::get_active_tasks() == 0 {
+            log::info!("No active tasks - shutting down immediately");
+            let _ = shutdown_tx_signal.send(()).await;
+            return;
+        }
+
+        // Second signal
+        tokio::select! {
+            _ = sigterm.recv() => {},
+            _ = sigint.recv() => {},
+        }
+
+        log::warn!("Received second signal - forcing exit");
+        std::process::exit(1);
+    });
+
+    // Start drain monitor
+    tokio::spawn(async move {
+        let notify = openworkers_runner::worker_pool::TASK_COMPLETION_NOTIFY.clone();
+
+        loop {
+            // Wait for task completion notification
+            notify.notified().await;
+
+            if openworkers_runner::worker_pool::is_draining() {
+                let active = openworkers_runner::worker_pool::get_active_tasks();
+                debug!("Draining: {} active tasks remaining", active);
+
+                if active == 0 {
+                    log::info!("All tasks completed while draining - shutting down gracefully");
+                    let _ = shutdown_tx_drain.send(()).await;
+                    break;
+                }
+            }
+        }
+    });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let num_listeners = 4;
@@ -404,8 +524,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         });
     }
 
-    // Keep main alive
-    std::future::pending::<()>().await;
+    // Wait for graceful shutdown signal
+    shutdown_rx.recv().await;
+
+    log::info!("Shutdown signal received - exiting");
 
     Ok(())
 }
