@@ -53,11 +53,11 @@ use crate::store::{
 /// URLs matching `*.{domain}` will be routed internally instead of going through DNS.
 static WORKER_DOMAINS: Lazy<Vec<String>> = Lazy::new(|| {
     std::env::var("WORKER_DOMAINS")
-        .unwrap_or_else(|_| "workers.rocks".to_string())
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
+        .map(|s| s.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect())
+        .unwrap_or_else(|_| Vec::new())
 });
 
 /// Generate a unique request ID (32 chars total: prefix_hex)
@@ -234,7 +234,7 @@ impl Default for RunnerOperations {
 
 /// Check if a fetch URL matches internal worker patterns and route directly.
 ///
-/// Patterns are configured via WORKER_DOMAINS env var (default: "workers.rocks,workers.dev.localhost")
+/// Patterns are configured via WORKER_DOMAINS env var (e.g., "workers.rocks,workers.dev.localhost")
 /// URLs matching `*.{domain}` will be routed internally.
 ///
 /// Returns a modified request with internal routing if matched.
