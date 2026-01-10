@@ -21,12 +21,14 @@ WORKER_POOL.spawn_await(move || async move {
 ```
 
 **Performance Impact:**
+
 - Isolate creation: ~3-5ms per request (Cloudflare benchmark)
 - Memory allocation overhead per request
 - No isolate reuse
 - Worker startup overhead repeated constantly
 
 **Current Capacity (8 cores):**
+
 - 8 concurrent isolates (one per thread)
 - Each isolate is disposable (create → execute → destroy)
 - ~200-300 requests/second maximum throughput
@@ -34,6 +36,7 @@ WORKER_POOL.spawn_await(move || async move {
 ### Why This Is Wrong
 
 V8 isolates are designed to be **long-lived and reused**, not disposable. Creating an isolate is expensive:
+
 - Memory allocation for heap
 - Context initialization
 - Snapshot deserialization
@@ -68,12 +71,14 @@ From Cloudflare's documentation:
 ```
 
 **Per Isolate:**
+
 - Created **once** when worker is deployed
 - Stays **alive indefinitely**
 - Handles **multiple concurrent requests** via async event loop (like Node.js)
 - Single-threaded async execution within the isolate
 
 **Performance:**
+
 - Isolate startup: Once per worker deployment (not per request)
 - ~0ms overhead per request (isolate already warm)
 - High density: Hundreds of isolates per process
@@ -85,19 +90,20 @@ Like Node.js, each Cloudflare Worker isolate runs a **single-threaded event loop
 
 ```javascript
 // All requests execute in the same isolate
-addEventListener('fetch', event => {
+addEventListener("fetch", (event) => {
   event.respondWith(handleRequest(event.request));
 });
 
 async function handleRequest(request) {
   // This function may be called concurrently for different requests
-  const response = await fetch('https://api.example.com');
+  const response = await fetch("https://api.example.com");
   // While this isolate awaits, it can process other requests
   return new Response(response);
 }
 ```
 
 **Concurrency Model:**
+
 - One isolate can handle many concurrent requests
 - Async/await allows interleaving (while one request awaits fetch, another runs)
 - No thread-per-request overhead
@@ -178,14 +184,14 @@ impl PersistentWorker {
 
 ### Key Differences
 
-| Aspect | Current (Disposable) | Proposed (Persistent) |
-|--------|---------------------|----------------------|
-| **Isolate Lifetime** | Per-request | Long-lived |
-| **Startup Overhead** | Every request (~3-5ms) | Once at startup |
-| **Memory** | Allocate/deallocate constantly | Allocated once, reused |
-| **Throughput** | ~200-300 req/s (8 cores) | ~2000-5000 req/s (8 cores) |
-| **Concurrency per Isolate** | 1 (one task) | N (async event loop) |
-| **Worker Pool Size** | 8 (one per core) | 8-64 (configurable) |
+| Aspect                      | Current (Disposable)           | Proposed (Persistent)      |
+| --------------------------- | ------------------------------ | -------------------------- |
+| **Isolate Lifetime**        | Per-request                    | Long-lived                 |
+| **Startup Overhead**        | Every request (~3-5ms)         | Once at startup            |
+| **Memory**                  | Allocate/deallocate constantly | Allocated once, reused     |
+| **Throughput**              | ~200-300 req/s (8 cores)       | ~2000-5000 req/s (8 cores) |
+| **Concurrency per Isolate** | 1 (one task)                   | N (async event loop)       |
+| **Worker Pool Size**        | 8 (one per core)               | 8-64 (configurable)        |
 
 ## Implementation Challenges
 
@@ -205,6 +211,7 @@ fn reset_state(&mut self) {
 ```
 
 Alternatively, use V8 **Contexts** instead of Isolates:
+
 - One isolate can have multiple contexts
 - Each context is isolated
 - Cheaper than creating new isolates
@@ -214,6 +221,7 @@ Alternatively, use V8 **Contexts** instead of Isolates:
 **Problem**: Long-lived isolates may accumulate memory if not properly managed.
 
 **Solution**:
+
 - Periodic garbage collection (`isolate.low_memory_notification()`)
 - Monitor memory usage per worker
 - Kill and restart workers that exceed memory limits
@@ -224,6 +232,7 @@ Alternatively, use V8 **Contexts** instead of Isolates:
 **Problem**: A fatal error in one request shouldn't kill the entire isolate.
 
 **Solution**:
+
 - Catch all errors at request boundary
 - Isolate error recovery (reset state)
 - If isolate is corrupted (unrecoverable error), restart it
@@ -234,6 +243,7 @@ Alternatively, use V8 **Contexts** instead of Isolates:
 **Problem**: Workers may be processing requests during shutdown.
 
 **Solution**:
+
 - Drain mode: Stop accepting new requests
 - Wait for in-flight requests to complete (with timeout)
 - Gracefully drop isolates after draining
@@ -243,6 +253,7 @@ Alternatively, use V8 **Contexts** instead of Isolates:
 **Problem**: If requests come in faster than workers can process, queues grow unbounded.
 
 **Solution**:
+
 - Bounded channels for task queues
 - Reject requests when queue is full (backpressure)
 - Monitor queue depth per worker
@@ -309,16 +320,19 @@ Alternatively, use V8 **Contexts** instead of Isolates:
 ## Performance Expectations
 
 ### Current (8 cores, disposable isolates)
+
 - 8 concurrent requests maximum
 - ~3-5ms startup overhead per request
 - ~200-300 requests/second
 
 ### Proposed (8 cores, persistent isolates)
+
 - 8+ persistent workers (configurable)
 - ~0ms startup overhead per request (isolate already warm)
 - ~2000-5000 requests/second (10-20x improvement)
 
 With 64 persistent workers:
+
 - 64 concurrent request handlers
 - Each worker can queue multiple requests
 - ~10,000+ requests/second potential
@@ -330,7 +344,6 @@ These fundamental constraints still apply:
 1. **One thread per isolate at a time** - An isolate can be entered by at most one thread at any given time (V8 hard constraint)
 
 2. **LIFO drop order** - `OwnedIsolate` instances must be dropped in reverse creation order (rusty_v8 constraint)
-
 3. **HandleScope lifetimes** - V8 scopes must not cross async boundaries (RAII safety)
 
 **Important**: These constraints apply to **isolate access**, not to **isolate reuse**. Reusing an isolate for multiple sequential requests doesn't violate any of these constraints.
@@ -356,7 +369,7 @@ These fundamental constraints still apply:
 
 New environment variables:
 
-- `PERSISTENT_WORKER_POOL_SIZE` - Number of persistent workers (default: CPU cores * 2)
+- `PERSISTENT_WORKER_POOL_SIZE` - Number of persistent workers (default: CPU cores \* 2)
 - `WORKER_RESTART_MEMORY_THRESHOLD_MB` - Memory threshold to restart worker (default: 256MB)
 - `WORKER_HEALTH_CHECK_INTERVAL_MS` - Health check interval (default: 30000)
 - `WORKER_TASK_QUEUE_SIZE` - Max queued tasks per worker (default: 100)
