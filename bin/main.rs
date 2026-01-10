@@ -84,6 +84,28 @@ async fn handle_request(
                 .body(full_body(body))
                 .unwrap());
         }
+
+        // GET /admin/pool - Get isolate pool statistics
+        #[cfg(feature = "v8")]
+        if path == "/admin/pool" && req.method() == hyper::Method::GET {
+            let stats = openworkers_runtime_v8::get_pool_stats().await;
+            let hit_rate = if stats.total > 0 {
+                stats.cached as f64 / stats.total as f64
+            } else {
+                0.0
+            };
+
+            let body = format!(
+                r#"{{"total":{},"cached":{},"capacity":{},"hit_rate":{:.2}}}"#,
+                stats.total, stats.cached, stats.capacity, hit_rate
+            );
+
+            return Ok(Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(full_body(body))
+                .unwrap());
+        }
     }
 
     // Check if runner is draining - refuse new worker requests
@@ -318,6 +340,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     debug!("start main (hyper)");
 
+    // Parse isolate pool configuration from environment
+    let pool_max_size = std::env::var("ISOLATE_POOL_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1000); // Default: 1000 isolates
+
+    let heap_initial_mb = std::env::var("ISOLATE_HEAP_INITIAL_MB")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(10); // Default: 10MB
+
+    let heap_max_mb = std::env::var("ISOLATE_HEAP_MAX_MB")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(50); // Default: 50MB
+
+    debug!(
+        "Isolate pool config: max_size={}, heap_initial={}MB, heap_max={}MB",
+        pool_max_size, heap_initial_mb, heap_max_mb
+    );
+
     let db_url = match std::env::var("DATABASE_URL") {
         Ok(url) => url,
         Err(_) => {
@@ -410,6 +453,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Start global log publisher
     let log_tx = openworkers_runner::log::start_log_publisher();
     debug!("started log publisher");
+
+    // Initialize isolate pool for V8 runtime
+    #[cfg(feature = "v8")]
+    {
+        use openworkers_core::RuntimeLimits;
+
+        let pool_limits = RuntimeLimits {
+            heap_initial_mb,
+            heap_max_mb,
+            max_cpu_time_ms: 100,
+            max_wall_clock_time_ms: 60_000,
+            ..Default::default()
+        };
+
+        openworkers_runtime_v8::init_pool(pool_max_size, pool_limits);
+        debug!("Initialized isolate pool with {} max isolates", pool_max_size);
+    }
 
     openworkers_runner::event_scheduled::handle_scheduled(pool.clone(), log_tx.clone());
 
