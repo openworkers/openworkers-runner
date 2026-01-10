@@ -149,31 +149,37 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_isolate_pool_concurrent() {
-        let limits = RuntimeLimits::default();
-        let pool = Arc::new(IsolatePool::new(4, limits));
+        let local_set = tokio::task::LocalSet::new();
 
-        // Spawn multiple tasks that acquire and release
-        let mut handles = vec![];
+        local_set
+            .run_until(async {
+                let limits = RuntimeLimits::default();
+                let pool = Arc::new(IsolatePool::new(4, limits));
 
-        for _ in 0..10 {
-            let pool_clone = pool.clone();
-            let handle = tokio::spawn(async move {
-                let isolate = pool_clone.acquire().await;
-                // Simulate some work
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                pool_clone.release(isolate).await;
-            });
-            handles.push(handle);
-        }
+                // Spawn multiple tasks that acquire and release
+                let mut handles = vec![];
 
-        // Wait for all tasks to complete
-        for handle in handles {
-            handle.await.unwrap();
-        }
+                for _ in 0..10 {
+                    let pool_clone = pool.clone();
+                    let handle = tokio::task::spawn_local(async move {
+                        let isolate = pool_clone.acquire().await;
+                        // Simulate some work
+                        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                        pool_clone.release(isolate).await;
+                    });
+                    handles.push(handle);
+                }
 
-        // All isolates should be back in the pool
-        let stats = pool.stats().await;
-        assert_eq!(stats.available, 4);
-        assert_eq!(stats.busy, 0);
+                // Wait for all tasks to complete
+                for handle in handles {
+                    handle.await.unwrap();
+                }
+
+                // All isolates should be back in the pool
+                let stats = pool.stats().await;
+                assert_eq!(stats.available, 4);
+                assert_eq!(stats.busy, 0);
+            })
+            .await;
     }
 }
