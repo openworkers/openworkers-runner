@@ -1,11 +1,14 @@
 pub mod event_fetch;
 pub mod event_scheduled;
+#[cfg(feature = "v8")]
+pub mod isolate_pool;
 pub mod limiter;
 pub mod log;
 pub mod nats;
 pub mod ops;
 pub mod runtime;
 pub mod store;
+pub mod task_executor;
 #[cfg(feature = "v8")]
 mod transform;
 pub mod worker;

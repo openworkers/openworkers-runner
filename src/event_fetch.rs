@@ -1,14 +1,10 @@
-use std::sync::Arc;
-use std::time::Duration;
-
-use crate::ops::{DbPool, RunnerOperations};
+use crate::ops::DbPool;
 use crate::store::WorkerWithBindings;
-use crate::worker::{create_worker, prepare_script};
-use crate::worker_pool::{TaskPermit, WORKER_POOL};
+use crate::task_executor::{self, TaskExecutionConfig};
+use crate::worker::prepare_script;
 
 use openworkers_core::{
-    FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, RuntimeLimits, Task,
-    TerminationReason,
+    FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, Task, TerminationReason,
 };
 
 type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>;
@@ -25,97 +21,37 @@ pub fn run_fetch(
     permit: tokio::sync::OwnedSemaphorePermit,
     db_pool: DbPool,
 ) {
-    let worker_id = worker_data.id.clone();
-    let bindings = worker_data.bindings.clone();
-    let code_type = worker_data.code_type.clone();
-
     // Parse script before spawning (fail fast)
-    let script = match prepare_script(&worker_data) {
-        Ok(s) => s,
-        Err(err) => {
-            log::error!("Failed to prepare script: {err:?}");
-            res_tx
-                .send(HttpResponse {
-                    status: 500,
-                    headers: vec![],
-                    body: ResponseBody::Bytes(format!("Failed to prepare script: {err:?}").into()),
-                })
-                .ok();
-            termination_tx.send(Err(err)).ok();
-            return;
-        }
+    if let Err(err) = prepare_script(&worker_data) {
+        log::error!("Failed to prepare script: {err:?}");
+        res_tx
+            .send(HttpResponse {
+                status: 500,
+                headers: vec![],
+                body: ResponseBody::Bytes(format!("Failed to prepare script: {err:?}").into()),
+            })
+            .ok();
+        termination_tx.send(Err(err)).ok();
+        return;
+    }
+
+    // Create the task
+    let task = Task::Fetch(Some(FetchInit::new(req, res_tx)));
+
+    // Build config for task executor
+    let config = TaskExecutionConfig {
+        worker_data,
+        permit,
+        task,
+        db_pool,
+        global_log_tx,
+        limits: task_executor::TaskExecutionConfig::default_limits(),
+        external_timeout_ms: Some(FETCH_TIMEOUT_MS),
     };
 
-    let (log_tx, log_handler) = crate::log::create_log_handler(worker_id.clone(), global_log_tx);
-
-    // Use the sequential worker pool - ensures ONE V8 isolate per thread at a time
-    WORKER_POOL.spawn(move || async move {
-        // Wrap permit to automatically notify drain monitor on drop
-        let _permit = TaskPermit::new(permit);
-
-        log::debug!("create worker");
-
-        let limits = RuntimeLimits {
-            max_cpu_time_ms: 100,           // 100ms CPU time for fetch tasks
-            max_wall_clock_time_ms: 60_000, // 60s total time for fetch tasks
-            ..Default::default()
-        };
-
-        // Create operations handle for fetch delegation (includes logging and bindings)
-        let ops = Arc::new(
-            RunnerOperations::new()
-                .with_worker_id(worker_id)
-                .with_log_tx(log_tx)
-                .with_bindings(bindings)
-                .with_db_pool(db_pool),
-        );
-
-        // Create worker
-        let mut worker = match create_worker(script, limits, ops, &code_type).await {
-            Ok(w) => w,
-            Err(err) => {
-                log::error!("failed to create worker: {err:?}");
-                res_tx
-                    .send(HttpResponse {
-                        status: 500,
-                        headers: vec![],
-                        body: ResponseBody::Bytes(
-                            format!("failed to create worker: {err:?}").into(),
-                        ),
-                    })
-                    .ok();
-                termination_tx.send(Err(err)).ok();
-                log_handler.flush();
-                return;
-            }
-        };
-
-        let task = Task::Fetch(Some(FetchInit::new(req, res_tx)));
-        log::debug!("exec fetch task with {}ms timeout", FETCH_TIMEOUT_MS);
-
-        // Wrap execution with timeout
-        let timeout_duration = Duration::from_millis(FETCH_TIMEOUT_MS);
-        let result = match tokio::time::timeout(timeout_duration, worker.exec(task)).await {
-            Ok(result) => {
-                log::debug!("worker exec completed: {:?}", result);
-                result
-            }
-            Err(_) => {
-                log::error!(
-                    "worker exec timeout after {}ms (outer timeout)",
-                    FETCH_TIMEOUT_MS
-                );
-                Err(TerminationReason::WallClockTimeout)
-            }
-        };
-
-        // Send result back to the main thread
+    // Spawn async task to execute and send result back
+    tokio::spawn(async move {
+        let result = task_executor::execute_task_await(config).await;
         let _ = termination_tx.send(result);
-
-        // CRITICAL: Flush logs before worker is dropped to prevent log loss
-        log_handler.flush();
-
-        // TaskPermit is automatically dropped here, releasing the semaphore
-        // and notifying the drain monitor
     });
 }

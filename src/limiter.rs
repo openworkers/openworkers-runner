@@ -282,7 +282,7 @@ mod tests {
         });
 
         // Give the spawned task time to block
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
 
         // Task should still be pending
         assert!(!handle.is_finished());

@@ -16,7 +16,7 @@ where
     local.run_until(f()).await
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_simple_response() {
     run_local(|| async {
         let script = Script::new(
@@ -48,7 +48,7 @@ async fn test_simple_response() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_json_response() {
     run_local(|| async {
         let script = Script::new(
@@ -92,7 +92,7 @@ async fn test_json_response() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_custom_status() {
     run_local(|| async {
         let script = Script::new(
@@ -121,7 +121,7 @@ async fn test_custom_status() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_request_method() {
     run_local(|| async {
         let script = Script::new(
@@ -151,7 +151,7 @@ async fn test_request_method() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_request_url() {
     run_local(|| async {
         let script = Script::new(
@@ -182,7 +182,7 @@ async fn test_request_url() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_async_handler() {
     run_local(|| async {
         let script = Script::new(
@@ -216,7 +216,7 @@ async fn test_async_handler() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_response_headers() {
     run_local(|| async {
         let script = Script::new(
@@ -258,7 +258,7 @@ async fn test_response_headers() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_empty_response() {
     run_local(|| async {
         let script = Script::new(
@@ -288,7 +288,7 @@ async fn test_empty_response() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_console_methods() {
     run_local(|| async {
         let script = Script::new(
@@ -325,7 +325,7 @@ async fn test_console_methods() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_worker_creation_error() {
     run_local(|| async {
         let script = Script::new("this is not valid javascript");
@@ -335,7 +335,7 @@ async fn test_worker_creation_error() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_response_body_is_streamed() {
     run_local(|| async {
         let script = Script::new(
@@ -367,7 +367,7 @@ async fn test_response_body_is_streamed() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_multiple_requests() {
     run_local(|| async {
         let script = Script::new(
@@ -401,7 +401,7 @@ async fn test_multiple_requests() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_request_body_text() {
     run_local(|| async {
         let script = Script::new(
@@ -432,7 +432,7 @@ async fn test_request_body_text() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_request_body_json() {
     run_local(|| async {
         let script = Script::new(
@@ -475,7 +475,7 @@ async fn test_request_body_json() {
     .await;
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_request_headers() {
     run_local(|| async {
         let script = Script::new(

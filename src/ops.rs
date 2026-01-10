@@ -53,10 +53,12 @@ use crate::store::{
 /// URLs matching `*.{domain}` will be routed internally instead of going through DNS.
 static WORKER_DOMAINS: Lazy<Vec<String>> = Lazy::new(|| {
     std::env::var("WORKER_DOMAINS")
-        .map(|s| s.split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect())
+        .map(|s| {
+            s.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_else(|_| Vec::new())
 });
 
@@ -69,31 +71,6 @@ fn generate_request_id(prefix: &str) -> String {
     let hex_len = 31 - prefix.len();
     format!("{}_{:0width$x}", prefix, nanos, width = hex_len)
 }
-
-/// Global HTTP client for connection pooling and reuse
-///
-/// Creating a new client per request is expensive:
-/// - New connection pool each time
-/// - No TCP/TLS connection reuse
-/// - DNS resolution on each request
-///
-/// This shared client enables:
-/// - Connection pooling (reuse existing connections)
-/// - Keep-alive connections
-/// - DNS caching
-///
-/// Timeouts:
-/// - connect_timeout: 2s (DNS + TCP handshake)
-/// - timeout: 10s (total request)
-static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
-    reqwest::Client::builder()
-        .pool_max_idle_per_host(10)
-        .pool_idle_timeout(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(10))
-        .build()
-        .expect("Failed to create HTTP client")
-});
 
 /// Stats tracked for each worker
 #[derive(Debug, Default)]
@@ -179,6 +156,34 @@ pub struct RunnerOperations {
     pub db_pool: Option<DbPool>,
     /// Binding limiters (rate limiting for fetch, KV, database, storage)
     pub limiters: BindingLimiters,
+}
+
+// Thread-local HTTP client for fetch operations.
+//
+// Each worker thread gets its own client, created in that thread's tokio runtime.
+// This avoids the "runtime dropped the dispatch task" error that occurs when
+// a client created in one runtime is used in another.
+//
+// Configuration:
+// - pool_max_idle_per_host: Configurable via HTTP_POOL_MAX_IDLE_PER_HOST env var (default: 100)
+// - pool_idle_timeout: 90s (keep connections warm)
+// - connect_timeout: 5s (DNS + TCP handshake)
+// - timeout: 30s (total request)
+thread_local! {
+    static HTTP_CLIENT: once_cell::unsync::Lazy<reqwest::Client> = once_cell::unsync::Lazy::new(|| {
+        let pool_size = std::env::var("HTTP_POOL_MAX_IDLE_PER_HOST")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(100);
+
+        reqwest::Client::builder()
+            .pool_max_idle_per_host(pool_size)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("Failed to create HTTP client")
+    });
 }
 
 impl RunnerOperations {
@@ -1188,8 +1193,9 @@ async fn do_fetch(
     stats: &OperationsStats,
     extra_headers: Option<&HashMap<String, String>>,
 ) -> Result<HttpResponse, String> {
-    // Use global HTTP client for connection pooling
-    let client = &*HTTP_CLIENT;
+    // Use thread-local HTTP client (created in this thread's runtime)
+    // Clone is cheap - reqwest::Client is an Arc internally
+    let client = HTTP_CLIENT.with(|c| (**c).clone());
 
     // Prepare request builder
     let mut req_builder = match request.method {
@@ -1251,10 +1257,10 @@ async fn do_fetch(
         .fetch_bytes_in
         .store(fetch_bytes_in, Ordering::Relaxed);
 
-    // Use spawn_local to keep the streaming task on the same thread as the V8 isolate.
-    // This works because the entire call chain (worker -> event_loop -> ops) uses spawn_local,
-    // keeping everything within the same LocalSet.
-    tokio::task::spawn_local(async move {
+    // Use tokio::spawn() since worker threads now use multi_thread runtime.
+    // This allows the stream task to outlive the worker's LocalSet.
+    // The stream continues on the tokio runtime even after worker completes.
+    tokio::task::spawn(async move {
         use futures::StreamExt;
         let mut stream = response.bytes_stream();
 
