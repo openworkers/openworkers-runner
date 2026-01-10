@@ -10,9 +10,6 @@ use crate::worker_pool::{TaskPermit, WORKER_POOL};
 
 use openworkers_core::{RuntimeLimits, Script, Task, TerminationReason};
 
-#[cfg(feature = "v8")]
-use openworkers_runtime_v8::ExecutionContext;
-
 pub const DEFAULT_CPU_TIME_MS: u64 = 100;
 
 // In test mode, use shorter timeout to fail fast
@@ -21,33 +18,6 @@ pub const DEFAULT_WALL_CLOCK_TIME_MS: u64 = 5_000;
 
 #[cfg(not(test))]
 pub const DEFAULT_WALL_CLOCK_TIME_MS: u64 = 60_000;
-
-// Thread-local shared isolate for V8 runtime
-//
-// V8 isolates are not Send and must be dropped in LIFO order, so we use
-// a single isolate per worker thread instead of a pool.
-// Each request creates a fresh ExecutionContext (~100µs) within this isolate.
-#[cfg(feature = "v8")]
-thread_local! {
-    static SHARED_ISOLATE: OnceLock<Arc<tokio::sync::Mutex<openworkers_runtime_v8::SharedIsolate>>> = const { OnceLock::new() };
-}
-
-/// Get or initialize the thread-local shared isolate
-#[cfg(feature = "v8")]
-fn get_shared_isolate() -> Arc<tokio::sync::Mutex<openworkers_runtime_v8::SharedIsolate>> {
-    SHARED_ISOLATE.with(|isolate| {
-        isolate
-            .get_or_init(|| {
-                let limits = TaskExecutionConfig::default_limits();
-
-                log::debug!("Initializing thread-local V8 shared isolate");
-                let shared_isolate = openworkers_runtime_v8::SharedIsolate::new(limits);
-
-                Arc::new(tokio::sync::Mutex::new(shared_isolate))
-            })
-            .clone()
-    })
-}
 
 /// Configuration for executing a task
 pub struct TaskExecutionConfig {
@@ -134,44 +104,18 @@ async fn run_task_with_timeout_worker(
     }
 }
 
-/// Execute a task with optional external timeout (ExecutionContext-based)
-#[cfg(feature = "v8")]
-async fn run_task_with_timeout_context(
-    context: &mut ExecutionContext,
-    task: Task,
-    external_timeout_ms: Option<u64>,
-) -> Result<(), TerminationReason> {
-    match external_timeout_ms {
-        Some(timeout_ms) => {
-            let timeout_duration = Duration::from_millis(timeout_ms);
-
-            match tokio::time::timeout(timeout_duration, context.exec(task)).await {
-                Ok(result) => result,
-                Err(_) => {
-                    log::error!(
-                        "Task execution timeout after {}ms (external timeout)",
-                        timeout_ms
-                    );
-                    Err(TerminationReason::WallClockTimeout)
-                }
-            }
-        }
-        None => context.exec(task).await,
-    }
-}
-
-/// Execute a task using thread-local shared V8 isolate (recommended for V8 workloads)
+/// Execute a task using the isolate pool (recommended for V8 workloads)
 ///
-/// This version uses a thread-local shared V8 isolate instead of creating
-/// a new isolate per request. Each request gets a fresh ExecutionContext
-/// (~100µs) within the shared isolate (~3-5ms saved per request).
+/// This version uses the isolate pool from openworkers-runtime-v8, which provides
+/// LRU caching of isolates per worker_id. Warm requests reuse cached isolates (<10µs),
+/// while cold requests create new isolates (~100µs with snapshot).
 ///
 /// Execution steps:
 /// 1. Parse script (fail fast)
 /// 2. Setup logging
-/// 3. Get thread-local shared isolate
-/// 4. Create ExecutionContext (fresh V8 context)
-/// 5. Execute task
+/// 3. Acquire pooled isolate for worker_id
+/// 4. Execute task with v8::Locker
+/// 5. Return isolate to pool
 /// 6. Flush logs
 #[cfg(feature = "v8")]
 pub async fn execute_task_await_v8_pooled(
@@ -180,8 +124,8 @@ pub async fn execute_task_await_v8_pooled(
     let components = prepare_task_components(&config)
         .ok_or_else(|| TerminationReason::Other("Failed to prepare script".to_string()))?;
 
+    let worker_id = config.worker_data.id.clone();
     let task = config.task;
-    let external_timeout_ms = config.external_timeout_ms;
     let permit = config.permit;
 
     WORKER_POOL
@@ -189,33 +133,17 @@ pub async fn execute_task_await_v8_pooled(
             // Wrap permit to automatically notify drain monitor on drop
             let _permit = TaskPermit::new(permit);
 
-            // Get the thread-local shared isolate (initialized on first use)
-            let shared_isolate_lock = get_shared_isolate();
-            let mut shared_isolate = shared_isolate_lock.lock().await;
+            // Use the pooled execution API from runtime-v8
+            let result = openworkers_runtime_v8::execute_pooled(
+                &worker_id,
+                components.script,
+                components.ops,
+                task,
+            )
+            .await;
 
-            // Create a fresh ExecutionContext within the shared isolate
-            let mut execution_context =
-                ExecutionContext::new(&mut *shared_isolate, components.script, components.ops)
-                    .map_err(|err| {
-                        log::error!("Failed to create execution context: {err:?}");
-                        err
-                    })?;
-
-            // Execute the task
-            let result =
-                run_task_with_timeout_context(&mut execution_context, task, external_timeout_ms)
-                    .await;
-
-            // CRITICAL: Flush logs before context is dropped to prevent log loss
+            // CRITICAL: Flush logs before returning
             components.log_handler.flush();
-
-            // Drop ExecutionContext to clean up the V8 context
-            drop(execution_context);
-
-            // SharedIsolate lock is dropped here, allowing other tasks to use it
-
-            // TaskPermit is automatically dropped here, releasing the semaphore
-            // and notifying the drain monitor
 
             result
         })
