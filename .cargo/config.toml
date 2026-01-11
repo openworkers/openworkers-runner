@@ -1,2 +1,4 @@
 [env]
+RUSTY_V8_ARCHIVE = "/tmp/rusty_v8_binaries/librusty_v8.a"
+RUSTY_V8_SRC_BINDING_PATH = "/tmp/rusty_v8_binaries/src_binding.rs"
 RUNTIME_SNAPSHOT_PATH = { value = "/tmp/openworkers-runtime-snapshot.bin", relative = false }

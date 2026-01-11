@@ -143,6 +143,7 @@ pub fn bindings_to_infos(bindings: &[Binding]) -> Vec<openworkers_core::BindingI
 pub struct WorkerData {
     pub id: String,
     pub name: String,
+    pub user_id: String,
     pub env: Option<sqlx::types::Json<std::collections::HashMap<String, String>>>,
     pub code: Vec<u8>,
     pub code_type: CodeType,
@@ -154,6 +155,8 @@ pub struct WorkerData {
 pub struct WorkerWithBindings {
     pub id: String,
     pub name: String,
+    /// Owner/tenant ID for isolate pool isolation
+    pub user_id: String,
     pub code: Vec<u8>,
     pub code_type: CodeType,
     pub checksum: i64,
@@ -179,6 +182,7 @@ impl From<WorkerData> for WorkerWithBindings {
         Self {
             id: data.id,
             name: data.name,
+            user_id: data.user_id,
             code: data.code,
             code_type: data.code_type,
             checksum: data.checksum,
@@ -199,6 +203,7 @@ pub async fn get_worker(
         SELECT
             W.id::text,
             W.name,
+            W.user_id::text,
             D.code,
             D.code_type,
             cast(extract(epoch from D.deployed_at) + COALESCE(extract(epoch from max(V.updated_at)), 0) as BIGINT) as checksum,
@@ -263,6 +268,7 @@ pub async fn get_worker_with_bindings(
         SELECT
             W.id::text,
             W.name,
+            W.user_id::text,
             D.code,
             D.code_type,
             cast(extract(epoch from D.deployed_at) as BIGINT) as checksum
@@ -285,6 +291,7 @@ pub async fn get_worker_with_bindings(
     struct BasicWorker {
         id: String,
         name: String,
+        user_id: String,
         code: Vec<u8>,
         code_type: CodeType,
         checksum: i64,
@@ -418,6 +425,7 @@ pub async fn get_worker_with_bindings(
     Some(WorkerWithBindings {
         id: basic.id,
         name: basic.name,
+        user_id: basic.user_id,
         code: basic.code,
         code_type: basic.code_type,
         checksum: basic.checksum,

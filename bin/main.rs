@@ -88,16 +88,11 @@ async fn handle_request(
         // GET /admin/pool - Get isolate pool statistics
         #[cfg(feature = "v8")]
         if path == "/admin/pool" && req.method() == hyper::Method::GET {
-            let stats = openworkers_runtime_v8::get_pool_stats().await;
-            let hit_rate = if stats.total > 0 {
-                stats.cached as f64 / stats.total as f64
-            } else {
-                0.0
-            };
+            let stats = openworkers_runtime_v8::get_pinned_pool_stats();
 
             let body = format!(
-                r#"{{"total":{},"cached":{},"capacity":{},"hit_rate":{:.2}}}"#,
-                stats.total, stats.cached, stats.capacity, hit_rate
+                r#"{{"total_requests":{},"cache_hits":{},"cache_misses":{},"hit_rate":{:.2}}}"#,
+                stats.total_requests, stats.cache_hits, stats.cache_misses, stats.hit_rate
             );
 
             return Ok(Response::builder()
@@ -467,8 +462,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ..Default::default()
         };
 
-        openworkers_runtime_v8::init_pool(pool_max_size, pool_limits);
-        debug!("Initialized isolate pool with {} max isolates", pool_max_size);
+        openworkers_runtime_v8::init_pinned_pool(pool_max_size, pool_limits);
+        debug!(
+            "Initialized thread-pinned isolate pool with {} isolates per thread",
+            pool_max_size
+        );
     }
 
     openworkers_runner::event_scheduled::handle_scheduled(pool.clone(), log_tx.clone());

@@ -1,4 +1,4 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 
@@ -104,19 +104,23 @@ async fn run_task_with_timeout_worker(
     }
 }
 
-/// Execute a task using the isolate pool (recommended for V8 workloads)
+/// Execute a task using the thread-pinned isolate pool (recommended for V8 workloads)
 ///
-/// This version uses the isolate pool from openworkers-runtime-v8, which provides
-/// LRU caching of isolates per worker_id. Warm requests reuse cached isolates (<10µs),
-/// while cold requests create new isolates (~100µs with snapshot).
+/// This version uses thread-pinned pools from openworkers-runtime-v8, which provides:
+/// - Zero contention (each thread has its own pool)
+/// - Round-robin distribution across threads (via WORKER_POOL)
+/// - Per-owner isolation (isolates tagged with owner_id)
+/// - LRU eviction of idle isolates
+/// - Queue with backpressure when at capacity
 ///
 /// Execution steps:
 /// 1. Parse script (fail fast)
 /// 2. Setup logging
-/// 3. Acquire pooled isolate for worker_id
-/// 4. Execute task with v8::Locker
-/// 5. Return isolate to pool
-/// 6. Flush logs
+/// 3. Round-robin thread selection (WORKER_POOL)
+/// 4. Acquire isolate for this owner from thread-local pool
+/// 5. Execute task with v8::Locker
+/// 6. Release isolate to thread-local pool
+/// 7. Flush logs
 #[cfg(feature = "v8")]
 pub async fn execute_task_await_v8_pooled(
     config: TaskExecutionConfig,
@@ -124,7 +128,9 @@ pub async fn execute_task_await_v8_pooled(
     let components = prepare_task_components(&config)
         .ok_or_else(|| TerminationReason::Other("Failed to prepare script".to_string()))?;
 
-    let worker_id = config.worker_data.id.clone();
+    // Use user_id (tenant) for isolate pool isolation instead of worker_id
+    // This prevents a single tenant from monopolizing resources via multiple workers
+    let owner_id = config.worker_data.user_id.clone();
     let task = config.task;
     let permit = config.permit;
 
@@ -133,9 +139,10 @@ pub async fn execute_task_await_v8_pooled(
             // Wrap permit to automatically notify drain monitor on drop
             let _permit = TaskPermit::new(permit);
 
-            // Use the pooled execution API from runtime-v8
-            let result = openworkers_runtime_v8::execute_pooled(
-                &worker_id,
+            // Use the thread-pinned pool execution API from runtime-v8
+            // owner_id is the tenant (user_id), not the worker_id
+            let result = openworkers_runtime_v8::execute_pinned(
+                &owner_id,
                 components.script,
                 components.ops,
                 task,
