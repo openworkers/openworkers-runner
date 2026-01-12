@@ -16,6 +16,18 @@ pub enum CodeType {
     Snapshot,
 }
 
+impl std::fmt::Display for CodeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            CodeType::Javascript => "javascript",
+            CodeType::Typescript => "typescript",
+            CodeType::Wasm => "wasm",
+            CodeType::Snapshot => "snapshot",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, sqlx::Type)]
 #[sqlx(type_name = "enum_binding_type", rename_all = "lowercase")]
 pub enum BindingType {
@@ -416,10 +428,11 @@ pub async fn get_worker_with_bindings(
     }
 
     log::debug!(
-        "worker found: id: {}, version: {}, bindings: {}",
+        "worker found: id: {}, version: {}, bindings: {}, type: {}",
         basic.id,
         basic.version,
-        bindings.len()
+        bindings.len(),
+        basic.code_type
     );
 
     Some(WorkerWithBindings {

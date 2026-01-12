@@ -5,10 +5,26 @@
 //! - wasm only: direct type alias to WasmWorker (zero overhead)
 //! - both: enum with runtime dispatch based on CodeType
 
-use std::sync::Arc;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
+
+use lru::LruCache;
+use once_cell::sync::Lazy;
 
 use crate::ops::RunnerOperations;
 use crate::store::{CodeType, WorkerWithBindings, bindings_to_infos};
+
+// =============================================================================
+// Transpiled code cache
+// =============================================================================
+
+/// Cache key: (worker_id, version)
+type CacheKey = (String, i32);
+
+/// LRU cache for transpiled JavaScript code
+/// Capacity: 1000 workers (transpiled code is relatively small)
+static TRANSPILE_CACHE: Lazy<Mutex<LruCache<CacheKey, String>>> =
+    Lazy::new(|| Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap())));
 
 #[cfg(all(feature = "v8", feature = "wasm"))]
 use openworkers_core::Task;
@@ -97,20 +113,49 @@ pub async fn create_worker(
 // Script preparation (shared across all configurations)
 // =============================================================================
 
-/// Parse worker code based on code type
+/// Parse worker code based on code type (with caching for JS/TS)
 fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason> {
     match data.code_type {
         CodeType::Javascript | CodeType::Typescript => {
             #[cfg(feature = "v8")]
             {
-                crate::transform::parse_worker_code(&data.code, &data.code_type)
-                    .map(WorkerCode::js)
+                let cache_key = (data.id.clone(), data.version);
+
+                // Try to get from cache first
+                {
+                    let mut cache = TRANSPILE_CACHE.lock().unwrap();
+
+                    if let Some(cached_code) = cache.get(&cache_key) {
+                        log::debug!(
+                            "transpile cache HIT: worker={}, version={}",
+                            data.id,
+                            data.version
+                        );
+                        return Ok(WorkerCode::js(cached_code.clone()));
+                    }
+                }
+
+                log::debug!(
+                    "transpile cache MISS: worker={}, version={}",
+                    data.id,
+                    data.version
+                );
+
+                // Transpile and cache
+                let transpiled = crate::transform::parse_worker_code(&data.code, &data.code_type)
                     .map_err(|e| {
-                        TerminationReason::InitializationError(format!(
-                            "Failed to parse worker code: {}",
-                            e
-                        ))
-                    })
+                    TerminationReason::InitializationError(format!(
+                        "Failed to parse worker code: {}",
+                        e
+                    ))
+                })?;
+
+                {
+                    let mut cache = TRANSPILE_CACHE.lock().unwrap();
+                    cache.put(cache_key, transpiled.clone());
+                }
+
+                Ok(WorkerCode::js(transpiled))
             }
 
             #[cfg(not(feature = "v8"))]
