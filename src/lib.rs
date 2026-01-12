@@ -9,6 +9,7 @@ pub mod store;
 pub mod task_executor;
 #[cfg(feature = "v8")]
 mod transform;
+pub mod utils;
 pub mod worker;
 pub mod worker_pool;
 
@@ -23,3 +24,6 @@ pub use limiter::{BindingLimiter, BindingLimiters, LimitError, LimiterGuard};
 
 // Re-export store types
 pub use store::{AssetsConfig, Binding, KvConfig, StorageConfig, WorkerWithBindings};
+
+// Re-export utils
+pub use utils::short_id;

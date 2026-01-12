@@ -151,7 +151,10 @@ pub fn handle_scheduled(
                 {
                     Some(w) => w,
                     None => {
-                        log::error!("worker not found: {:?}", data.worker_id);
+                        log::error!(
+                            "worker not found: {}",
+                            crate::utils::short_id(&data.worker_id)
+                        );
                         continue;
                     }
                 };

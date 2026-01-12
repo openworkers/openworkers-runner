@@ -122,7 +122,7 @@ async fn flush_worker(nc: &async_nats::Client, batch: &mut Vec<LogMessage>, work
         log::debug!(
             "Flushing {} logs for worker {}",
             worker_logs.len(),
-            worker_id
+            crate::utils::short_id(worker_id)
         );
 
         for log_msg in worker_logs {
@@ -155,7 +155,10 @@ pub struct WorkerLogHandler {
 impl WorkerLogHandler {
     /// Signal that this worker is done and logs should be flushed
     pub fn flush(self) {
-        log::debug!("Flushing logs for worker: {}", self.worker_id);
+        log::debug!(
+            "Flushing logs for worker: {}",
+            crate::utils::short_id(&self.worker_id)
+        );
         // Drop tx first to close the channel
         drop(self.tx);
         // Then send flush signal

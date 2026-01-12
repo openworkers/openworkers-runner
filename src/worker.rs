@@ -128,7 +128,7 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
                     if let Some(cached_code) = cache.get(&cache_key) {
                         log::debug!(
                             "transpile cache HIT: worker={}, version={}",
-                            data.id,
+                            crate::utils::short_id(&data.id),
                             data.version
                         );
                         return Ok(WorkerCode::js(cached_code.clone()));
@@ -137,7 +137,7 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
 
                 log::debug!(
                     "transpile cache MISS: worker={}, version={}",
-                    data.id,
+                    crate::utils::short_id(&data.id),
                     data.version
                 );
 

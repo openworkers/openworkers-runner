@@ -1,6 +1,8 @@
 use sqlx::prelude::FromRow;
 use std::collections::HashMap;
 
+use crate::utils::short_id;
+
 #[derive(Debug)]
 pub enum WorkerIdentifier {
     Id(String),
@@ -429,7 +431,7 @@ pub async fn get_worker_with_bindings(
 
     log::debug!(
         "worker found: id: {}, version: {}, bindings: {}, type: {}",
-        basic.id,
+        short_id(&basic.id),
         basic.version,
         bindings.len(),
         basic.code_type
@@ -637,7 +639,11 @@ async fn fetch_worker_binding_config(
             name: row.name,
         }),
         Err(err) => {
-            log::warn!("failed to fetch worker_binding {}: {:?}", worker_id, err);
+            log::warn!(
+                "failed to fetch worker_binding {}: {:?}",
+                short_id(worker_id),
+                err
+            );
             None
         }
     }
