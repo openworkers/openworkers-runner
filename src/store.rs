@@ -147,7 +147,7 @@ pub struct WorkerData {
     pub env: Option<sqlx::types::Json<std::collections::HashMap<String, String>>>,
     pub code: Vec<u8>,
     pub code_type: CodeType,
-    pub checksum: i64,
+    pub version: i32,
 }
 
 /// Extended worker data with binding configs
@@ -159,7 +159,7 @@ pub struct WorkerWithBindings {
     pub user_id: String,
     pub code: Vec<u8>,
     pub code_type: CodeType,
-    pub checksum: i64,
+    pub version: i32,
     /// Simple env vars (for backwards compatibility)
     pub env: HashMap<String, String>,
     /// All bindings (vars, secrets, and resource bindings)
@@ -185,7 +185,7 @@ impl From<WorkerData> for WorkerWithBindings {
             user_id: data.user_id,
             code: data.code,
             code_type: data.code_type,
-            checksum: data.checksum,
+            version: data.version,
             env,
             bindings,
         }
@@ -206,14 +206,14 @@ pub async fn get_worker(
             W.user_id::text,
             D.code,
             D.code_type,
-            cast(extract(epoch from D.deployed_at) + COALESCE(extract(epoch from max(V.updated_at)), 0) as BIGINT) as checksum,
+            W.current_version as version,
             json_object_agg(V.key, V.value) FILTER (WHERE V IS NOT NULL) AS env
         FROM workers AS W
         JOIN worker_deployments AS D ON D.worker_id = W.id AND D.version = W.current_version
         LEFT OUTER JOIN environment_values AS V ON W.environment_id=V.environment_id AND W.user_id=V.user_id
         LEFT OUTER JOIN environments AS E ON W.environment_id=E.id AND W.user_id=E.user_id
         WHERE {}
-        GROUP BY W.id, E.id, D.code, D.code_type, D.deployed_at
+        GROUP BY W.id, E.id, D.code, D.code_type
         "#,
         match identifier {
             WorkerIdentifier::Id(_) => "W.id::text = $1",
@@ -233,9 +233,9 @@ pub async fn get_worker(
     {
         Ok(worker) => {
             log::debug!(
-                "worker found: id: {}, checksum: {}, code_type: {:?}",
+                "worker found: id: {}, version: {}, code_type: {:?}",
                 worker.id,
-                worker.checksum,
+                worker.version,
                 worker.code_type
             );
             Some(worker)
@@ -271,7 +271,7 @@ pub async fn get_worker_with_bindings(
             W.user_id::text,
             D.code,
             D.code_type,
-            cast(extract(epoch from D.deployed_at) as BIGINT) as checksum
+            W.current_version as version
         FROM workers AS W
         JOIN worker_deployments AS D ON D.worker_id = W.id AND D.version = W.current_version
         WHERE {}
@@ -294,7 +294,7 @@ pub async fn get_worker_with_bindings(
         user_id: String,
         code: Vec<u8>,
         code_type: CodeType,
-        checksum: i64,
+        version: i32,
     }
 
     let basic = match sqlx::query_as::<_, BasicWorker>(&worker_query)
@@ -416,9 +416,9 @@ pub async fn get_worker_with_bindings(
     }
 
     log::debug!(
-        "worker found: id: {}, checksum: {}, bindings: {}",
+        "worker found: id: {}, version: {}, bindings: {}",
         basic.id,
-        basic.checksum,
+        basic.version,
         bindings.len()
     );
 
@@ -428,7 +428,7 @@ pub async fn get_worker_with_bindings(
         user_id: basic.user_id,
         code: basic.code,
         code_type: basic.code_type,
-        checksum: basic.checksum,
+        version: basic.version,
         env,
         bindings,
     })
