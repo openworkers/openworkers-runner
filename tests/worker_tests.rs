@@ -335,12 +335,14 @@ async fn test_worker_creation_error() {
     .await;
 }
 
+/// Buffered responses (like `new Response('text')`) should NOT be streams.
+/// They should be returned as ResponseBody::Bytes for efficiency.
 #[tokio::test]
-async fn test_response_body_is_streamed() {
+async fn test_buffered_response_is_bytes_not_stream() {
     run_local(|| async {
         let script = Script::new(
             r#"addEventListener('fetch', (event) => {
-                event.respondWith(new Response('Hello, streaming!'));
+                event.respondWith(new Response('Hello, buffered!'));
             });"#,
         );
 
@@ -359,7 +361,58 @@ async fn test_response_body_is_streamed() {
         worker.exec(task).await.expect("Task should execute");
 
         let response = rx.await.expect("Should receive response");
-        assert!(response.body.is_stream());
+
+        // Buffered responses should NOT be streams - they should be Bytes
+        assert!(
+            !response.body.is_stream(),
+            "Buffered response should be Bytes, not Stream"
+        );
+
+        let body = response.body.collect().await.expect("Should have body");
+        assert_eq!(String::from_utf8_lossy(&body), "Hello, buffered!");
+    })
+    .await;
+}
+
+/// True streaming responses (using ReadableStream) should be streams.
+#[tokio::test]
+async fn test_true_streaming_response_is_stream() {
+    run_local(|| async {
+        let script = Script::new(
+            r#"addEventListener('fetch', (event) => {
+                const encoder = new TextEncoder();
+                const stream = new ReadableStream({
+                    start(controller) {
+                        controller.enqueue(encoder.encode('Hello, '));
+                        controller.enqueue(encoder.encode('streaming!'));
+                        controller.close();
+                    }
+                });
+                event.respondWith(new Response(stream));
+            });"#,
+        );
+
+        let mut worker = Worker::new(script, None)
+            .await
+            .expect("Worker should initialize");
+
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            url: "http://localhost/".to_string(),
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+
+        let (task, rx) = Task::fetch(request);
+        worker.exec(task).await.expect("Task should execute");
+
+        let response = rx.await.expect("Should receive response");
+
+        // True streaming responses SHOULD be streams
+        assert!(
+            response.body.is_stream(),
+            "True streaming response should be Stream"
+        );
 
         let body = response.body.collect().await.expect("Should have body");
         assert_eq!(String::from_utf8_lossy(&body), "Hello, streaming!");

@@ -461,12 +461,8 @@ async fn test_processed_fetch_response() {
 
         assert_eq!(response.status, 200);
 
-        // All responses with body should be streamed
-        assert!(
-            response.body.is_stream(),
-            "Processed response should be streamed"
-        );
-
+        // Buffered responses (string body) use ResponseBody::Bytes, not Stream
+        // Only true streaming responses (user-provided ReadableStream) use Stream
         let body = response.body.collect().await.expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
         assert!(body_str.starts_with("Processed:"), "Body: {}", body_str);
