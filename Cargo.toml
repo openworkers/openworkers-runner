@@ -39,8 +39,8 @@ reqwest = { version = "0.13.1", default-features = false, features = ["rustls", 
 openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.8.1", features = ["hyper"] }
 
 # Runtime backend (v8 only for now, others require core 0.5)
-openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", optional = true }
-# openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.8.4", optional = true }
+# openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", optional = true }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.8.5-locker", optional = true }
 
 # WASM runtime (optional)
 # openworkers-runtime-wasm = { path = "../openworkers-runtime-wasm", optional = true }

@@ -2718,6 +2718,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8"
 version = "0.8.5"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.5-locker#91521b7fbec4d7832b9bb9db993667aeb4b3a2e3"
 dependencies = [
  "bytes",
  "env_logger",
@@ -2726,6 +2727,7 @@ dependencies = [
  "log",
  "lru",
  "openworkers-core",
+ "openworkers-v8",
  "ring",
  "serde",
  "serde_json",
@@ -2734,7 +2736,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "uuid",
- "v8",
 ]
 
 [[package]]
@@ -2747,6 +2748,23 @@ dependencies = [
  "tokio",
  "wasmtime",
  "wasmtime-wasi",
+]
+
+[[package]]
+name = "openworkers-v8"
+version = "142.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "421f7f44b31929f74332785574d823be340b97d4c8864967f6de0e6b2ac3f590"
+dependencies = [
+ "bindgen",
+ "bitflags",
+ "fslock",
+ "gzip-header",
+ "home",
+ "miniz_oxide",
+ "paste",
+ "temporal_capi",
+ "which",
 ]
 
 [[package]]
@@ -5223,21 +5241,6 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "v8"
-version = "142.2.0"
-dependencies = [
- "bindgen",
- "bitflags",
- "fslock",
- "gzip-header",
- "home",
- "miniz_oxide",
- "paste",
- "temporal_capi",
- "which",
 ]
 
 [[package]]
