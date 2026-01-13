@@ -1471,6 +1471,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
+name = "foldhash"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+
+[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1745,7 +1751,7 @@ checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
  "allocator-api2",
  "equivalent",
- "foldhash",
+ "foldhash 0.1.5",
  "serde",
 ]
 
@@ -1754,6 +1760,11 @@ name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash 0.2.0",
+]
 
 [[package]]
 name = "hashlink"
@@ -2337,9 +2348,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.179"
+version = "0.2.180"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5a2d376baa530d1238d133232d15e239abad80d05838b4b59354e5268af431f"
+checksum = "bcc35a38544a891a5f7c865aca548a982ccb3b8650a5b06d0fd33a10283c56fc"
 
 [[package]]
 name = "libloading"
@@ -2413,11 +2424,11 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "lru"
-version = "0.12.5"
+version = "0.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "234cf4f4a04dc1f57e24b96cc0cd600cf2af460d4161ac5ecdd0af8e1f3b2a38"
+checksum = "a1dc47f592c06f33f8e3aea9591776ec7c9f9e4124778ff8a3c3b87159f7e593"
 dependencies = [
- "hashbrown 0.15.5",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -2672,7 +2683,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.8.5"
+version = "0.8.7"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2717,8 +2728,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.8.5"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.5-locker#91521b7fbec4d7832b9bb9db993667aeb4b3a2e3"
+version = "0.8.7"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.7#a50d3e8d7dbf3f77e6b1f9e8cebad9bb305d7907"
 dependencies = [
  "bytes",
  "env_logger",
@@ -2752,9 +2763,9 @@ dependencies = [
 
 [[package]]
 name = "openworkers-v8"
-version = "142.2.1"
+version = "142.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "421f7f44b31929f74332785574d823be340b97d4c8864967f6de0e6b2ac3f590"
+checksum = "8b11204449f8aef81e7cc032c19245f97666d9e723aa891d4829d7060057f6b7"
 dependencies = [
  "bindgen",
  "bitflags",
