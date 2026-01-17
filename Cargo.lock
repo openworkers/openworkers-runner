@@ -2682,6 +2682,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "openworkers-glue-v8"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa484c763a75913134639564ac4afa3528b755b86348d8f710f14a0a94f0c3b2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.111",
+]
+
+[[package]]
 name = "openworkers-runner"
 version = "0.8.7"
 dependencies = [
@@ -2728,8 +2739,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.8.7"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.7#a50d3e8d7dbf3f77e6b1f9e8cebad9bb305d7907"
+version = "0.8.10"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.10#0d6046ede2183934411a194e5043005af0ef1697"
 dependencies = [
  "bytes",
  "env_logger",
@@ -2738,6 +2749,8 @@ dependencies = [
  "log",
  "lru",
  "openworkers-core",
+ "openworkers-glue-v8",
+ "openworkers-serde-v8",
  "openworkers-v8",
  "ring",
  "serde",
@@ -2759,6 +2772,20 @@ dependencies = [
  "tokio",
  "wasmtime",
  "wasmtime-wasi",
+]
+
+[[package]]
+name = "openworkers-serde-v8"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89cb57930898aac65d9ab8b8082736e379762dd6497160ea46100b90a6d63d87"
+dependencies = [
+ "bytes",
+ "num-bigint",
+ "openworkers-v8",
+ "serde",
+ "smallvec",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
