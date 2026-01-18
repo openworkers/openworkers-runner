@@ -4,7 +4,7 @@
 
 #![cfg(feature = "v8")]
 
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, RuntimeLimits, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, RuntimeLimits, Script};
 use openworkers_runner::ops::RunnerOperations;
 use openworkers_runtime_v8::{execute_pinned, init_pinned_pool};
 use std::collections::HashMap;
@@ -46,7 +46,7 @@ async fn test_pinned_simple_response() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let ops = Arc::new(RunnerOperations::new());
 
         let result = execute_pinned("test-owner", script, ops, task).await;
@@ -90,7 +90,7 @@ async fn test_pinned_html_response() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let ops = Arc::new(RunnerOperations::new());
 
         let result = execute_pinned("test-owner", script, ops, task).await;
@@ -132,7 +132,7 @@ async fn test_pinned_json_response() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let ops = Arc::new(RunnerOperations::new());
 
         let result = execute_pinned("test-owner", script, ops, task).await;
@@ -180,7 +180,7 @@ async fn test_pinned_global_default_fetch() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let ops = Arc::new(RunnerOperations::new());
 
         let result = execute_pinned("test-owner", script, ops, task).await;
@@ -231,7 +231,7 @@ async fn test_pinned_global_default_async_fetch() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let ops = Arc::new(RunnerOperations::new());
 
         let result = execute_pinned("test-owner", script, ops, task).await;
@@ -299,7 +299,7 @@ async fn test_buffered_response_body_not_empty_production_scenario() {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(request);
+    let (task, rx) = Event::fetch(request);
     let ops = Arc::new(RunnerOperations::new());
 
     // Run execute_pinned in its OWN LocalSet (like production)
@@ -364,7 +364,7 @@ async fn test_json_response_body_not_empty_production_scenario() {
         body: RequestBody::None,
     };
 
-    let (task, rx) = Task::fetch(request);
+    let (task, rx) = Event::fetch(request);
     let ops = Arc::new(RunnerOperations::new());
 
     // Production pattern: LocalSet only wraps execute_pinned
@@ -439,7 +439,7 @@ async fn test_streaming_response_with_localset_alive() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let ops = Arc::new(RunnerOperations::new());
 
         let result = execute_pinned("test-owner", script, ops, task).await;

@@ -8,7 +8,7 @@ use crate::store::{CodeType, WorkerWithBindings};
 use crate::worker::{Worker, create_worker, prepare_script};
 use crate::worker_pool::{TaskPermit, WORKER_POOL};
 
-use openworkers_core::{RuntimeLimits, Script, Task, TerminationReason};
+use openworkers_core::{Event, RuntimeLimits, Script, TerminationReason};
 
 pub const DEFAULT_CPU_TIME_MS: u64 = 100;
 
@@ -23,7 +23,7 @@ pub const DEFAULT_WALL_CLOCK_TIME_MS: u64 = 60_000;
 pub struct TaskExecutionConfig {
     pub worker_data: WorkerWithBindings,
     pub permit: OwnedSemaphorePermit,
-    pub task: Task,
+    pub task: Event,
     pub db_pool: DbPool,
     pub global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
     pub limits: RuntimeLimits,
@@ -82,7 +82,7 @@ fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponent
 /// Execute a task with optional external timeout (Worker-based)
 async fn run_task_with_timeout_worker(
     worker: &mut Worker,
-    task: Task,
+    task: Event,
     external_timeout_ms: Option<u64>,
 ) -> Result<(), TerminationReason> {
     match external_timeout_ms {

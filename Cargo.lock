@@ -1372,7 +1372,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2673,6 +2673,17 @@ version = "0.8.1"
 source = "git+https://github.com/openworkers/openworkers-core?tag=v0.8.1#54602c5f840cf8779f699efe556cdfa81856b336"
 dependencies = [
  "bytes",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "openworkers-core"
+version = "0.9.0"
+source = "git+https://github.com/openworkers/openworkers-core?tag=v0.9.0#264fdaf5ceea32ff745802060187088723f3e4f3"
+dependencies = [
+ "bytes",
  "http-body-util",
  "hyper",
  "serde",
@@ -2694,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.8.8"
+version = "0.9.0"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2714,7 +2725,7 @@ dependencies = [
  "log",
  "lru",
  "once_cell",
- "openworkers-core",
+ "openworkers-core 0.9.0",
  "openworkers-runtime-v8",
  "openworkers-runtime-wasm",
  "postgate",
@@ -2739,8 +2750,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.8.12"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.12#f4f9bdc865e2b4d4e8f741a145b4a4329c507503"
+version = "0.9.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.9.0#c7db885b32cbd28e38fdf820a6f432ff6f10e66f"
 dependencies = [
  "bytes",
  "env_logger",
@@ -2748,7 +2759,7 @@ dependencies = [
  "libc",
  "log",
  "lru",
- "openworkers-core",
+ "openworkers-core 0.9.0",
  "openworkers-glue-v8",
  "openworkers-runtime-v8-gc-derive",
  "openworkers-serde-v8",
@@ -2766,7 +2777,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.12#f4f9bdc865e2b4d4e8f741a145b4a4329c507503"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.9.0#c7db885b32cbd28e38fdf820a6f432ff6f10e66f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2779,7 +2790,7 @@ version = "0.1.0"
 source = "git+https://github.com/openworkers/openworkers-runtime-wasm?tag=v0.1.0#f5dce3bf27a198a3be5f60b3b5a6a40c6bd26ffe"
 dependencies = [
  "bytes",
- "openworkers-core",
+ "openworkers-core 0.8.1",
  "tokio",
  "wasmtime",
  "wasmtime-wasi",
@@ -3215,7 +3226,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3592,7 +3603,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3682,7 +3693,7 @@ dependencies = [
  "security-framework 3.5.1",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5924,7 +5935,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

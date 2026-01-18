@@ -17,7 +17,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
-use openworkers_core::{HttpMethod, HttpRequest, HyperBody, RequestBody, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, HyperBody, RequestBody, Script};
 use openworkers_runner::RunnerOperations;
 use openworkers_runner::worker_pool::WORKER_POOL;
 
@@ -136,7 +136,7 @@ async fn handle_request(
             }
         };
 
-        let (task, rx) = Task::fetch(http_request);
+        let (task, rx) = Event::fetch(http_request);
 
         // Spawn a task to wait for and forward the response
         let res_tx_clone = std::sync::Arc::new(std::sync::Mutex::new(Some(res_tx)));

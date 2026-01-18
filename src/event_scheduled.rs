@@ -3,7 +3,7 @@ use crate::store::{self, WorkerWithBindings};
 use crate::task_executor::{self, TaskExecutionConfig};
 use crate::worker::prepare_script;
 
-use openworkers_core::{ScheduledInit, Task};
+use openworkers_core::Event;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -47,14 +47,14 @@ fn run_scheduled(
     // Execute task using common executor (fire-and-forget)
     // Note: scheduled tasks create their own response channel internally
     tokio::spawn(async move {
-        // Create the oneshot channel for scheduled event response
-        let (res_tx, res_rx) = tokio::sync::oneshot::channel::<()>();
-        let task = Task::Scheduled(Some(ScheduledInit::new(res_tx, data.scheduled_time)));
+        // Create task event with schedule source
+        let task_id = format!("scheduled-{}", data.id);
+        let (event, res_rx) = Event::from_schedule(task_id, data.scheduled_time);
 
         let config = TaskExecutionConfig {
             worker_data,
             permit,
-            task,
+            task: event,
             db_pool,
             global_log_tx,
             limits: task_executor::TaskExecutionConfig::default_limits(),
@@ -68,9 +68,18 @@ fn run_scheduled(
         match result {
             Ok(()) => {
                 log::debug!("scheduled task exec completed successfully");
-                // Wait for the scheduled event handler to respond
+                // Wait for the task event handler to respond
                 match res_rx.await {
-                    Ok(()) => log::debug!("scheduled task responded"),
+                    Ok(task_result) => {
+                        if task_result.success {
+                            log::debug!("scheduled task responded successfully");
+                        } else {
+                            log::error!(
+                                "scheduled task failed: {}",
+                                task_result.error.unwrap_or_default()
+                            );
+                        }
+                    }
                     Err(err) => log::error!("scheduled task response error: {err}"),
                 }
             }

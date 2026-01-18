@@ -27,7 +27,7 @@ static TRANSPILE_CACHE: Lazy<Mutex<LruCache<CacheKey, String>>> =
     Lazy::new(|| Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap())));
 
 #[cfg(all(feature = "v8", feature = "wasm"))]
-use openworkers_core::Task;
+use openworkers_core::Event;
 
 use openworkers_core::{RuntimeLimits, Script, TerminationReason, WorkerCode};
 
@@ -72,7 +72,7 @@ impl Worker {
     }
 
     /// Execute a task
-    pub async fn exec(&mut self, task: Task) -> Result<(), TerminationReason> {
+    pub async fn exec(&mut self, task: Event) -> Result<(), TerminationReason> {
         match self {
             Worker::Javascript(w) => w.exec(task).await,
             Worker::Wasm(w) => w.exec(task).await,

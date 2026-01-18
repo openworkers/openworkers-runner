@@ -3,7 +3,7 @@
 #![cfg(feature = "v8")]
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_v8::Worker;
 use std::collections::HashMap;
 
@@ -51,7 +51,7 @@ pub fn worker_benchmarks(c: &mut Criterion) {
                     headers: HashMap::new(),
                     body: RequestBody::None,
                 };
-                let (task, rx) = Task::fetch(req);
+                let (task, rx) = Event::fetch(req);
                 worker.exec(task).await.unwrap();
                 rx.await.unwrap()
             }))
@@ -76,7 +76,7 @@ pub fn worker_benchmarks(c: &mut Criterion) {
                     headers: HashMap::new(),
                     body: RequestBody::None,
                 };
-                let (task, rx) = Task::fetch(req);
+                let (task, rx) = Event::fetch(req);
                 worker.exec(task).await.unwrap();
                 rx.await.unwrap()
             }))
@@ -101,7 +101,7 @@ pub fn worker_benchmarks(c: &mut Criterion) {
                     headers: HashMap::new(),
                     body: RequestBody::None,
                 };
-                let (task, rx) = Task::fetch(req);
+                let (task, rx) = Event::fetch(req);
                 worker.exec(task).await.unwrap();
                 rx.await.unwrap()
             }))

@@ -18,7 +18,7 @@
 
 #![cfg(not(feature = "wasm"))]
 
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_v8::Worker;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -48,7 +48,7 @@ async fn fetch_with_timeout(
     worker: &mut Worker,
     timeout_secs: u64,
 ) -> Result<(u16, String), String> {
-    let (task, rx) = Task::fetch(make_request());
+    let (task, rx) = Event::fetch(make_request());
     worker
         .exec(task)
         .await

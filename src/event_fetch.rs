@@ -4,7 +4,7 @@ use crate::task_executor::{self, TaskExecutionConfig};
 use crate::worker::prepare_script;
 
 use openworkers_core::{
-    FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, Task, TerminationReason,
+    Event, FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, TerminationReason,
 };
 
 type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>;
@@ -36,7 +36,7 @@ pub fn run_fetch(
     }
 
     // Create the task
-    let task = Task::Fetch(Some(FetchInit::new(req, res_tx)));
+    let task = Event::Fetch(Some(FetchInit::new(req, res_tx)));
 
     // Build config for task executor
     let config = TaskExecutionConfig {

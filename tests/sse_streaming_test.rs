@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, ResponseBody, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, ResponseBody, Script};
 use openworkers_runner::RunnerOperations;
 use tokio::task::LocalSet;
 
@@ -74,7 +74,7 @@ async fn test_sse_streaming_with_start() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         // Execute - should complete once stream is closed (~400ms for 3 events)
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
@@ -174,7 +174,7 @@ async fn test_sse_with_readable_stream_pull() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
         assert!(exec_result.is_ok(), "Execution should complete");
@@ -251,7 +251,7 @@ async fn test_sse_chunks_received_incrementally() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
         assert!(exec_result.is_ok(), "Execution should complete");
@@ -333,7 +333,7 @@ async fn test_sse_longer_stream() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         // 5 events * 50ms = 250ms minimum, give it 5 seconds
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;

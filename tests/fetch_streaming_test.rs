@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runner::RunnerOperations;
 use tokio::task::LocalSet;
 
@@ -63,7 +63,7 @@ async fn test_fetch_basic() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         // Execute with timeout since this makes a network request
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
@@ -143,7 +143,7 @@ async fn test_fetch_streaming_read() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
@@ -219,7 +219,7 @@ async fn test_fetch_forward() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
@@ -293,7 +293,7 @@ async fn test_fetch_post_with_body() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
@@ -347,7 +347,7 @@ async fn test_fetch_forward_streaming() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let _result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         // Wait for response with timeout
@@ -400,7 +400,7 @@ async fn test_streaming_response_chunked() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
         if let Ok(Err(e)) = &exec_result {
             eprintln!("EXEC_ERROR: {:?}", e);
@@ -451,7 +451,7 @@ async fn test_processed_fetch_response() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let _result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         let response = tokio::time::timeout(Duration::from_secs(5), rx)
@@ -522,7 +522,7 @@ async fn test_response_clone_after_fetch() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         // Use timeout - this is where the hang would occur
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
@@ -624,7 +624,7 @@ async fn test_response_clone_cache_pattern() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         // This is where the hang occurs - timeout will catch it
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
@@ -704,7 +704,7 @@ async fn test_fetch_with_streaming_body() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         // Use timeout since this makes a network request
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
@@ -808,7 +808,7 @@ async fn test_basic_stream_tee() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         // This should be quick since no network is involved
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
@@ -898,7 +898,7 @@ async fn test_basic_stream_no_tee() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
@@ -984,7 +984,7 @@ async fn test_tee_branch1_only() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(exec_result.is_ok(), "Reading from branch1 only should work");
@@ -1059,7 +1059,7 @@ async fn test_tee_branch2_only() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(exec_result.is_ok(), "Reading from branch2 only should work");
@@ -1136,7 +1136,7 @@ async fn test_stream_async_pull() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(exec_result.is_ok(), "Async pull should work");
@@ -1223,7 +1223,7 @@ async fn test_stream_async_pull_nested() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(exec_result.is_ok(), "Nested async pull should work");
@@ -1338,7 +1338,7 @@ async fn test_two_streams_shared_reader() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(
@@ -1452,7 +1452,7 @@ async fn test_inline_tee_logic() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         assert!(exec_result.is_ok(), "Inline tee logic should work");
@@ -1542,7 +1542,7 @@ async fn test_tee_debug() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
         let exec_result = tokio::time::timeout(Duration::from_secs(5), worker.exec(task)).await;
 
         if exec_result.is_err() {

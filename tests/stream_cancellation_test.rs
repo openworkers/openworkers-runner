@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use openworkers_core::{HttpMethod, HttpRequest, RequestBody, ResponseBody, Script, Task};
+use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, ResponseBody, Script};
 use openworkers_runner::RunnerOperations;
 use std::sync::Arc;
 use tokio::task::LocalSet;
@@ -103,7 +103,7 @@ async fn test_stream_stops_on_consumer_disconnect() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         // Use a scope to release the borrow after exec completes
         {
@@ -242,7 +242,7 @@ async fn test_emit_count_after_disconnect() {
             body: RequestBody::None,
         };
 
-        let (task, rx) = Task::fetch(request);
+        let (task, rx) = Event::fetch(request);
 
         // Scope to release borrow
         {
@@ -348,7 +348,7 @@ async fn test_enqueue_throws_on_disconnect() {
             .await
             .expect("Worker should initialize");
 
-        let (task, rx) = Task::fetch(make_request());
+        let (task, rx) = Event::fetch(make_request());
 
         {
             let mut exec_future = Box::pin(worker.exec(task));
@@ -438,7 +438,7 @@ async fn test_signal_is_aborted_on_disconnect() {
             .await
             .expect("Worker should initialize");
 
-        let (task, rx) = Task::fetch(make_request());
+        let (task, rx) = Event::fetch(make_request());
 
         {
             let mut exec_future = Box::pin(worker.exec(task));
@@ -522,7 +522,7 @@ async fn test_immediate_disconnect() {
             .await
             .expect("Worker should initialize");
 
-        let (task, rx) = Task::fetch(make_request());
+        let (task, rx) = Event::fetch(make_request());
 
         {
             let mut exec_future = Box::pin(worker.exec(task));
@@ -604,7 +604,7 @@ async fn test_exec_completes_quickly_after_disconnect() {
             .await
             .expect("Worker should initialize");
 
-        let (task, rx) = Task::fetch(make_request());
+        let (task, rx) = Event::fetch(make_request());
 
         let mut exec_future = Box::pin(worker.exec(task));
 
@@ -687,7 +687,7 @@ async fn test_normal_stream_completion() {
             .await
             .expect("Worker should initialize");
 
-        let (task, rx) = Task::fetch(make_request());
+        let (task, rx) = Event::fetch(make_request());
 
         {
             let mut exec_future = Box::pin(worker.exec(task));
