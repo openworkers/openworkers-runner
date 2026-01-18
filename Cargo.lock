@@ -2683,9 +2683,9 @@ dependencies = [
 
 [[package]]
 name = "openworkers-glue-v8"
-version = "0.1.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa484c763a75913134639564ac4afa3528b755b86348d8f710f14a0a94f0c3b2"
+checksum = "bc769bda5e342bc28a5cd5e0fcb6f14437bf0e07dc1a2790d661693d1980a4d4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2694,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.8.7"
+version = "0.8.8"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2739,8 +2739,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.8.10"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.10#0d6046ede2183934411a194e5043005af0ef1697"
+version = "0.8.12"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.12#f4f9bdc865e2b4d4e8f741a145b4a4329c507503"
 dependencies = [
  "bytes",
  "env_logger",
@@ -2750,6 +2750,7 @@ dependencies = [
  "lru",
  "openworkers-core",
  "openworkers-glue-v8",
+ "openworkers-runtime-v8-gc-derive",
  "openworkers-serde-v8",
  "openworkers-v8",
  "ring",
@@ -2760,6 +2761,16 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "uuid",
+]
+
+[[package]]
+name = "openworkers-runtime-v8-gc-derive"
+version = "0.1.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.8.12#f4f9bdc865e2b4d4e8f741a145b4a4329c507503"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.111",
 ]
 
 [[package]]
