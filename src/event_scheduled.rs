@@ -105,15 +105,6 @@ pub fn handle_scheduled(
         let handle = local.spawn_local(async move {
             use futures::StreamExt;
 
-            // Acquire a database connection from the pool.
-            let mut conn: sqlx::pool::PoolConnection<sqlx::Postgres> = match db.acquire().await {
-                Ok(db) => db,
-                Err(err) => {
-                    log::error!("Failed to acquire a database connection: {}", err);
-                    return;
-                }
-            };
-
             let nc = crate::nats::nats_connect().await;
             let mut sub = nc
                 .queue_subscribe("scheduled".to_string(), "runner".to_string())
@@ -155,6 +146,15 @@ pub fn handle_scheduled(
 
                 log::debug!("scheduled task parsed: {:?}", data);
 
+                // Acquire connection per-task to avoid holding it across iterations
+                let mut conn = match db.acquire().await {
+                    Ok(c) => c,
+                    Err(err) => {
+                        log::error!("Failed to acquire database connection: {}", err);
+                        continue;
+                    }
+                };
+
                 let worker_id = store::WorkerIdentifier::Id(data.worker_id.clone());
                 let worker_data = match store::get_worker_with_bindings(&mut conn, worker_id).await
                 {
@@ -167,6 +167,8 @@ pub fn handle_scheduled(
                         continue;
                     }
                 };
+
+                // Connection is dropped here, returned to pool
 
                 run_scheduled(data, worker_data, db.clone(), global_log_tx.clone());
             }
