@@ -166,15 +166,15 @@ async fn handle_request(
     );
 
     // Resolve worker from domain if not provided
-    if worker_id.is_none() && worker_name.is_none() {
-        if let Some(ref host) = host {
-            if host.contains(".workers.") {
-                worker_name = Some(host.split('.').next().unwrap().to_string());
-            } else {
-                worker_id =
-                    openworkers_runner::store::get_worker_id_from_domain(&mut conn, host.clone())
-                        .await;
-            }
+    if worker_id.is_none()
+        && worker_name.is_none()
+        && let Some(ref host) = host
+    {
+        if host.contains(".workers.") {
+            worker_name = Some(host.split('.').next().unwrap().to_string());
+        } else {
+            worker_id =
+                openworkers_runner::store::get_worker_id_from_domain(&mut conn, host.clone()).await;
         }
     }
 

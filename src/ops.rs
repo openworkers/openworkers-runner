@@ -265,11 +265,18 @@ fn try_internal_worker_route(request: &HttpRequest) -> Option<HttpRequest> {
     headers.insert("x-worker-name".to_string(), worker_name.to_string());
     headers.insert("x-request-id".to_string(), generate_request_id("internal"));
 
+    // Can't clone a streaming body, so internal routing is not supported for streams
+    let body = match &request.body {
+        RequestBody::None => RequestBody::None,
+        RequestBody::Bytes(b) => RequestBody::Bytes(b.clone()),
+        RequestBody::Stream(_) => return None,
+    };
+
     Some(HttpRequest {
         url: internal_url,
         method: request.method.clone(),
         headers,
-        body: request.body.clone(),
+        body,
     })
 }
 
@@ -1142,8 +1149,10 @@ fn sign_s3_request(
     let mut headers_to_sign = vec![("host", host.to_string())];
 
     // Add x-amz-content-sha256 header (required for S3)
+    // For streaming bodies, we use UNSIGNED-PAYLOAD as we can't hash the stream upfront
     let body_hash = match &request.body {
         RequestBody::None => "UNSIGNED-PAYLOAD".to_string(),
+        RequestBody::Stream(_) => "UNSIGNED-PAYLOAD".to_string(),
         RequestBody::Bytes(b) => {
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
@@ -1156,6 +1165,7 @@ fn sign_s3_request(
     // Build signable request
     let signable_body = match &request.body {
         RequestBody::None => SignableBody::UnsignedPayload,
+        RequestBody::Stream(_) => SignableBody::UnsignedPayload,
         RequestBody::Bytes(b) => SignableBody::Bytes(b),
     };
 

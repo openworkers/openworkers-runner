@@ -179,6 +179,7 @@ pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), Termi
     // For V8-only builds, prefer the pooled version
     #[cfg(all(feature = "v8", not(feature = "wasm")))]
     {
+        #[allow(clippy::needless_return)]
         return execute_task_await_v8_pooled(config).await;
     }
 
