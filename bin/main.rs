@@ -372,6 +372,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
 
+    // Skip connection health check before acquire (faster, use when DB is local/stable)
+    let test_before_acquire = std::env::var("DB_TEST_BEFORE_ACQUIRE")
+        .map(|v| !matches!(v.as_str(), "false" | "0"))
+        .unwrap_or(true);
+
     // Retry database connection with exponential backoff
     let mut retry_count = 0;
     let max_retries = 5;
@@ -379,6 +384,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match PgPoolOptions::new()
             .max_connections(20)
             .acquire_timeout(Duration::from_secs(5))
+            .test_before_acquire(test_before_acquire)
             .connect(&db_url)
             .await
         {
