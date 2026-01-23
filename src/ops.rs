@@ -365,10 +365,15 @@ impl OperationsHandler for RunnerOperations {
                 let url = build_assets_url(&config, &request.url)?;
 
                 // Create modified request with AWS signature
+                // Filter out Host header to avoid 421 Misdirected Request from S3/R2
+                let mut headers = request.headers.clone();
+                headers.remove("host");
+                headers.remove("Host");
+
                 let auth_request = HttpRequest {
                     url: url.clone(),
                     method: request.method,
-                    headers: request.headers.clone(),
+                    headers,
                     body: request.body,
                 };
 
@@ -1067,19 +1072,29 @@ fn sanitize_path(path: &str) -> Option<String> {
 /// 2. **Dedicated S3** (endpoint=Some, prefix=NULL):
 ///    User-provided S3/R2 endpoint with full bucket access.
 ///    → `https://user-s3.../user-bucket/{path}`
-fn build_assets_url(config: &AssetsConfig, path: &str) -> Result<String, String> {
+fn build_assets_url(config: &AssetsConfig, url_or_path: &str) -> Result<String, String> {
     // Default R2 endpoint if not specified
     let endpoint = config
         .endpoint
         .as_deref()
         .unwrap_or("https://r2.cloudflarestorage.com");
 
+    // Extract path from URL if it's a full URL (e.g., "http://localhost/_app/foo.js")
+    // Otherwise use it as-is (e.g., "/_app/foo.js")
+    let path = if url_or_path.starts_with("http://") || url_or_path.starts_with("https://") {
+        url::Url::parse(url_or_path)
+            .map(|u| u.path().to_string())
+            .unwrap_or_else(|_| url_or_path.to_string())
+    } else {
+        url_or_path.to_string()
+    };
+
     // Build full path with prefix if specified
     let full_path = match &config.prefix {
         Some(prefix) => {
             // Sanitize path to prevent directory traversal (../) only when there's a prefix
             // This prevents escaping the prefix in multi-tenant shared buckets
-            let sanitized_path = sanitize_path(path)
+            let sanitized_path = sanitize_path(&path)
                 .ok_or_else(|| "Invalid path: traversal not allowed".to_string())?;
             format!("{}/{}", prefix.trim_matches('/'), sanitized_path)
         }

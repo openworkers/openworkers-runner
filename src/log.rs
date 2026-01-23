@@ -97,6 +97,14 @@ async fn flush_batch(nc: &async_nats::Client, batch: &mut Vec<LogMessage>) {
 
     for log_msg in batch.drain(..) {
         if let LogMessage::Log { worker_id, event } = log_msg {
+            // Also log locally for debugging
+            log::debug!(
+                "[worker:{}] [{}] {}",
+                &worker_id[..8.min(worker_id.len())],
+                event.level,
+                event.message
+            );
+
             let level = event.level.to_string();
             let subject = format!("{}.console.{}", worker_id, level);
 
@@ -127,6 +135,14 @@ async fn flush_worker(nc: &async_nats::Client, batch: &mut Vec<LogMessage>, work
 
         for log_msg in worker_logs {
             if let LogMessage::Log { worker_id, event } = log_msg {
+                // Also log locally for debugging
+                log::debug!(
+                    "[worker:{}] [{}] {}",
+                    &worker_id[..8.min(worker_id.len())],
+                    event.level,
+                    event.message
+                );
+
                 let level = event.level.to_string();
                 let subject = format!("{}.console.{}", worker_id, level);
 
