@@ -43,6 +43,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/output /usr/local/bin/openworkers-runner
+COPY --from=builder /build/snapshot.bin /build/snapshot.bin
 
 CMD ["/usr/local/bin/openworkers-runner"]
 
