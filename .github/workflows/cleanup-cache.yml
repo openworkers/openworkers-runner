@@ -1,0 +1,37 @@
+name: Cleanup caches
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Flush all caches
+        run: |
+          set +e
+          total=0
+
+          while true; do
+            echo "Fetching batch of cache keys..."
+            cacheKeys=$(gh cache list --limit 100 --json id --jq '.[].id')
+
+            if [ -z "$cacheKeys" ]; then
+              echo "No more caches to delete"
+              break
+            fi
+
+            for cacheKey in $cacheKeys; do
+              gh cache delete $cacheKey
+              total=$((total + 1))
+            done
+
+            echo "Deleted batch, total so far: $total"
+          done
+
+          echo "Done. Deleted $total caches."
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
