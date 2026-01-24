@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.10.2"
+version = "0.10.3"
 edition = "2024"
 license = "MIT"
 default-run = "openworkers-runner"
@@ -38,7 +38,7 @@ reqwest = { version = "0.13.1", default-features = false, features = ["rustls", 
 openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.10.0", features = ["hyper"] }
 
 # Runtime backend (v8 only for now, others require core 0.5)
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.10.3", optional = true }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.10.4", optional = true }
 
 # WASM runtime (optional)
 # openworkers-runtime-wasm = { path = "../openworkers-runtime-wasm", optional = true }
@@ -60,14 +60,14 @@ postgate = { git = "https://github.com/openworkers/postgate", tag = "v0.1.1", de
 # openworkers-runtime-boa = { path = "../openworkers-runtime-boa", optional = true }
 # openworkers-runtime-jsc = { path = "../openworkers-runtime-jsc", optional = true }
 
-async-nats = "0.45.0"
+async-nats = "0.46.0"
 futures = "0.3"
 serde_json = "1.0"
 serde = { version = "1.0.197", features = ["derive"] }
 base64 = "0.22.1"
 aws-sigv4 = "1.2"
 aws-credential-types = "1.2"
-chrono = "0.4"
+chrono = "0.4.43"
 sha2 = "0.10"
 hex = "0.4"
 url = "2.5"
