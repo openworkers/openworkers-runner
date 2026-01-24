@@ -2705,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2750,8 +2750,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.10.2"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.10.2#629689f2b7102c3546580929804618037a6a3259"
+version = "0.10.3"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.10.3#8195518ebfc4e8a68030b469d76e1a2d0e64fa77"
 dependencies = [
  "bytes",
  "env_logger",
@@ -2777,7 +2777,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.10.2#629689f2b7102c3546580929804618037a6a3259"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.10.3#8195518ebfc4e8a68030b469d76e1a2d0e64fa77"
 dependencies = [
  "proc-macro2",
  "quote",
