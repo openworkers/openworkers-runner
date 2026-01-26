@@ -33,7 +33,7 @@ use aws_sigv4::sign::v4;
 use bytes::Bytes;
 use once_cell::sync::Lazy;
 #[cfg(feature = "database")]
-use openworkers_core::{DatabaseOp, DatabaseResult};
+use openworkers_core::{DatabaseOp, DatabaseResult, SqlParam, SqlPrimitive};
 use openworkers_core::{
     HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, OpFuture,
     OperationsHandler, RequestBody, ResponseBody, StorageOp, StorageResult,
@@ -842,7 +842,7 @@ impl OperationsHandler for RunnerOperations {
 async fn execute_with_connection_string(
     connection_string: &str,
     sql: &str,
-    params: &[String],
+    params: &[SqlParam],
     mode: QueryMode,
 ) -> Result<String, String> {
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -863,7 +863,7 @@ async fn execute_with_schema(
     pool: &DbPool,
     schema_name: &str,
     sql: &str,
-    params: &[String],
+    params: &[SqlParam],
     mode: QueryMode,
 ) -> Result<String, String> {
     let start = std::time::Instant::now();
@@ -935,6 +935,91 @@ impl QueryMode {
     }
 }
 
+/// Bind a SqlParam to a sqlx query
+#[cfg(feature = "database")]
+fn bind_sql_param<'q>(
+    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    param: &'q SqlParam,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    match param {
+        SqlParam::Primitive(p) => bind_sql_primitive(query, p),
+        SqlParam::Array(arr) => {
+            // Determine array type from first non-null element
+            let first_type = arr.iter().find_map(|p| match p {
+                SqlPrimitive::Null => None,
+                SqlPrimitive::Bool(_) => Some("bool"),
+                SqlPrimitive::Int(_) => Some("int"),
+                SqlPrimitive::Float(_) => Some("float"),
+                SqlPrimitive::String(_) => Some("string"),
+            });
+
+            match first_type {
+                Some("bool") => {
+                    let values: Vec<Option<bool>> = arr
+                        .iter()
+                        .map(|p| match p {
+                            SqlPrimitive::Bool(b) => Some(*b),
+                            SqlPrimitive::Null => None,
+                            _ => None,
+                        })
+                        .collect();
+                    query.bind(values)
+                }
+                Some("int") => {
+                    let values: Vec<Option<i64>> = arr
+                        .iter()
+                        .map(|p| match p {
+                            SqlPrimitive::Int(i) => Some(*i),
+                            SqlPrimitive::Null => None,
+                            _ => None,
+                        })
+                        .collect();
+                    query.bind(values)
+                }
+                Some("float") => {
+                    let values: Vec<Option<f64>> = arr
+                        .iter()
+                        .map(|p| match p {
+                            SqlPrimitive::Float(f) => Some(*f),
+                            SqlPrimitive::Int(i) => Some(*i as f64),
+                            SqlPrimitive::Null => None,
+                            _ => None,
+                        })
+                        .collect();
+                    query.bind(values)
+                }
+                Some("string") | None => {
+                    let values: Vec<Option<String>> = arr
+                        .iter()
+                        .map(|p| match p {
+                            SqlPrimitive::String(s) => Some(s.clone()),
+                            SqlPrimitive::Null => None,
+                            _ => Some(format!("{:?}", p)),
+                        })
+                        .collect();
+                    query.bind(values)
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+/// Bind a SqlPrimitive to a sqlx query
+#[cfg(feature = "database")]
+fn bind_sql_primitive<'q>(
+    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+    param: &'q SqlPrimitive,
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    match param {
+        SqlPrimitive::Null => query.bind(None::<String>),
+        SqlPrimitive::Bool(b) => query.bind(*b),
+        SqlPrimitive::Int(i) => query.bind(*i),
+        SqlPrimitive::Float(f) => query.bind(*f),
+        SqlPrimitive::String(s) => query.bind(s.as_str()),
+    }
+}
+
 /// Wrap user query to return JSON directly from PostgreSQL
 #[cfg(feature = "database")]
 fn wrap_query_as_json(sql: &str, mode: QueryMode) -> String {
@@ -966,7 +1051,7 @@ fn wrap_query_as_json(sql: &str, mode: QueryMode) -> String {
 async fn execute_json_query(
     pool: &DbPool,
     sql: &str,
-    params: &[String],
+    params: &[SqlParam],
     mode: QueryMode,
 ) -> Result<String, String> {
     use sqlx::Row;
@@ -975,7 +1060,7 @@ async fn execute_json_query(
     let mut query = sqlx::query(&wrapped);
 
     for param in params {
-        query = query.bind(param);
+        query = bind_sql_param(query, param);
     }
 
     let row = query
@@ -995,7 +1080,7 @@ async fn execute_json_query(
 async fn execute_json_query_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sql: &str,
-    params: &[String],
+    params: &[SqlParam],
     mode: QueryMode,
 ) -> Result<String, String> {
     use sqlx::Row;
@@ -1004,7 +1089,7 @@ async fn execute_json_query_tx(
     let mut query = sqlx::query(&wrapped);
 
     for param in params {
-        query = query.bind(param);
+        query = bind_sql_param(query, param);
     }
 
     let row = query
@@ -1021,11 +1106,11 @@ async fn execute_json_query_tx(
 
 /// Execute mutation (INSERT/UPDATE/DELETE) and return rows affected
 #[cfg(feature = "database")]
-async fn execute_mutation(pool: &DbPool, sql: &str, params: &[String]) -> Result<String, String> {
+async fn execute_mutation(pool: &DbPool, sql: &str, params: &[SqlParam]) -> Result<String, String> {
     let mut query = sqlx::query(sql);
 
     for param in params {
-        query = query.bind(param);
+        query = bind_sql_param(query, param);
     }
 
     let result = query
@@ -1041,12 +1126,12 @@ async fn execute_mutation(pool: &DbPool, sql: &str, params: &[String]) -> Result
 async fn execute_mutation_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     sql: &str,
-    params: &[String],
+    params: &[SqlParam],
 ) -> Result<String, String> {
     let mut query = sqlx::query(sql);
 
     for param in params {
-        query = query.bind(param);
+        query = bind_sql_param(query, param);
     }
 
     let result = query

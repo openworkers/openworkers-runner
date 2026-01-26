@@ -9,6 +9,7 @@ use openworkers_core::{
 
 type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_fetch(
     worker_data: WorkerWithBindings,
     req: HttpRequest,
