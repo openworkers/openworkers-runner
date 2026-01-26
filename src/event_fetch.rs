@@ -9,9 +9,6 @@ use openworkers_core::{
 
 type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>;
 
-// Default timeout for fetch events
-const FETCH_TIMEOUT_MS: u64 = 64_000; // 64 seconds
-
 pub fn run_fetch(
     worker_data: WorkerWithBindings,
     req: HttpRequest,
@@ -20,6 +17,7 @@ pub fn run_fetch(
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
     permit: tokio::sync::OwnedSemaphorePermit,
     db_pool: DbPool,
+    wall_clock_timeout_ms: u64,
 ) {
     // Parse script before spawning (fail fast)
     if let Err(err) = prepare_script(&worker_data) {
@@ -46,7 +44,7 @@ pub fn run_fetch(
         db_pool,
         global_log_tx,
         limits: task_executor::TaskExecutionConfig::default_limits(),
-        external_timeout_ms: Some(FETCH_TIMEOUT_MS),
+        external_timeout_ms: Some(wall_clock_timeout_ms),
     };
 
     // Spawn async task to execute and send result back

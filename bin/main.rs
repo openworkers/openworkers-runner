@@ -20,6 +20,7 @@ struct AppState {
     db: sqlx::Pool<sqlx::Postgres>,
     log_tx: std::sync::mpsc::Sender<openworkers_runner::log::LogMessage>,
     shutdown_tx: tokio::sync::mpsc::Sender<()>,
+    wall_clock_timeout_ms: u64,
 }
 
 async fn handle_request(
@@ -268,6 +269,7 @@ async fn handle_request(
         state.log_tx.clone(),
         permit,
         state.db.clone(),
+        state.wall_clock_timeout_ms,
     );
 
     // TODO: Pass disconnect_rx to the worker so it can stop processing
@@ -351,9 +353,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(50); // Default: 50MB
 
+    let wall_clock_timeout_ms = std::env::var("WALL_CLOCK_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(64_000); // Default: 64 seconds
+
     debug!(
-        "Isolate pool config: max_size={}, heap_initial={}MB, heap_max={}MB",
-        pool_max_size, heap_initial_mb, heap_max_mb
+        "Isolate pool config: max_size={}, heap_initial={}MB, heap_max={}MB, wall_clock_timeout={}ms",
+        pool_max_size, heap_initial_mb, heap_max_mb, wall_clock_timeout_ms
     );
 
     let db_url = match std::env::var("DATABASE_URL") {
@@ -464,7 +471,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             heap_initial_mb,
             heap_max_mb,
             max_cpu_time_ms: 100,
-            max_wall_clock_time_ms: 60_000,
+            max_wall_clock_time_ms: wall_clock_timeout_ms,
             ..Default::default()
         };
 
@@ -486,6 +493,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         db: pool,
         log_tx,
         shutdown_tx,
+        wall_clock_timeout_ms,
     });
 
     // Signal handler for SIGINT/SIGTERM - graceful on first, forced on second
