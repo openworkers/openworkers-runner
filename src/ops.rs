@@ -697,10 +697,16 @@ impl OperationsHandler for RunnerOperations {
         let shared_pool = self.db_pool.clone();
 
         Box::pin(async move {
-            // Acquire database limiter permit
-            if let Err(e) = self.limiters.database.acquire().await {
-                return DatabaseResult::Error(e.to_string());
-            }
+            // Acquire database limiter permit - hold guard until query completes
+            let _guard = match self.limiters.database.acquire().await {
+                Ok(guard) => guard,
+                Err(e) => return DatabaseResult::Error(e.to_string()),
+            };
+
+            log::debug!(
+                "[ops] database limiter acquired, available permits: {}",
+                self.limiters.database.available_permits()
+            );
 
             match op {
                 DatabaseOp::Query { sql, params } => {
@@ -860,13 +866,23 @@ async fn execute_with_schema(
     params: &[String],
     mode: QueryMode,
 ) -> Result<String, String> {
+    let start = std::time::Instant::now();
+
     // Use a transaction to set search_path, then execute the query
     let safe_schema = schema_name.replace('"', "\"\"");
+
+    log::debug!(
+        "[db] pool stats - size: {}, idle: {}, acquiring transaction...",
+        pool.size(),
+        pool.num_idle()
+    );
 
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
+
+    log::debug!("[db] transaction acquired in {:?}", start.elapsed());
 
     // Set the search_path for this transaction
     sqlx::query(&format!("SET LOCAL search_path TO \"{}\"", safe_schema))
@@ -874,16 +890,22 @@ async fn execute_with_schema(
         .await
         .map_err(|e| format!("Failed to set search_path: {}", e))?;
 
+    log::debug!("[db] search_path set in {:?}", start.elapsed());
+
     // Execute the user query
     let result = match mode {
         QueryMode::Mutation => execute_mutation_tx(&mut tx, sql, params).await?,
         _ => execute_json_query_tx(&mut tx, sql, params, mode).await?,
     };
 
+    log::debug!("[db] query executed in {:?}", start.elapsed());
+
     // Commit the transaction
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+    log::debug!("[db] transaction committed in {:?}", start.elapsed());
 
     Ok(result)
 }
