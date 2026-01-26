@@ -166,6 +166,7 @@ pub struct WorkerLogHandler {
     tx: std::sync::mpsc::Sender<LogEvent>,
     worker_id: String,
     global_tx: std::sync::mpsc::Sender<LogMessage>,
+    forwarder_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WorkerLogHandler {
@@ -177,6 +178,10 @@ impl WorkerLogHandler {
         );
         // Drop tx first to close the channel
         drop(self.tx);
+        // Wait for forwarder thread to finish forwarding all pending logs
+        if let Some(handle) = self.forwarder_handle {
+            let _ = handle.join();
+        }
         // Then send flush signal
         let _ = self.global_tx.send(LogMessage::FlushWorker {
             worker_id: self.worker_id,
@@ -194,8 +199,8 @@ pub fn create_log_handler(
     let worker_id_clone = worker_id.clone();
     let global_tx_clone = global_tx.clone();
 
-    // Simplified: no intermediate thread needed, just forward directly
-    std::thread::spawn(move || {
+    // Forwarder thread: forwards logs from worker channel to global publisher
+    let forwarder_handle = std::thread::spawn(move || {
         for event in rx {
             if let Err(e) = global_tx_clone.send(LogMessage::Log {
                 worker_id: worker_id_clone.clone(),
@@ -211,6 +216,7 @@ pub fn create_log_handler(
         tx: tx.clone(),
         worker_id,
         global_tx,
+        forwarder_handle: Some(forwarder_handle),
     };
 
     (tx, handler)

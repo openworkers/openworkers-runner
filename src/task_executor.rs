@@ -150,6 +150,8 @@ pub async fn execute_task_await_v8_pooled(
             .await;
 
             // CRITICAL: Flush logs before returning
+            // (console.log now bypasses scheduler and writes directly to log_tx,
+            // so no need to yield for scheduler processing)
             components.log_handler.flush();
 
             result
