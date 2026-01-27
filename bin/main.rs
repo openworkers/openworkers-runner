@@ -358,9 +358,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(64_000); // Default: 64 seconds
 
+    let cpu_time_limit_ms = std::env::var("CPU_TIME_LIMIT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(100); // Default: 100ms
+
     debug!(
-        "Isolate pool config: max_size={}, heap_initial={}MB, heap_max={}MB, wall_clock_timeout={}ms",
-        pool_max_size, heap_initial_mb, heap_max_mb, wall_clock_timeout_ms
+        "Isolate pool config: max_size={}, heap_initial={}MB, heap_max={}MB, wall_clock_timeout={}ms, cpu_time_limit={}ms",
+        pool_max_size, heap_initial_mb, heap_max_mb, wall_clock_timeout_ms, cpu_time_limit_ms
     );
 
     let db_url = match std::env::var("DATABASE_URL") {
@@ -470,7 +475,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let pool_limits = RuntimeLimits {
             heap_initial_mb,
             heap_max_mb,
-            max_cpu_time_ms: 100,
+            max_cpu_time_ms: cpu_time_limit_ms,
             max_wall_clock_time_ms: wall_clock_timeout_ms,
             ..Default::default()
         };
