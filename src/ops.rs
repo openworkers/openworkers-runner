@@ -45,6 +45,7 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 
 use crate::limiter::BindingLimiters;
+use crate::ops_s3::execute_s3_operation;
 use crate::store::{
     AssetsConfig, Binding, DatabaseConfig, KvConfig, StorageConfig, WorkerBindingConfig,
 };
@@ -440,44 +441,40 @@ impl OperationsHandler for RunnerOperations {
 
     /// Handle storage operation: `env.STORAGE.get("key")`, `.put()`, `.head()`, `.list()`, `.delete()`
     ///
-    /// Currently returns "not implemented" for all operations.
+    /// Uses AWS S3 v4 signing to authenticate requests to S3-compatible storage.
     fn handle_binding_storage(&self, binding: &str, op: StorageOp) -> OpFuture<'_, StorageResult> {
         let binding_name = binding.to_string();
 
         // Check if binding exists in storage configs
-        if self.bindings.storage.contains_key(binding) {
-            let op_name = match &op {
-                StorageOp::Get { key } => format!("get({})", key),
-                StorageOp::Put { key, .. } => format!("put({})", key),
-                StorageOp::Head { key } => format!("head({})", key),
-                StorageOp::List { prefix, .. } => {
-                    format!("list(prefix={:?})", prefix)
-                }
-                StorageOp::Delete { key } => format!("delete({})", key),
-            };
+        let config = match self.bindings.storage.get(binding) {
+            Some(c) => c.clone(),
+            None => {
+                return Box::pin(async move {
+                    StorageResult::Error(format!(
+                        "Storage binding '{}' not configured",
+                        binding_name
+                    ))
+                });
+            }
+        };
 
-            return Box::pin(async move {
-                // Acquire storage limiter permit
-                if let Err(e) = self.limiters.storage.acquire().await {
-                    return StorageResult::Error(e.to_string());
-                }
+        let op_name = match &op {
+            StorageOp::Get { key } => format!("get({})", key),
+            StorageOp::Put { key, .. } => format!("put({})", key),
+            StorageOp::Head { key } => format!("head({})", key),
+            StorageOp::List { prefix, .. } => format!("list(prefix={:?})", prefix),
+            StorageOp::Delete { key } => format!("delete({})", key),
+        };
 
-                log::debug!(
-                    "[ops] storage {} {} (not yet implemented)",
-                    binding_name,
-                    op_name
-                );
-
-                StorageResult::Error(format!(
-                    "Storage binding '{}' operation {} not yet implemented",
-                    binding_name, op_name
-                ))
-            });
-        }
-
-        // Binding not found
         Box::pin(async move {
-            StorageResult::Error(format!("Storage binding '{}' not configured", binding_name))
+            // Acquire storage limiter permit
+            if let Err(e) = self.limiters.storage.acquire().await {
+                return StorageResult::Error(e.to_string());
+            }
+
+            log::debug!("[ops] storage {} {}", binding_name, op_name);
+
+            execute_s3_operation(&config, op).await
         })
     }
 
