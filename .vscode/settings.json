@@ -12,6 +12,7 @@
     "oneshot",
     "openworkers",
     "postgate",
+    "ptrcomp",
     "quickjs",
     "reqwest",
     "rustls",

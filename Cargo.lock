@@ -121,7 +121,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -132,7 +132,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -581,7 +581,7 @@ dependencies = [
  "cap-primitives",
  "cap-std",
  "io-lifetimes",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -610,7 +610,7 @@ dependencies = [
  "maybe-owned",
  "rustix 1.1.3",
  "rustix-linux-procfs",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
  "winx",
 ]
 
@@ -1372,7 +1372,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1420,7 +1420,7 @@ checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
 dependencies = [
  "cfg-if",
  "rustix 1.1.3",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1503,7 +1503,7 @@ checksum = "94e7099f6313ecacbe1256e8ff9d617b75d1bcb16a6fddef94866d225a01a14a"
 dependencies = [
  "io-lifetimes",
  "rustix 1.1.3",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2166,7 +2166,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2285ddfe3054097ef4b2fe909ef8c3bcd1ea52a8f0d274416caebeef39f04a65"
 dependencies = [
  "io-lifetimes",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2705,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.11.3"
+version = "0.11.4"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2750,8 +2750,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.11.1"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.1#27a77e9eb49a69359403a7e6c3692fee8dde0500"
+version = "0.11.2"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.2#a5970d279206ce1bcb9aa32083fc54be05d0bdaa"
 dependencies = [
  "bytes",
  "env_logger",
@@ -2777,7 +2777,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.1#27a77e9eb49a69359403a7e6c3692fee8dde0500"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.2#a5970d279206ce1bcb9aa32083fc54be05d0bdaa"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2798,9 +2798,9 @@ dependencies = [
 
 [[package]]
 name = "openworkers-serde-v8"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "120efebdf36512f96697707b1e54f9e418a45f759a6adf2071f6914254c86b98"
+checksum = "22410d28fed0d24ffaa9748e2333ad2eb0d2efacae74241516b9a2b9785f52d0"
 dependencies = [
  "bytes",
  "num-bigint",
@@ -2812,9 +2812,9 @@ dependencies = [
 
 [[package]]
 name = "openworkers-v8"
-version = "142.2.3"
+version = "142.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b4e569a4a370e4512c04b7436b1e68b522218d604387e02242e72e10fb407fd"
+checksum = "3cba171ab340939ac5cbaf62d1acd08f446b6e9033a2062c88f713a332110fcc"
 dependencies = [
  "bindgen",
  "bitflags",
@@ -3590,7 +3590,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3603,7 +3603,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3693,7 +3693,7 @@ dependencies = [
  "security-framework 3.5.1",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4366,7 +4366,6 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.52.0",
  "windows-sys 0.59.0",
 ]
 
@@ -4765,7 +4764,7 @@ dependencies = [
  "fd-lock",
  "io-lifetimes",
  "rustix 0.38.44",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
  "winx",
 ]
 
@@ -5936,7 +5935,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6341,7 +6340,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f3fd376f71958b862e7afb20cfe5a22830e1963462f3a17f49d82a6c1d1f42d"
 dependencies = [
  "bitflags",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
