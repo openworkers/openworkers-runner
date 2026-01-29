@@ -41,7 +41,7 @@ openworkers-core = { git = "https://github.com/openworkers/openworkers-core", ta
 # openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", optional = true, features = ["sandbox"] }
 # openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", optional = true, features = ["ptrcomp"] }
 # openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", optional = true, features = [] }
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.11.2", optional = true, features = ["ptrcomp"] }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.11.3", optional = true, features = ["ptrcomp"] }
 
 # WASM runtime (optional)
 # openworkers-runtime-wasm = { path = "../openworkers-runtime-wasm", optional = true }

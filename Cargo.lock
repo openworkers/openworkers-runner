@@ -2694,9 +2694,9 @@ dependencies = [
 
 [[package]]
 name = "openworkers-glue-v8"
-version = "0.5.0"
+version = "145.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "455c9887b5e3be05789023cdf1ef5497758b3e889d6d4cde542ca4f8d29180d7"
+checksum = "794513494c86717205b41f1c3b8e86699299fb242be432d8bd4e22aa0a4960e5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2750,8 +2750,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.11.2"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.2#a5970d279206ce1bcb9aa32083fc54be05d0bdaa"
+version = "0.11.3"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.3#87204e79c027e58a6aa1fd539587948a402636ae"
 dependencies = [
  "bytes",
  "env_logger",
@@ -2777,7 +2777,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.2#a5970d279206ce1bcb9aa32083fc54be05d0bdaa"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.3#87204e79c027e58a6aa1fd539587948a402636ae"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2798,9 +2798,9 @@ dependencies = [
 
 [[package]]
 name = "openworkers-serde-v8"
-version = "0.4.0"
+version = "145.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22410d28fed0d24ffaa9748e2333ad2eb0d2efacae74241516b9a2b9785f52d0"
+checksum = "628c45ab34a33e11f7906166854a3e22966765f2b4b28c067274839bb2f68c4b"
 dependencies = [
  "bytes",
  "num-bigint",
@@ -2812,9 +2812,9 @@ dependencies = [
 
 [[package]]
 name = "openworkers-v8"
-version = "142.2.4"
+version = "145.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cba171ab340939ac5cbaf62d1acd08f446b6e9033a2062c88f713a332110fcc"
+checksum = "adf7b0d8adb84574c097b67619a9843049864c3f96650dec99a6b520ab5cf4ee"
 dependencies = [
  "bindgen",
  "bitflags",
