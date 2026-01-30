@@ -414,12 +414,30 @@ impl OperationsHandler for RunnerOperations {
                     self.worker_id
                 );
 
-                // For S3, we need AWS signature - for now return error
-                // TODO: Implement AWS S3 signing
-                Err(format!(
-                    "Storage binding '{}' not yet implemented (requires S3 signing for {})",
-                    binding_name, config.endpoint
-                ))
+                // Build the actual S3 URL
+                let url = build_storage_url(&config, &request.url)?;
+
+                // Create modified request with AWS signature
+                let mut headers = request.headers.clone();
+                headers.remove("host");
+                headers.remove("Host");
+
+                let auth_request = HttpRequest {
+                    url: url.clone(),
+                    method: request.method,
+                    headers,
+                    body: request.body,
+                };
+
+                // Sign the request with AWS Signature V4
+                let signed_headers = sign_s3_request(
+                    &auth_request,
+                    &config.access_key_id,
+                    &config.secret_access_key,
+                    &config.bucket,
+                )?;
+
+                do_fetch(auth_request, &self.stats, Some(&signed_headers)).await
             });
         }
 
@@ -1210,6 +1228,35 @@ fn build_assets_url(config: &AssetsConfig, url_or_path: &str) -> Result<String, 
     };
 
     Ok(format!("{}/{}/{}", endpoint, config.bucket, full_path))
+}
+
+/// Build the actual S3 URL for a storage binding fetch request.
+///
+/// URL structure: `{endpoint}/{bucket}/{prefix?}/{path}`
+fn build_storage_url(config: &StorageConfig, url_or_path: &str) -> Result<String, String> {
+    // Extract path from URL if it's a full URL
+    let path = if url_or_path.starts_with("http://") || url_or_path.starts_with("https://") {
+        url::Url::parse(url_or_path)
+            .map(|u| u.path().to_string())
+            .unwrap_or_else(|_| url_or_path.to_string())
+    } else {
+        url_or_path.to_string()
+    };
+
+    // Build full path with prefix if specified
+    let full_path = match &config.prefix {
+        Some(prefix) => {
+            let sanitized_path = sanitize_path(&path)
+                .ok_or_else(|| "Invalid path: traversal not allowed".to_string())?;
+            format!("{}/{}", prefix.trim_matches('/'), sanitized_path)
+        }
+        None => path.trim_start_matches('/').to_string(),
+    };
+
+    Ok(format!(
+        "{}/{}/{}",
+        config.endpoint, config.bucket, full_path
+    ))
 }
 
 /// Sign an S3/R2 request using AWS Signature V4.

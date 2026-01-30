@@ -2680,8 +2680,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-core"
-version = "0.11.0"
-source = "git+https://github.com/openworkers/openworkers-core?tag=v0.11.0#749ed590d228507395b2c393184b79b948e85b11"
+version = "0.11.1"
+source = "git+https://github.com/openworkers/openworkers-core?tag=v0.11.1#e9721bc9cd8ccc7119ef9b8e425374224b8f4892"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -2725,7 +2725,7 @@ dependencies = [
  "log",
  "lru",
  "once_cell",
- "openworkers-core 0.11.0",
+ "openworkers-core 0.11.1",
  "openworkers-runtime-v8",
  "openworkers-runtime-wasm",
  "postgate",
@@ -2750,16 +2750,14 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.11.3"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.3#87204e79c027e58a6aa1fd539587948a402636ae"
+version = "0.11.4"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.4#4fd491006e92bdb1953ef5a87b61c5c90f65f314"
 dependencies = [
  "bytes",
- "env_logger",
  "futures",
  "libc",
- "log",
  "lru",
- "openworkers-core 0.11.0",
+ "openworkers-core 0.11.1",
  "openworkers-glue-v8",
  "openworkers-runtime-v8-gc-derive",
  "openworkers-serde-v8",
@@ -2771,13 +2769,14 @@ dependencies = [
  "signal-hook-tokio",
  "tokio",
  "tokio-stream",
+ "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.3#87204e79c027e58a6aa1fd539587948a402636ae"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.4#4fd491006e92bdb1953ef5a87b61c5c90f65f314"
 dependencies = [
  "proc-macro2",
  "quote",
