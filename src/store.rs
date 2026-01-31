@@ -49,28 +49,17 @@ pub enum DatabaseProvider {
     Postgres,
 }
 
-/// Assets binding config (static file serving from S3/R2)
-#[derive(Clone, Debug)]
-pub struct AssetsConfig {
-    pub id: String,
-    pub bucket: String,
-    pub prefix: Option<String>,
-    pub access_key_id: String,
-    pub secret_access_key: String,
-    pub endpoint: Option<String>,
-    pub public_url: Option<String>,
-}
-
-/// Storage binding config (object storage S3/R2 with full read/write)
+/// S3/R2-compatible storage config (used for both Assets and Storage bindings)
 #[derive(Clone, Debug)]
 pub struct StorageConfig {
     pub id: String,
     pub bucket: String,
     pub prefix: Option<String>,
-    pub endpoint: String,
     pub access_key_id: String,
     pub secret_access_key: String,
+    pub endpoint: String,
     pub region: Option<String>,
+    pub public_url: Option<String>,
 }
 
 /// KV binding config (key-value store)
@@ -111,9 +100,9 @@ pub enum Binding {
     Var { key: String, value: String },
     /// Secret environment variable (hidden in logs)
     Secret { key: String, value: String },
-    /// Assets binding (static files)
-    Assets { key: String, config: AssetsConfig },
-    /// Storage binding (S3/R2)
+    /// Assets binding (static files from S3/R2)
+    Assets { key: String, config: StorageConfig },
+    /// Storage binding (read/write S3/R2)
     Storage { key: String, config: StorageConfig },
     /// KV binding
     Kv { key: String, config: KvConfig },
@@ -374,7 +363,7 @@ pub async fn get_worker_with_bindings(
 
             BindingType::Assets => {
                 if let Some(config_id) = row.value
-                    && let Some(config) = fetch_assets_config(&mut *conn, &config_id).await
+                    && let Some(config) = fetch_storage_config(&mut *conn, &config_id).await
                 {
                     bindings.push(Binding::Assets {
                         key: row.key,
@@ -449,54 +438,7 @@ pub async fn get_worker_with_bindings(
     })
 }
 
-/// Fetch assets config by ID
-async fn fetch_assets_config(
-    conn: &mut sqlx::PgConnection,
-    config_id: &str,
-) -> Option<AssetsConfig> {
-    #[derive(Debug, FromRow)]
-    struct Row {
-        id: String,
-        bucket: String,
-        prefix: Option<String>,
-        access_key_id: String,
-        secret_access_key: String,
-        endpoint: Option<String>,
-        public_url: Option<String>,
-    }
-
-    let query = r#"
-        SELECT id::text, bucket, prefix, access_key_id, secret_access_key, endpoint, public_url
-        FROM storage_configs
-        WHERE id::text = $1
-    "#;
-
-    match sqlx::query_as::<_, Row>(query)
-        .bind(config_id)
-        .fetch_one(conn)
-        .await
-    {
-        Ok(row) => Some(AssetsConfig {
-            id: row.id,
-            bucket: row.bucket,
-            prefix: row.prefix,
-            access_key_id: row.access_key_id,
-            secret_access_key: row.secret_access_key,
-            endpoint: row.endpoint,
-            public_url: row.public_url,
-        }),
-        Err(err) => {
-            log::warn!(
-                "failed to fetch storage_config for assets {}: {:?}",
-                config_id,
-                err
-            );
-            None
-        }
-    }
-}
-
-/// Fetch storage config by ID
+/// Fetch storage config by ID (used for both Assets and Storage bindings)
 async fn fetch_storage_config(
     conn: &mut sqlx::PgConnection,
     config_id: &str,
@@ -510,10 +452,11 @@ async fn fetch_storage_config(
         access_key_id: String,
         secret_access_key: String,
         region: Option<String>,
+        public_url: Option<String>,
     }
 
     let query = r#"
-        SELECT id::text, bucket, prefix, endpoint, access_key_id, secret_access_key, region
+        SELECT id::text, bucket, prefix, endpoint, access_key_id, secret_access_key, region, public_url
         FROM storage_configs
         WHERE id::text = $1
     "#;
@@ -531,6 +474,7 @@ async fn fetch_storage_config(
             access_key_id: row.access_key_id,
             secret_access_key: row.secret_access_key,
             region: row.region,
+            public_url: row.public_url,
         }),
         Err(err) => {
             log::warn!("failed to fetch storage_config {}: {:?}", config_id, err);

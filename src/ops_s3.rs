@@ -6,11 +6,90 @@
 use aws_credential_types::Credentials;
 use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign};
 use aws_sigv4::sign::v4;
-use openworkers_core::{StorageOp, StorageResult};
+use openworkers_core::{
+    HttpMethod, HttpRequest, HttpResponse, RequestBody, ResponseBody, StorageOp, StorageResult,
+};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use crate::store::StorageConfig;
+
+/// Sanitize a path to prevent directory traversal attacks.
+///
+/// Security measures:
+/// 1. URL-decodes repeatedly until stable (catches %252e, %25252e, etc.)
+/// 2. Rejects null bytes (injection attacks)
+/// 3. Rejects if `..` is present anywhere (directory traversal)
+/// 4. Removes empty and `.` components
+///
+/// Returns None if the path is malicious or would escape the root.
+fn sanitize_path(path: &str) -> Option<String> {
+    use percent_encoding::percent_decode_str;
+
+    // Decode repeatedly until the string stops changing.
+    // This is necessary because percent_decode only decodes one level:
+    // %252e%252e -> %2e%2e -> .. (needs 2 iterations)
+    // Max 10 iterations prevents DoS from pathological inputs.
+    let mut current = path.to_string();
+
+    for _ in 0..10 {
+        let decoded = percent_decode_str(&current).decode_utf8().ok()?;
+
+        if decoded == current {
+            break;
+        }
+
+        current = decoded.into_owned();
+    }
+
+    // Reject null bytes (can be used for injection attacks)
+    if current.contains('\0') {
+        return None;
+    }
+
+    // Reject any traversal pattern after full decoding
+    if current.contains("..") {
+        return None;
+    }
+
+    // Build clean path from remaining components
+    let clean: String = current
+        .split('/')
+        .filter(|p: &&str| !p.is_empty() && *p != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+
+    Some(clean)
+}
+
+/// Build the actual S3/R2 URL for a binding fetch request.
+///
+/// URL structure: `{endpoint}/{bucket}/{prefix?}/{path}`
+pub fn build_s3_url(config: &StorageConfig, url_or_path: &str) -> Result<String, String> {
+    // Extract path from URL if it's a full URL (e.g., "http://localhost/_app/foo.js")
+    let path = if url_or_path.starts_with("http://") || url_or_path.starts_with("https://") {
+        url::Url::parse(url_or_path)
+            .map(|u| u.path().to_string())
+            .unwrap_or_else(|_| url_or_path.to_string())
+    } else {
+        url_or_path.to_string()
+    };
+
+    let full_path = match &config.prefix {
+        Some(prefix) => {
+            let sanitized = sanitize_path(&path)
+                .ok_or_else(|| "Invalid path: traversal not allowed".to_string())?;
+            format!("{}/{}", prefix.trim_end_matches('/'), sanitized)
+        }
+        None => path.trim_start_matches('/').to_string(),
+    };
+
+    Ok(format!(
+        "{}/{}/{}",
+        config.endpoint, config.bucket, full_path
+    ))
+}
 
 /// Execute an S3 storage operation using AWS v4 signing
 pub async fn execute_s3_operation(config: &StorageConfig, op: StorageOp) -> StorageResult {
@@ -23,10 +102,26 @@ pub async fn execute_s3_operation(config: &StorageConfig, op: StorageOp) -> Stor
         "openworkers",
     );
 
-    // Build the full key with optional prefix
-    let build_full_key = |key: &str| -> String {
+    // Build the full key with optional prefix, always sanitizing to prevent traversal
+    let build_full_key = |key: &str| -> Result<String, String> {
+        let sanitized = sanitize_path(key)
+            .ok_or_else(|| "Invalid key: directory traversal not allowed".to_string())?;
+
         match &config.prefix {
-            Some(prefix) => format!("{}/{}", prefix.trim_end_matches('/'), key),
+            Some(prefix) => Ok(format!("{}/{}", prefix.trim_end_matches('/'), sanitized)),
+            None => Ok(sanitized),
+        }
+    };
+
+    // Strip the config prefix from a key (inverse of build_full_key)
+    let strip_prefix = |key: &str| -> String {
+        match &config.prefix {
+            Some(prefix) => {
+                let prefix_with_slash = format!("{}/", prefix.trim_end_matches('/'));
+                key.strip_prefix(&prefix_with_slash)
+                    .unwrap_or(key)
+                    .to_string()
+            }
             None => key.to_string(),
         }
     };
@@ -43,7 +138,10 @@ pub async fn execute_s3_operation(config: &StorageConfig, op: StorageOp) -> Stor
 
     match op {
         StorageOp::Get { key } => {
-            let full_key = build_full_key(&key);
+            let full_key = match build_full_key(&key) {
+                Ok(k) => k,
+                Err(e) => return StorageResult::Error(e),
+            };
             let url = format!("{}/{}/{}", config.endpoint, config.bucket, full_key);
 
             match sign_and_execute("GET", &url, &host, region, &credentials, None).await {
@@ -64,8 +162,24 @@ pub async fn execute_s3_operation(config: &StorageConfig, op: StorageOp) -> Stor
             }
         }
 
+        StorageOp::Fetch { key } => {
+            let full_key = match build_full_key(&key) {
+                Ok(k) => k,
+                Err(e) => return StorageResult::Error(e),
+            };
+            let url = format!("{}/{}/{}", config.endpoint, config.bucket, full_key);
+
+            match sign_and_execute_response("GET", &url, &host, region, &credentials, None).await {
+                Ok(response) => StorageResult::Response(response),
+                Err(e) => StorageResult::Error(e),
+            }
+        }
+
         StorageOp::Put { key, body } => {
-            let full_key = build_full_key(&key);
+            let full_key = match build_full_key(&key) {
+                Ok(k) => k,
+                Err(e) => return StorageResult::Error(e),
+            };
             let url = format!("{}/{}/{}", config.endpoint, config.bucket, full_key);
 
             match sign_and_execute("PUT", &url, &host, region, &credentials, Some(body)).await {
@@ -85,7 +199,10 @@ pub async fn execute_s3_operation(config: &StorageConfig, op: StorageOp) -> Stor
         }
 
         StorageOp::Head { key } => {
-            let full_key = build_full_key(&key);
+            let full_key = match build_full_key(&key) {
+                Ok(k) => k,
+                Err(e) => return StorageResult::Error(e),
+            };
             let url = format!("{}/{}/{}", config.endpoint, config.bucket, full_key);
 
             match sign_and_execute_head(&url, &host, region, &credentials).await {
@@ -103,7 +220,10 @@ pub async fn execute_s3_operation(config: &StorageConfig, op: StorageOp) -> Stor
         }
 
         StorageOp::Delete { key } => {
-            let full_key = build_full_key(&key);
+            let full_key = match build_full_key(&key) {
+                Ok(k) => k,
+                Err(e) => return StorageResult::Error(e),
+            };
             let url = format!("{}/{}/{}", config.endpoint, config.bucket, full_key);
 
             match sign_and_execute("DELETE", &url, &host, region, &credentials, None).await {
@@ -149,9 +269,12 @@ pub async fn execute_s3_operation(config: &StorageConfig, op: StorageOp) -> Stor
             match sign_and_execute("GET", &url, &host, region, &credentials, None).await {
                 Ok((status, body)) => {
                     if status == 200 {
-                        // Parse XML response to extract keys
+                        // Parse XML response to extract keys, stripping the config prefix
                         let body_str = String::from_utf8_lossy(&body);
-                        let keys = parse_list_response(&body_str);
+                        let keys: Vec<String> = parse_list_response(&body_str)
+                            .into_iter()
+                            .map(|k| strip_prefix(&k))
+                            .collect();
                         let truncated = body_str.contains("<IsTruncated>true</IsTruncated>");
                         StorageResult::List { keys, truncated }
                     } else {
@@ -168,7 +291,7 @@ pub async fn execute_s3_operation(config: &StorageConfig, op: StorageOp) -> Stor
     }
 }
 
-/// Sign and execute an S3 request (GET/PUT/DELETE)
+/// Sign and execute an S3 request, returning status and body
 async fn sign_and_execute(
     method: &str,
     url: &str,
@@ -177,8 +300,105 @@ async fn sign_and_execute(
     credentials: &Credentials,
     body: Option<Vec<u8>>,
 ) -> Result<(u16, Vec<u8>), String> {
-    let body_bytes = body.as_deref().unwrap_or(&[]);
+    let response = sign_and_execute_raw(method, url, host, region, credentials, body).await?;
+    let status = response.status().as_u16();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read response body: {}", e))?
+        .to_vec();
+    Ok((status, body))
+}
+
+/// Sign and execute an S3 request, returning full HttpResponse
+async fn sign_and_execute_response(
+    method: &str,
+    url: &str,
+    host: &str,
+    region: &str,
+    credentials: &Credentials,
+    body: Option<Vec<u8>>,
+) -> Result<HttpResponse, String> {
+    let response = sign_and_execute_raw(method, url, host, region, credentials, body).await?;
+    let status = response.status().as_u16();
+    let headers: Vec<(String, String)> = response
+        .headers()
+        .iter()
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (k.as_str().to_string(), v.to_string()))
+        })
+        .collect();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read response body: {}", e))?
+        .to_vec();
+    Ok(HttpResponse {
+        status,
+        headers,
+        body: ResponseBody::Bytes(body.into()),
+    })
+}
+
+/// Compute AWS v4 signature headers for an S3 request
+fn compute_signature_headers(
+    method: &str,
+    uri: &str,
+    host: &str,
+    region: &str,
+    credentials: &Credentials,
+    body_bytes: &[u8],
+) -> Result<(HashMap<String, String>, String), String> {
     let body_hash = hex::encode(Sha256::digest(body_bytes));
+
+    let identity = credentials.clone().into();
+    let signing_params = v4::SigningParams::builder()
+        .identity(&identity)
+        .region(region)
+        .name("s3")
+        .time(SystemTime::now())
+        .settings(SigningSettings::default())
+        .build()
+        .map_err(|e| format!("Failed to build signing params: {}", e))?;
+
+    let signable_body = if body_bytes.is_empty() {
+        SignableBody::Bytes(&[])
+    } else {
+        SignableBody::Bytes(body_bytes)
+    };
+
+    let headers = vec![("host", host), ("x-amz-content-sha256", body_hash.as_str())];
+
+    let signable_request = SignableRequest::new(method, uri, headers.into_iter(), signable_body)
+        .map_err(|e| format!("Failed to create signable request: {}", e))?;
+
+    let (signing_instructions, _) = sign(signable_request, &signing_params.into())
+        .map_err(|e| format!("Failed to sign request: {}", e))?
+        .into_parts();
+
+    let mut signed_headers = HashMap::new();
+    signed_headers.insert("host".to_string(), host.to_string());
+    signed_headers.insert("x-amz-content-sha256".to_string(), body_hash.clone());
+
+    for (name, value) in signing_instructions.headers() {
+        signed_headers.insert(name.to_string(), value.to_string());
+    }
+
+    Ok((signed_headers, body_hash))
+}
+
+/// Sign and execute an S3 request, returning raw reqwest::Response
+async fn sign_and_execute_raw(
+    method: &str,
+    url: &str,
+    host: &str,
+    region: &str,
+    credentials: &Credentials,
+    body: Option<Vec<u8>>,
+) -> Result<reqwest::Response, String> {
+    let body_bytes = body.as_deref().unwrap_or(&[]);
 
     let parsed_url = url::Url::parse(url).map_err(|e| e.to_string())?;
     let uri = parsed_url.path().to_string()
@@ -188,74 +408,32 @@ async fn sign_and_execute(
             .unwrap_or_default()
             .as_str();
 
-    // Build signing params
-    let identity = credentials.clone().into();
-    let signing_settings = SigningSettings::default();
-    let signing_params = v4::SigningParams::builder()
-        .identity(&identity)
-        .region(region)
-        .name("s3")
-        .time(SystemTime::now())
-        .settings(signing_settings)
-        .build()
-        .map_err(|e| format!("Failed to build signing params: {}", e))?;
+    let (signed_headers, _) =
+        compute_signature_headers(method, &uri, host, region, credentials, body_bytes)?;
 
-    // Create signable request
-    let signable_body = if body_bytes.is_empty() {
-        SignableBody::Bytes(&[])
-    } else {
-        SignableBody::Bytes(body_bytes)
-    };
-
-    let content_hash_header = body_hash.clone();
-    let headers = vec![
-        ("host", host),
-        ("x-amz-content-sha256", &content_hash_header),
-    ];
-
-    let signable_request = SignableRequest::new(method, &uri, headers.into_iter(), signable_body)
-        .map_err(|e| format!("Failed to create signable request: {}", e))?;
-
-    // Sign the request
-    let (signing_instructions, _signature) = sign(signable_request, &signing_params.into())
-        .map_err(|e| format!("Failed to sign request: {}", e))?
-        .into_parts();
-
-    // Build reqwest request with signed headers
     let client = reqwest::Client::new();
     let mut request_builder = match method {
         "GET" => client.get(url),
         "PUT" => client.put(url),
         "DELETE" => client.delete(url),
+        "HEAD" => client.head(url),
         _ => return Err(format!("Unsupported method: {}", method)),
     };
 
-    // Apply signing instructions (headers)
-    for (name, value) in signing_instructions.headers() {
-        request_builder = request_builder.header(name, value.as_bytes());
+    for (name, value) in &signed_headers {
+        request_builder = request_builder.header(name, value);
     }
-    request_builder = request_builder.header("x-amz-content-sha256", &body_hash);
 
-    // Add body for PUT
     if method == "PUT"
         && let Some(b) = body
     {
         request_builder = request_builder.body(b);
     }
 
-    let response = request_builder
+    request_builder
         .send()
         .await
-        .map_err(|e| format!("HTTP request failed: {}", e))?;
-
-    let status = response.status().as_u16();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|e| format!("Failed to read response body: {}", e))?
-        .to_vec();
-
-    Ok((status, body))
+        .map_err(|e| format!("HTTP request failed: {}", e))
 }
 
 /// Sign and execute an S3 HEAD request
@@ -265,43 +443,7 @@ async fn sign_and_execute_head(
     region: &str,
     credentials: &Credentials,
 ) -> Result<(u16, u64, Option<String>), String> {
-    let body_hash = hex::encode(Sha256::digest([]));
-    let parsed_url = url::Url::parse(url).map_err(|e| e.to_string())?;
-    let uri = parsed_url.path().to_string();
-
-    let identity = credentials.clone().into();
-    let signing_settings = SigningSettings::default();
-    let signing_params = v4::SigningParams::builder()
-        .identity(&identity)
-        .region(region)
-        .name("s3")
-        .time(SystemTime::now())
-        .settings(signing_settings)
-        .build()
-        .map_err(|e| format!("Failed to build signing params: {}", e))?;
-
-    let headers = vec![("host", host), ("x-amz-content-sha256", &body_hash)];
-    let signable_request =
-        SignableRequest::new("HEAD", &uri, headers.into_iter(), SignableBody::Bytes(&[]))
-            .map_err(|e| format!("Failed to create signable request: {}", e))?;
-
-    let (signing_instructions, _) = sign(signable_request, &signing_params.into())
-        .map_err(|e| format!("Failed to sign request: {}", e))?
-        .into_parts();
-
-    let client = reqwest::Client::new();
-    let mut request_builder = client.head(url);
-
-    for (name, value) in signing_instructions.headers() {
-        request_builder = request_builder.header(name, value.as_bytes());
-    }
-    request_builder = request_builder.header("x-amz-content-sha256", &body_hash);
-
-    let response = request_builder
-        .send()
-        .await
-        .map_err(|e| format!("HTTP request failed: {}", e))?;
-
+    let response = sign_and_execute_raw("HEAD", url, host, region, credentials, None).await?;
     let status = response.status().as_u16();
     let size = response
         .headers()
@@ -314,7 +456,6 @@ async fn sign_and_execute_head(
         .get("etag")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim_matches('"').to_string());
-
     Ok((status, size, etag))
 }
 
@@ -330,4 +471,131 @@ fn parse_list_response(xml: &str) -> Vec<String> {
     }
 
     keys
+}
+
+/// Sign an S3/R2 request using AWS Signature V4.
+///
+/// R2 uses AWS Signature V4 for authentication (not Bearer tokens).
+/// The region is always "auto" for R2.
+pub fn sign_s3_request(
+    request: &HttpRequest,
+    access_key_id: &str,
+    secret_access_key: &str,
+    _bucket: &str,
+) -> Result<HashMap<String, String>, String> {
+    let url = url::Url::parse(&request.url).map_err(|e| format!("Invalid URL: {}", e))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "URL has no host".to_string())?;
+
+    let method = match request.method {
+        HttpMethod::Get => "GET",
+        HttpMethod::Post => "POST",
+        HttpMethod::Put => "PUT",
+        HttpMethod::Delete => "DELETE",
+        HttpMethod::Patch => "PATCH",
+        HttpMethod::Head => "HEAD",
+        HttpMethod::Options => "OPTIONS",
+    };
+
+    let credentials = Credentials::new(access_key_id, secret_access_key, None, None, "openworkers");
+
+    let body_bytes: &[u8] = match &request.body {
+        RequestBody::None | RequestBody::Stream(_) => &[],
+        RequestBody::Bytes(b) => b,
+    };
+
+    let (signed_headers, _) =
+        compute_signature_headers(method, &request.url, host, "auto", &credentials, body_bytes)?;
+
+    Ok(signed_headers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_path_valid() {
+        // Normal paths
+        assert_eq!(sanitize_path("hello.txt"), Some("hello.txt".to_string()));
+        assert_eq!(
+            sanitize_path("folder/file.txt"),
+            Some("folder/file.txt".to_string())
+        );
+        assert_eq!(
+            sanitize_path("/folder/file.txt"),
+            Some("folder/file.txt".to_string())
+        );
+        assert_eq!(
+            sanitize_path("a/b/c/d.txt"),
+            Some("a/b/c/d.txt".to_string())
+        );
+
+        // Single dot is removed
+        assert_eq!(
+            sanitize_path("./folder/file.txt"),
+            Some("folder/file.txt".to_string())
+        );
+        assert_eq!(
+            sanitize_path("folder/./file.txt"),
+            Some("folder/file.txt".to_string())
+        );
+
+        // URL-encoded valid characters
+        assert_eq!(
+            sanitize_path("hello%20world.txt"),
+            Some("hello world.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn test_sanitize_path_traversal_plain() {
+        // Plain traversal
+        assert_eq!(sanitize_path(".."), None);
+        assert_eq!(sanitize_path("../etc/passwd"), None);
+        assert_eq!(sanitize_path("folder/../secret"), None);
+        assert_eq!(sanitize_path("a/b/../../c"), None);
+    }
+
+    #[test]
+    fn test_sanitize_path_traversal_url_encoded() {
+        // Single URL-encoded (%2e = .)
+        assert_eq!(sanitize_path("%2e%2e"), None);
+        assert_eq!(sanitize_path("%2e%2e/etc/passwd"), None);
+        assert_eq!(sanitize_path("folder/%2e%2e/secret"), None);
+
+        // Mixed case
+        assert_eq!(sanitize_path("%2E%2E"), None);
+        assert_eq!(sanitize_path("%2e%2E"), None);
+    }
+
+    #[test]
+    fn test_sanitize_path_traversal_double_encoded() {
+        // Double URL-encoded (%252e decodes to %2e, then to .)
+        assert_eq!(sanitize_path("%252e%252e"), None);
+        assert_eq!(sanitize_path("%252e%252e/etc/passwd"), None);
+        assert_eq!(sanitize_path("folder/%252e%252e/secret"), None);
+    }
+
+    #[test]
+    fn test_sanitize_path_traversal_triple_encoded() {
+        // Triple URL-encoded (%25252e decodes to %252e, then %2e, then .)
+        assert_eq!(sanitize_path("%25252e%25252e"), None);
+        assert_eq!(sanitize_path("%25252e%25252e/etc/passwd"), None);
+    }
+
+    #[test]
+    fn test_sanitize_path_null_byte() {
+        // Null byte injection
+        assert_eq!(sanitize_path("file.txt\0.jpg"), None);
+        assert_eq!(sanitize_path("file%00.txt"), None);
+        assert_eq!(sanitize_path("%00"), None);
+    }
+
+    #[test]
+    fn test_sanitize_path_invalid_utf8() {
+        // Invalid UTF-8 sequences should return None
+        assert_eq!(sanitize_path("%ff%fe"), None);
+    }
 }

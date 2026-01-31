@@ -27,9 +27,6 @@
 //! It only knows the binding NAME (e.g., "ASSETS"). The runner looks up
 //! the config and injects auth headers transparently.
 
-use aws_credential_types::Credentials;
-use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign};
-use aws_sigv4::sign::v4;
 use bytes::Bytes;
 use once_cell::sync::Lazy;
 #[cfg(feature = "database")]
@@ -41,14 +38,12 @@ use openworkers_core::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::limiter::BindingLimiters;
-use crate::ops_s3::execute_s3_operation;
-use crate::store::{
-    AssetsConfig, Binding, DatabaseConfig, KvConfig, StorageConfig, WorkerBindingConfig,
-};
+use crate::ops_s3::{build_s3_url, execute_s3_operation, sign_s3_request};
+use crate::store::{Binding, DatabaseConfig, KvConfig, StorageConfig, WorkerBindingConfig};
 
 /// Worker domains for internal routing (e.g., "workers.rocks,workers.dev.localhost")
 /// URLs matching `*.{domain}` will be routed internally instead of going through DNS.
@@ -94,7 +89,7 @@ pub type LogTx = std::sync::mpsc::Sender<LogEvent>;
 /// Binding configs indexed by binding name
 #[derive(Debug, Default, Clone)]
 pub struct BindingConfigs {
-    pub assets: HashMap<String, AssetsConfig>,
+    pub assets: HashMap<String, StorageConfig>,
     pub storage: HashMap<String, StorageConfig>,
     pub kv: HashMap<String, KvConfig>,
     pub database: HashMap<String, DatabaseConfig>,
@@ -363,61 +358,10 @@ impl OperationsHandler for RunnerOperations {
                 );
 
                 // Build the actual S3/R2 URL
-                let url = build_assets_url(&config, &request.url)?;
+                let url = build_s3_url(&config, &request.url)?;
 
                 // Create modified request with AWS signature
                 // Filter out Host header to avoid 421 Misdirected Request from S3/R2
-                let mut headers = request.headers.clone();
-                headers.remove("host");
-                headers.remove("Host");
-
-                let auth_request = HttpRequest {
-                    url: url.clone(),
-                    method: request.method,
-                    headers,
-                    body: request.body,
-                };
-
-                // Sign the request with AWS Signature V4
-                let signed_headers = sign_s3_request(
-                    &auth_request,
-                    &config.access_key_id,
-                    &config.secret_access_key,
-                    &config.bucket,
-                )?;
-
-                do_fetch(auth_request, &self.stats, Some(&signed_headers)).await
-            });
-        }
-
-        if let Some(storage_config) = self.bindings.storage.get(binding) {
-            let config = storage_config.clone();
-            let binding_name = binding.to_string();
-
-            return Box::pin(async move {
-                // Acquire storage limiter permit (storage fetch uses storage limiter)
-                let _guard = self
-                    .limiters
-                    .storage
-                    .acquire()
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
-
-                log::debug!(
-                    "[ops] binding_fetch storage {} {} {} (user={:?}, worker={:?})",
-                    binding_name,
-                    request.method,
-                    request.url,
-                    self.user_id,
-                    self.worker_id
-                );
-
-                // Build the actual S3 URL
-                let url = build_storage_url(&config, &request.url)?;
-
-                // Create modified request with AWS signature
                 let mut headers = request.headers.clone();
                 headers.remove("host");
                 headers.remove("Host");
@@ -478,6 +422,7 @@ impl OperationsHandler for RunnerOperations {
 
         let op_name = match &op {
             StorageOp::Get { key } => format!("get({})", key),
+            StorageOp::Fetch { key } => format!("fetch({})", key),
             StorageOp::Put { key, .. } => format!("put({})", key),
             StorageOp::Head { key } => format!("head({})", key),
             StorageOp::List { prefix, .. } => format!("list(prefix={:?})", prefix),
@@ -1155,212 +1100,6 @@ async fn execute_mutation_tx(
         .map_err(|e| format!("Query execution failed: {}", e))?;
 
     Ok(format!("{{\"rowsAffected\":{}}}", result.rows_affected()))
-}
-
-/// Sanitize a path to prevent directory traversal attacks.
-///
-/// Removes `.` and `..` components, preventing escape from prefix boundaries.
-/// Returns None if the path would escape the root (e.g., `../secret`).
-fn sanitize_path(path: &str) -> Option<String> {
-    let mut parts: Vec<&str> = Vec::new();
-
-    for part in path.split('/') {
-        match part {
-            "" | "." => continue,
-            ".." => {
-                // Trying to go above root - reject
-                parts.pop()?;
-            }
-            _ => parts.push(part),
-        }
-    }
-
-    Some(parts.join("/"))
-}
-
-/// Build the actual S3/R2 URL for an assets binding request.
-///
-/// URL structure: `{endpoint}/{bucket}/{prefix?}/{path}`
-///
-/// Two modes supported:
-///
-/// 1. **Shared S3** (endpoint=NULL, prefix=Some):
-///    Platform-provisioned S3/R2 with prefix isolation. Each binding gets an
-///    allocated prefix within the shared bucket, with a token scoped to that prefix.
-///    Both AWS S3 (via IAM policies/Access Points) and Cloudflare R2 support
-///    prefix-scoped tokens for secure multi-tenant isolation.
-///    → `https://platform-s3.../shared-bucket/{prefix}/{path}`
-///
-/// 2. **Dedicated S3** (endpoint=Some, prefix=NULL):
-///    User-provided S3/R2 endpoint with full bucket access.
-///    → `https://user-s3.../user-bucket/{path}`
-fn build_assets_url(config: &AssetsConfig, url_or_path: &str) -> Result<String, String> {
-    // Default R2 endpoint if not specified
-    let endpoint = config
-        .endpoint
-        .as_deref()
-        .unwrap_or("https://r2.cloudflarestorage.com");
-
-    // Extract path from URL if it's a full URL (e.g., "http://localhost/_app/foo.js")
-    // Otherwise use it as-is (e.g., "/_app/foo.js")
-    let path = if url_or_path.starts_with("http://") || url_or_path.starts_with("https://") {
-        url::Url::parse(url_or_path)
-            .map(|u| u.path().to_string())
-            .unwrap_or_else(|_| url_or_path.to_string())
-    } else {
-        url_or_path.to_string()
-    };
-
-    // Build full path with prefix if specified
-    let full_path = match &config.prefix {
-        Some(prefix) => {
-            // Sanitize path to prevent directory traversal (../) only when there's a prefix
-            // This prevents escaping the prefix in multi-tenant shared buckets
-            let sanitized_path = sanitize_path(&path)
-                .ok_or_else(|| "Invalid path: traversal not allowed".to_string())?;
-            format!("{}/{}", prefix.trim_matches('/'), sanitized_path)
-        }
-        None => {
-            // BYOS (dedicated bucket) - no prefix, user has full bucket access
-            // No need to sanitize, they can access any path in their own bucket
-            path.trim_start_matches('/').to_string()
-        }
-    };
-
-    Ok(format!("{}/{}/{}", endpoint, config.bucket, full_path))
-}
-
-/// Build the actual S3 URL for a storage binding fetch request.
-///
-/// URL structure: `{endpoint}/{bucket}/{prefix?}/{path}`
-fn build_storage_url(config: &StorageConfig, url_or_path: &str) -> Result<String, String> {
-    // Extract path from URL if it's a full URL
-    let path = if url_or_path.starts_with("http://") || url_or_path.starts_with("https://") {
-        url::Url::parse(url_or_path)
-            .map(|u| u.path().to_string())
-            .unwrap_or_else(|_| url_or_path.to_string())
-    } else {
-        url_or_path.to_string()
-    };
-
-    // Build full path with prefix if specified
-    let full_path = match &config.prefix {
-        Some(prefix) => {
-            let sanitized_path = sanitize_path(&path)
-                .ok_or_else(|| "Invalid path: traversal not allowed".to_string())?;
-            format!("{}/{}", prefix.trim_matches('/'), sanitized_path)
-        }
-        None => path.trim_start_matches('/').to_string(),
-    };
-
-    Ok(format!(
-        "{}/{}/{}",
-        config.endpoint, config.bucket, full_path
-    ))
-}
-
-/// Sign an S3/R2 request using AWS Signature V4.
-///
-/// R2 uses AWS Signature V4 for authentication (not Bearer tokens).
-/// The region is always "auto" for R2.
-fn sign_s3_request(
-    request: &HttpRequest,
-    access_key_id: &str,
-    secret_access_key: &str,
-    _bucket: &str,
-) -> Result<HashMap<String, String>, String> {
-    // Parse the URL to get host and path
-    let url = url::Url::parse(&request.url).map_err(|e| format!("Invalid URL: {}", e))?;
-
-    let host = url
-        .host_str()
-        .ok_or_else(|| "URL has no host".to_string())?;
-
-    // Build HTTP method string
-    let method = match request.method {
-        HttpMethod::Get => "GET",
-        HttpMethod::Post => "POST",
-        HttpMethod::Put => "PUT",
-        HttpMethod::Delete => "DELETE",
-        HttpMethod::Patch => "PATCH",
-        HttpMethod::Head => "HEAD",
-        HttpMethod::Options => "OPTIONS",
-    };
-
-    // Create credentials
-    let credentials = Credentials::new(
-        access_key_id,
-        secret_access_key,
-        None, // session token
-        None, // expiry
-        "openworkers",
-    );
-    let identity = credentials.into();
-
-    // Create signing settings
-    let mut settings = SigningSettings::default();
-    settings.signature_location = aws_sigv4::http_request::SignatureLocation::Headers;
-
-    // Create signing params
-    let signing_params = v4::SigningParams::builder()
-        .identity(&identity)
-        .region("auto") // R2 uses "auto" as region
-        .name("s3") // Service name
-        .time(SystemTime::now())
-        .settings(settings)
-        .build()
-        .map_err(|e| format!("Failed to build signing params: {}", e))?;
-
-    // Build the headers for signing
-    let mut headers_to_sign = vec![("host", host.to_string())];
-
-    // Add x-amz-content-sha256 header (required for S3)
-    // For streaming bodies, we use UNSIGNED-PAYLOAD as we can't hash the stream upfront
-    let body_hash = match &request.body {
-        RequestBody::None => "UNSIGNED-PAYLOAD".to_string(),
-        RequestBody::Stream(_) => "UNSIGNED-PAYLOAD".to_string(),
-        RequestBody::Bytes(b) => {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(b);
-            hex::encode(hasher.finalize())
-        }
-    };
-    headers_to_sign.push(("x-amz-content-sha256", body_hash.clone()));
-
-    // Build signable request
-    let signable_body = match &request.body {
-        RequestBody::None => SignableBody::UnsignedPayload,
-        RequestBody::Stream(_) => SignableBody::UnsignedPayload,
-        RequestBody::Bytes(b) => SignableBody::Bytes(b),
-    };
-
-    let signable_request = SignableRequest::new(
-        method,
-        &request.url,
-        headers_to_sign
-            .iter()
-            .map(|(k, v)| (*k, v.as_str()))
-            .collect::<Vec<_>>()
-            .into_iter(),
-        signable_body,
-    )
-    .map_err(|e| format!("Failed to create signable request: {}", e))?;
-
-    // Sign the request
-    let signing_output = sign(signable_request, &signing_params.into())
-        .map_err(|e| format!("Failed to sign request: {}", e))?;
-
-    // Collect signed headers
-    let mut signed_headers = HashMap::new();
-    signed_headers.insert("host".to_string(), host.to_string());
-    signed_headers.insert("x-amz-content-sha256".to_string(), body_hash);
-
-    for (name, value) in signing_output.output().headers() {
-        signed_headers.insert(name.to_string(), value.to_string());
-    }
-
-    Ok(signed_headers)
 }
 
 /// Execute an HTTP request via reqwest with streaming response.

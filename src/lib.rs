@@ -24,7 +24,7 @@ pub use ops::{BindingConfigs, DbPool, OperationsStats, RunnerOperations};
 pub use limiter::{BindingLimiter, BindingLimiters, LimitError, LimiterGuard};
 
 // Re-export store types
-pub use store::{AssetsConfig, Binding, KvConfig, StorageConfig, WorkerWithBindings};
+pub use store::{Binding, KvConfig, StorageConfig, WorkerWithBindings};
 
 // Re-export utils
 pub use utils::short_id;

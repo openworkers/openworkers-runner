@@ -432,7 +432,7 @@ dependencies = [
  "bitflags",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -2680,8 +2680,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-core"
-version = "0.11.1"
-source = "git+https://github.com/openworkers/openworkers-core?tag=v0.11.1#e9721bc9cd8ccc7119ef9b8e425374224b8f4892"
+version = "0.12.0"
+source = "git+https://github.com/openworkers/openworkers-core?tag=v0.12.0#51a3d17e3fe11e4f5316c16fdf46df16be2bf1d9"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -2705,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.11.4"
+version = "0.12.0"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2725,9 +2725,10 @@ dependencies = [
  "log",
  "lru",
  "once_cell",
- "openworkers-core 0.11.1",
+ "openworkers-core 0.12.0",
  "openworkers-runtime-v8",
  "openworkers-runtime-wasm",
+ "percent-encoding",
  "postgate",
  "reqwest",
  "serde",
@@ -2750,14 +2751,14 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.11.4"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.4#4fd491006e92bdb1953ef5a87b61c5c90f65f314"
+version = "0.12.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.12.0#eda70350fb869733cab22c9721ad2d8104ca5ec8"
 dependencies = [
  "bytes",
  "futures",
  "libc",
  "lru",
- "openworkers-core 0.11.1",
+ "openworkers-core 0.12.0",
  "openworkers-glue-v8",
  "openworkers-runtime-v8-gc-derive",
  "openworkers-serde-v8",
@@ -2776,7 +2777,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.11.4#4fd491006e92bdb1953ef5a87b61c5c90f65f314"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.12.0#eda70350fb869733cab22c9721ad2d8104ca5ec8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5934,7 +5935,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
