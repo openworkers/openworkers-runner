@@ -262,7 +262,7 @@ mod tests {
         let domain = &WORKER_DOMAINS[0];
         let request = HttpRequest {
             method: HttpMethod::Get,
-            url: format!("https://my-worker.{}/api/test", domain),
+            url: format!("https://my-worker.{}/api/test?foo=bar", domain),
             headers: HashMap::new(),
             body: RequestBody::None,
         };
@@ -271,10 +271,75 @@ mod tests {
         assert!(routed.is_some(), "Should route configured domain");
 
         let routed = routed.unwrap();
-        assert_eq!(routed.url, "http://127.0.0.1:8080/api/test");
+        assert_eq!(routed.url, "http://127.0.0.1:8080/api/test?foo=bar");
         assert_eq!(
             routed.headers.get("x-worker-name"),
             Some(&"my-worker".to_string())
         );
+        assert!(routed.headers.contains_key("x-request-id"));
+    }
+
+    #[test]
+    fn test_internal_route_preserves_method_and_body() {
+        if WORKER_DOMAINS.is_empty() {
+            eprintln!("Skipping: WORKER_DOMAINS not set");
+            return;
+        }
+
+        let domain = &WORKER_DOMAINS[0];
+        let body_data = b"test body data".to_vec();
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            url: format!("https://api.{}/data", domain),
+            headers: HashMap::new(),
+            body: RequestBody::Bytes(body_data.clone().into()),
+        };
+
+        let routed = try_internal_worker_route(&request).unwrap();
+        assert_eq!(routed.method, HttpMethod::Post);
+
+        match routed.body {
+            RequestBody::Bytes(b) => assert_eq!(b.as_ref(), body_data.as_slice()),
+            _ => panic!("Expected Bytes body"),
+        }
+    }
+
+    #[test]
+    fn test_internal_route_no_match_bare_domain() {
+        if WORKER_DOMAINS.is_empty() {
+            eprintln!("Skipping: WORKER_DOMAINS not set");
+            return;
+        }
+
+        let domain = &WORKER_DOMAINS[0];
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            url: format!("https://{}/api", domain),
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+
+        let routed = try_internal_worker_route(&request);
+        assert!(routed.is_none(), "Should not route bare domain");
+    }
+
+    #[test]
+    fn test_internal_route_stream_body_not_supported() {
+        if WORKER_DOMAINS.is_empty() {
+            eprintln!("Skipping: WORKER_DOMAINS not set");
+            return;
+        }
+
+        let domain = &WORKER_DOMAINS[0];
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            url: format!("https://api.{}/data", domain),
+            headers: HashMap::new(),
+            body: RequestBody::Stream(rx),
+        };
+
+        let routed = try_internal_worker_route(&request);
+        assert!(routed.is_none(), "Should not route streaming bodies");
     }
 }
