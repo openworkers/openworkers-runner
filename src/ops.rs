@@ -28,7 +28,7 @@
 //! the config and injects auth headers transparently.
 
 #[cfg(feature = "database")]
-use openworkers_core::{DatabaseOp, DatabaseResult, SqlParam, SqlPrimitive};
+use openworkers_core::{DatabaseOp, DatabaseResult};
 use openworkers_core::{
     HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, OpFuture,
     OperationsHandler, RequestBody, StorageOp, StorageResult,
@@ -39,7 +39,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::limiter::BindingLimiters;
 use crate::ops_s3::{build_s3_url, execute_s3_operation, sign_s3_request};
+#[cfg(feature = "database")]
+use crate::services::database::{self as db_service, QueryMode};
 use crate::services::fetch::{do_fetch, generate_request_id, try_internal_worker_route};
+use crate::services::kv as kv_service;
 use crate::store::{Binding, DatabaseConfig, KvConfig, StorageConfig, WorkerBindingConfig};
 
 /// Stats tracked for each worker
@@ -407,155 +410,15 @@ impl OperationsHandler for RunnerOperations {
             }
 
             match op {
-                KvOp::Get { key } => {
-                    let result = sqlx::query_scalar::<_, serde_json::Value>(
-                        r#"
-                        SELECT value FROM kv_data
-                        WHERE namespace_id = $1::uuid AND key = $2
-                        AND (expires_at IS NULL OR expires_at > NOW())
-                        "#,
-                    )
-                    .bind(&namespace_id)
-                    .bind(&key)
-                    .fetch_optional(&pool)
-                    .await;
-
-                    match result {
-                        Ok(value) => KvResult::Value(value),
-                        Err(e) => {
-                            log::error!("[ops] kv get error: {}", e);
-                            KvResult::Error(format!("KV get failed: {}", e))
-                        }
-                    }
-                }
-
+                KvOp::Get { key } => kv_service::get(&pool, &namespace_id, &key).await,
                 KvOp::Put {
                     key,
                     value,
                     expires_in,
-                } => {
-                    // Check value size (100KB limit)
-                    const MAX_VALUE_SIZE: usize = 100 * 1024;
-                    let value_str = match serde_json::to_string(&value) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            return KvResult::Error(format!("Invalid JSON value: {}", e));
-                        }
-                    };
-
-                    if value_str.len() > MAX_VALUE_SIZE {
-                        return KvResult::Error(format!(
-                            "Value too large: {} bytes (max {} bytes)",
-                            value_str.len(),
-                            MAX_VALUE_SIZE
-                        ));
-                    }
-
-                    // Calculate expires_at from expires_in (seconds from now)
-                    let result = if let Some(ttl) = expires_in {
-                        sqlx::query(
-                            r#"
-                            INSERT INTO kv_data (namespace_id, key, value, expires_at, updated_at)
-                            VALUES ($1::uuid, $2, $3, NOW() + $4 * INTERVAL '1 second', NOW())
-                            ON CONFLICT (namespace_id, key)
-                            DO UPDATE SET value = $3, expires_at = NOW() + $4 * INTERVAL '1 second', updated_at = NOW()
-                            "#,
-                        )
-                        .bind(&namespace_id)
-                        .bind(&key)
-                        .bind(&value)
-                        .bind(ttl as i64)
-                        .execute(&pool)
-                        .await
-                    } else {
-                        sqlx::query(
-                            r#"
-                            INSERT INTO kv_data (namespace_id, key, value, expires_at, updated_at)
-                            VALUES ($1::uuid, $2, $3, NULL, NOW())
-                            ON CONFLICT (namespace_id, key)
-                            DO UPDATE SET value = $3, expires_at = NULL, updated_at = NOW()
-                            "#,
-                        )
-                        .bind(&namespace_id)
-                        .bind(&key)
-                        .bind(&value)
-                        .execute(&pool)
-                        .await
-                    };
-
-                    match result {
-                        Ok(_) => KvResult::Ok,
-                        Err(e) => {
-                            log::error!("[ops] kv put error: {}", e);
-                            KvResult::Error(format!("KV put failed: {}", e))
-                        }
-                    }
-                }
-
-                KvOp::Delete { key } => {
-                    let result = sqlx::query(
-                        r#"
-                        DELETE FROM kv_data
-                        WHERE namespace_id = $1::uuid AND key = $2
-                        "#,
-                    )
-                    .bind(&namespace_id)
-                    .bind(&key)
-                    .execute(&pool)
-                    .await;
-
-                    match result {
-                        Ok(_) => KvResult::Ok,
-                        Err(e) => {
-                            log::error!("[ops] kv delete error: {}", e);
-                            KvResult::Error(format!("KV delete failed: {}", e))
-                        }
-                    }
-                }
-
+                } => kv_service::put(&pool, &namespace_id, &key, &value, expires_in).await,
+                KvOp::Delete { key } => kv_service::delete(&pool, &namespace_id, &key).await,
                 KvOp::List { prefix, limit } => {
-                    let limit_val = limit.unwrap_or(1000) as i64;
-
-                    let result = if let Some(prefix) = prefix {
-                        let pattern = format!("{}%", prefix);
-                        sqlx::query_scalar::<_, String>(
-                            r#"
-                            SELECT key FROM kv_data
-                            WHERE namespace_id = $1::uuid
-                            AND key LIKE $2
-                            AND (expires_at IS NULL OR expires_at > NOW())
-                            ORDER BY key
-                            LIMIT $3
-                            "#,
-                        )
-                        .bind(&namespace_id)
-                        .bind(&pattern)
-                        .bind(limit_val)
-                        .fetch_all(&pool)
-                        .await
-                    } else {
-                        sqlx::query_scalar::<_, String>(
-                            r#"
-                            SELECT key FROM kv_data
-                            WHERE namespace_id = $1::uuid
-                            AND (expires_at IS NULL OR expires_at > NOW())
-                            ORDER BY key
-                            LIMIT $2
-                            "#,
-                        )
-                        .bind(&namespace_id)
-                        .bind(limit_val)
-                        .fetch_all(&pool)
-                        .await
-                    };
-
-                    match result {
-                        Ok(keys) => KvResult::Keys(keys),
-                        Err(e) => {
-                            log::error!("[ops] kv list error: {}", e);
-                            KvResult::Error(format!("KV list failed: {}", e))
-                        }
-                    }
+                    kv_service::list(&pool, &namespace_id, prefix.as_deref(), limit).await
                 }
             }
         })
@@ -626,12 +489,20 @@ impl OperationsHandler for RunnerOperations {
                     // Execute based on provider mode
                     let result = if let Some(ref conn_str) = config.connection_string {
                         // postgres provider: direct connection
-                        execute_with_connection_string(conn_str, &sql, &params, mode).await
+                        db_service::execute_with_connection_string(conn_str, &sql, &params, mode)
+                            .await
                     } else if let Some(ref schema_name) = config.schema_name {
                         // platform provider: multi-tenant on shared pool
                         match shared_pool {
                             Some(pool) => {
-                                execute_with_schema(&pool, schema_name, &sql, &params, mode).await
+                                db_service::execute_with_schema(
+                                    &pool,
+                                    schema_name,
+                                    &sql,
+                                    &params,
+                                    mode,
+                                )
+                                .await
                             }
                             None => Err("Shared database pool not configured".to_string()),
                         }
@@ -728,311 +599,6 @@ impl OperationsHandler for RunnerOperations {
             LogLevel::Debug | LogLevel::Trace => log::debug!("[worker] {}", message),
         }
     }
-}
-
-/// Execute query with direct connection string
-#[cfg(feature = "database")]
-async fn execute_with_connection_string(
-    connection_string: &str,
-    sql: &str,
-    params: &[SqlParam],
-    mode: QueryMode,
-) -> Result<String, String> {
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(connection_string)
-        .await
-        .map_err(|e| format!("Database connection failed: {}", e))?;
-
-    match mode {
-        QueryMode::Mutation => execute_mutation(&pool, sql, params).await,
-        _ => execute_json_query(&pool, sql, params, mode).await,
-    }
-}
-
-/// Execute query with schema isolation (SET search_path)
-#[cfg(feature = "database")]
-async fn execute_with_schema(
-    pool: &DbPool,
-    schema_name: &str,
-    sql: &str,
-    params: &[SqlParam],
-    mode: QueryMode,
-) -> Result<String, String> {
-    let start = std::time::Instant::now();
-
-    // Use a transaction to set search_path, then execute the query
-    let safe_schema = schema_name.replace('"', "\"\"");
-
-    log::debug!(
-        "[db] pool stats - size: {}, idle: {}, acquiring transaction...",
-        pool.size(),
-        pool.num_idle()
-    );
-
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| format!("Failed to start transaction: {}", e))?;
-
-    log::debug!("[db] transaction acquired in {:?}", start.elapsed());
-
-    // Set the search_path for this transaction
-    sqlx::query(&format!("SET LOCAL search_path TO \"{}\"", safe_schema))
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to set search_path: {}", e))?;
-
-    log::debug!("[db] search_path set in {:?}", start.elapsed());
-
-    // Execute the user query
-    let result = match mode {
-        QueryMode::Mutation => execute_mutation_tx(&mut tx, sql, params).await?,
-        _ => execute_json_query_tx(&mut tx, sql, params, mode).await?,
-    };
-
-    log::debug!("[db] query executed in {:?}", start.elapsed());
-
-    // Commit the transaction
-    tx.commit()
-        .await
-        .map_err(|e| format!("Failed to commit transaction: {}", e))?;
-
-    log::debug!("[db] transaction committed in {:?}", start.elapsed());
-
-    Ok(result)
-}
-
-/// Query execution mode
-#[cfg(feature = "database")]
-#[derive(Clone, Copy)]
-enum QueryMode {
-    /// SELECT query - wrap as subquery
-    Select,
-    /// INSERT/UPDATE/DELETE with RETURNING - wrap as CTE
-    ReturningMutation,
-    /// INSERT/UPDATE/DELETE without RETURNING - return rows affected
-    Mutation,
-}
-
-#[cfg(feature = "database")]
-impl QueryMode {
-    fn from_parsed(parsed: &postgate::ParsedQuery) -> Self {
-        if !parsed.returns_rows {
-            QueryMode::Mutation
-        } else if parsed.operation == postgate::SqlOperation::Select {
-            QueryMode::Select
-        } else {
-            QueryMode::ReturningMutation
-        }
-    }
-}
-
-/// Bind a SqlParam to a sqlx query
-#[cfg(feature = "database")]
-fn bind_sql_param<'q>(
-    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
-    param: &'q SqlParam,
-) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
-    match param {
-        SqlParam::Primitive(p) => bind_sql_primitive(query, p),
-        SqlParam::Array(arr) => {
-            // Determine array type from first non-null element
-            let first_type = arr.iter().find_map(|p| match p {
-                SqlPrimitive::Null => None,
-                SqlPrimitive::Bool(_) => Some("bool"),
-                SqlPrimitive::Int(_) => Some("int"),
-                SqlPrimitive::Float(_) => Some("float"),
-                SqlPrimitive::String(_) => Some("string"),
-            });
-
-            match first_type {
-                Some("bool") => {
-                    let values: Vec<Option<bool>> = arr
-                        .iter()
-                        .map(|p| match p {
-                            SqlPrimitive::Bool(b) => Some(*b),
-                            SqlPrimitive::Null => None,
-                            _ => None,
-                        })
-                        .collect();
-                    query.bind(values)
-                }
-                Some("int") => {
-                    let values: Vec<Option<i64>> = arr
-                        .iter()
-                        .map(|p| match p {
-                            SqlPrimitive::Int(i) => Some(*i),
-                            SqlPrimitive::Null => None,
-                            _ => None,
-                        })
-                        .collect();
-                    query.bind(values)
-                }
-                Some("float") => {
-                    let values: Vec<Option<f64>> = arr
-                        .iter()
-                        .map(|p| match p {
-                            SqlPrimitive::Float(f) => Some(*f),
-                            SqlPrimitive::Int(i) => Some(*i as f64),
-                            SqlPrimitive::Null => None,
-                            _ => None,
-                        })
-                        .collect();
-                    query.bind(values)
-                }
-                Some("string") | None => {
-                    let values: Vec<Option<String>> = arr
-                        .iter()
-                        .map(|p| match p {
-                            SqlPrimitive::String(s) => Some(s.clone()),
-                            SqlPrimitive::Null => None,
-                            _ => Some(format!("{:?}", p)),
-                        })
-                        .collect();
-                    query.bind(values)
-                }
-                _ => unreachable!(),
-            }
-        }
-    }
-}
-
-/// Bind a SqlPrimitive to a sqlx query
-#[cfg(feature = "database")]
-fn bind_sql_primitive<'q>(
-    query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
-    param: &'q SqlPrimitive,
-) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
-    match param {
-        SqlPrimitive::Null => query.bind(None::<String>),
-        SqlPrimitive::Bool(b) => query.bind(*b),
-        SqlPrimitive::Int(i) => query.bind(*i),
-        SqlPrimitive::Float(f) => query.bind(*f),
-        SqlPrimitive::String(s) => query.bind(s.as_str()),
-    }
-}
-
-/// Wrap user query to return JSON directly from PostgreSQL
-#[cfg(feature = "database")]
-fn wrap_query_as_json(sql: &str, mode: QueryMode) -> String {
-    let trimmed = sql.trim().trim_end_matches(';');
-
-    match mode {
-        QueryMode::Select => {
-            // SELECT can be used as a subquery
-            format!(
-                "SELECT COALESCE(jsonb_agg(row_to_json(t)), '[]'::jsonb) as result FROM ({}) t",
-                trimmed
-            )
-        }
-        QueryMode::ReturningMutation => {
-            // INSERT/UPDATE/DELETE with RETURNING needs a CTE
-            format!(
-                "WITH t AS ({}) SELECT COALESCE(jsonb_agg(row_to_json(t)), '[]'::jsonb) as result FROM t",
-                trimmed
-            )
-        }
-        QueryMode::Mutation => {
-            unreachable!("Mutation queries should not be wrapped")
-        }
-    }
-}
-
-/// Execute wrapped JSON query and extract result
-#[cfg(feature = "database")]
-async fn execute_json_query(
-    pool: &DbPool,
-    sql: &str,
-    params: &[SqlParam],
-    mode: QueryMode,
-) -> Result<String, String> {
-    use sqlx::Row;
-
-    let wrapped = wrap_query_as_json(sql, mode);
-    let mut query = sqlx::query(&wrapped);
-
-    for param in params {
-        query = bind_sql_param(query, param);
-    }
-
-    let row = query
-        .fetch_one(pool)
-        .await
-        .map_err(|e| format!("Query execution failed: {}", e))?;
-
-    let result: serde_json::Value = row
-        .try_get("result")
-        .map_err(|e| format!("Failed to get result: {}", e))?;
-
-    serde_json::to_string(&result).map_err(|e| format!("Failed to serialize result: {}", e))
-}
-
-/// Execute wrapped JSON query within a transaction
-#[cfg(feature = "database")]
-async fn execute_json_query_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    sql: &str,
-    params: &[SqlParam],
-    mode: QueryMode,
-) -> Result<String, String> {
-    use sqlx::Row;
-
-    let wrapped = wrap_query_as_json(sql, mode);
-    let mut query = sqlx::query(&wrapped);
-
-    for param in params {
-        query = bind_sql_param(query, param);
-    }
-
-    let row = query
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|e| format!("Query execution failed: {}", e))?;
-
-    let result: serde_json::Value = row
-        .try_get("result")
-        .map_err(|e| format!("Failed to get result: {}", e))?;
-
-    serde_json::to_string(&result).map_err(|e| format!("Failed to serialize result: {}", e))
-}
-
-/// Execute mutation (INSERT/UPDATE/DELETE) and return rows affected
-#[cfg(feature = "database")]
-async fn execute_mutation(pool: &DbPool, sql: &str, params: &[SqlParam]) -> Result<String, String> {
-    let mut query = sqlx::query(sql);
-
-    for param in params {
-        query = bind_sql_param(query, param);
-    }
-
-    let result = query
-        .execute(pool)
-        .await
-        .map_err(|e| format!("Query execution failed: {}", e))?;
-
-    Ok(format!("{{\"rowsAffected\":{}}}", result.rows_affected()))
-}
-
-/// Execute mutation within a transaction
-#[cfg(feature = "database")]
-async fn execute_mutation_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    sql: &str,
-    params: &[SqlParam],
-) -> Result<String, String> {
-    let mut query = sqlx::query(sql);
-
-    for param in params {
-        query = bind_sql_param(query, param);
-    }
-
-    let result = query
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("Query execution failed: {}", e))?;
-
-    Ok(format!("{{\"rowsAffected\":{}}}", result.rows_affected()))
 }
 
 #[cfg(test)]
@@ -1268,46 +834,6 @@ mod tests {
             routed.headers.get("x-worker-name"),
             Some(&"app".to_string())
         );
-    }
-
-    // ============================================================================
-    // wrap_query_as_json tests (database feature only)
-    // ============================================================================
-
-    #[cfg(feature = "database")]
-    mod database_tests {
-        use super::super::*;
-
-        #[test]
-        fn test_wrap_select_query() {
-            let sql = "SELECT * FROM users WHERE id = $1";
-            let wrapped = wrap_query_as_json(sql, QueryMode::Select);
-            assert!(wrapped.contains("jsonb_agg"));
-            assert!(wrapped.contains("row_to_json"));
-            assert!(wrapped.contains(sql));
-        }
-
-        #[test]
-        fn test_wrap_select_trims_semicolon() {
-            let sql = "SELECT * FROM users;";
-            let wrapped = wrap_query_as_json(sql, QueryMode::Select);
-            assert!(!wrapped.contains(";;"), "Should not have double semicolons");
-        }
-
-        #[test]
-        fn test_wrap_returning_mutation() {
-            let sql = "INSERT INTO users (name) VALUES ($1) RETURNING *";
-            let wrapped = wrap_query_as_json(sql, QueryMode::ReturningMutation);
-            assert!(wrapped.starts_with("WITH t AS"));
-            assert!(wrapped.contains(sql.trim_end_matches(';')));
-        }
-
-        #[test]
-        #[should_panic(expected = "Mutation queries should not be wrapped")]
-        fn test_wrap_mutation_panics() {
-            let sql = "DELETE FROM users WHERE id = $1";
-            wrap_query_as_json(sql, QueryMode::Mutation);
-        }
     }
 
     // ============================================================================

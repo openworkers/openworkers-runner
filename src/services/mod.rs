@@ -8,9 +8,7 @@
 //!
 //! Each service is self-contained and can be tested independently.
 
+pub mod database;
 pub mod fetch;
+pub mod kv;
 pub mod storage;
-
-// TODO: Extract from ops.rs
-// pub mod kv;
-// pub mod database;
