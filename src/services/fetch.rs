@@ -34,14 +34,11 @@ pub static WORKER_DOMAINS: Lazy<Vec<String>> = Lazy::new(|| {
         .unwrap_or_else(|_| Vec::new())
 });
 
-/// Generate a unique request ID (32 chars total: prefix_hex)
+/// Generate a unique request ID (32 chars total): `{prefix}_{uuid_truncated}`
 pub fn generate_request_id(prefix: &str) -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let hex_len = 31 - prefix.len();
-    format!("{}_{:0width$x}", prefix, nanos, width = hex_len)
+    let uuid = uuid::Uuid::new_v4().simple().to_string();
+    let uuid_len = 31 - prefix.len();
+    format!("{}_{}", prefix, &uuid[..uuid_len])
 }
 
 // Thread-local HTTP client with connection pooling.
@@ -238,8 +235,6 @@ mod tests {
     #[test]
     fn test_generate_request_id_unique() {
         let id1 = generate_request_id("test");
-        // Small sleep to ensure different nanosecond timestamp
-        std::thread::sleep(std::time::Duration::from_nanos(100));
         let id2 = generate_request_id("test");
         assert_ne!(id1, id2, "IDs should be unique");
     }

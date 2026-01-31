@@ -70,6 +70,7 @@ aws-credential-types = "1.2"
 chrono = "0.4.43"
 sha2 = "0.10"
 hex = "0.4"
+uuid = { version = "1.17", features = ["v4"] }
 url = "2.5"
 swc_common = "18.0.1"
 swc_ecma_ast = "19.0.0"
