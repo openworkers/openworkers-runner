@@ -38,11 +38,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::limiter::BindingLimiters;
-use crate::ops_s3::{build_s3_url, execute_s3_operation, sign_s3_request};
 #[cfg(feature = "database")]
 use crate::services::database::{self as db_service, QueryMode};
 use crate::services::fetch::{do_fetch, generate_request_id, try_internal_worker_route};
 use crate::services::kv as kv_service;
+use crate::services::storage::{build_s3_url, execute_s3_operation, sign_s3_request};
 use crate::store::{Binding, DatabaseConfig, KvConfig, StorageConfig, WorkerBindingConfig};
 
 /// Stats tracked for each worker
