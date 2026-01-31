@@ -1234,3 +1234,310 @@ async fn do_fetch(
         body: ResponseBody::Stream(rx),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================================================
+    // generate_request_id tests
+    // ============================================================================
+
+    #[test]
+    fn test_generate_request_id_format() {
+        let id = generate_request_id("test");
+        // Format: prefix_hex (e.g., test_00000000000188fc94e525937a8)
+        // Total length is 32 chars
+        assert!(
+            id.starts_with("test_"),
+            "ID should start with prefix_: {}",
+            id
+        );
+        assert_eq!(id.len(), 32, "ID should be 32 chars: {}", id);
+
+        // Split at underscore
+        let parts: Vec<&str> = id.splitn(2, '_').collect();
+        assert_eq!(parts.len(), 2, "ID should have 2 parts: {}", id);
+        assert_eq!(parts[0], "test");
+        // Hex part should be 27 chars (31 - len("test"))
+        assert_eq!(
+            parts[1].len(),
+            27,
+            "Hex part should be 27 chars: {}",
+            parts[1]
+        );
+        // Should be valid hex
+        assert!(
+            u128::from_str_radix(parts[1], 16).is_ok(),
+            "Hex part should be valid hex: {}",
+            parts[1]
+        );
+    }
+
+    #[test]
+    fn test_generate_request_id_unique() {
+        let id1 = generate_request_id("test");
+        let id2 = generate_request_id("test");
+        // IDs are based on nanoseconds, so they should be different
+        // (unless generated in same nanosecond, which is very unlikely)
+        assert_ne!(id1, id2, "IDs should be unique");
+    }
+
+    // ============================================================================
+    // try_internal_worker_route tests
+    //
+    // Note: These tests require WORKER_DOMAINS env var to be set.
+    // In production, this is typically "workers.rocks,workers.dev.localhost"
+    // Tests that require routing will skip if WORKER_DOMAINS is empty.
+    // ============================================================================
+
+    fn has_worker_domains() -> bool {
+        !WORKER_DOMAINS.is_empty()
+    }
+
+    #[test]
+    fn test_internal_route_workers_rocks() {
+        if !has_worker_domains() {
+            eprintln!("Skipping: WORKER_DOMAINS not set");
+            return;
+        }
+
+        // Use first configured domain
+        let domain = &WORKER_DOMAINS[0];
+        let url = format!("https://my-worker.{}/api/test?foo=bar", domain);
+
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            url,
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+
+        let routed = try_internal_worker_route(&request);
+        assert!(routed.is_some(), "Should route configured domain URLs");
+
+        let routed = routed.unwrap();
+        assert_eq!(routed.url, "http://127.0.0.1:8080/api/test?foo=bar");
+        assert_eq!(
+            routed.headers.get("x-worker-name"),
+            Some(&"my-worker".to_string())
+        );
+        assert!(routed.headers.contains_key("x-request-id"));
+    }
+
+    #[test]
+    fn test_internal_route_preserves_method() {
+        if !has_worker_domains() {
+            eprintln!("Skipping: WORKER_DOMAINS not set");
+            return;
+        }
+
+        let domain = &WORKER_DOMAINS[0];
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            url: format!("https://api.{}/data", domain),
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+
+        let routed = try_internal_worker_route(&request).unwrap();
+        assert_eq!(routed.method, HttpMethod::Post);
+    }
+
+    #[test]
+    fn test_internal_route_preserves_body() {
+        if !has_worker_domains() {
+            eprintln!("Skipping: WORKER_DOMAINS not set");
+            return;
+        }
+
+        let domain = &WORKER_DOMAINS[0];
+        let body_data = b"test body data".to_vec();
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            url: format!("https://api.{}/data", domain),
+            headers: HashMap::new(),
+            body: RequestBody::Bytes(body_data.clone().into()),
+        };
+
+        let routed = try_internal_worker_route(&request).unwrap();
+        match routed.body {
+            RequestBody::Bytes(b) => assert_eq!(b.as_ref(), body_data.as_slice()),
+            _ => panic!("Expected Bytes body"),
+        }
+    }
+
+    #[test]
+    fn test_internal_route_no_match_external() {
+        // This test always works - external URLs should never match
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            url: "https://example.com/api".to_string(),
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+
+        let routed = try_internal_worker_route(&request);
+        assert!(routed.is_none(), "Should not route external URLs");
+    }
+
+    #[test]
+    fn test_internal_route_no_match_partial() {
+        if WORKER_DOMAINS.is_empty() {
+            eprintln!("Skipping: WORKER_DOMAINS not set");
+            return;
+        }
+
+        // Should not match bare domain without subdomain
+        let domain = &WORKER_DOMAINS[0];
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            url: format!("https://{}/api", domain),
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+
+        let routed = try_internal_worker_route(&request);
+        assert!(routed.is_none(), "Should not route bare domain");
+    }
+
+    #[test]
+    fn test_internal_route_stream_body_not_supported() {
+        if !has_worker_domains() {
+            eprintln!("Skipping: WORKER_DOMAINS not set");
+            return;
+        }
+
+        let domain = &WORKER_DOMAINS[0];
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            url: format!("https://api.{}/data", domain),
+            headers: HashMap::new(),
+            body: RequestBody::Stream(rx),
+        };
+
+        let routed = try_internal_worker_route(&request);
+        assert!(routed.is_none(), "Should not route streaming bodies");
+    }
+
+    #[test]
+    fn test_internal_route_path_only() {
+        if !has_worker_domains() {
+            eprintln!("Skipping: WORKER_DOMAINS not set");
+            return;
+        }
+
+        let domain = &WORKER_DOMAINS[0];
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            url: format!("https://worker.{}/", domain),
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+
+        let routed = try_internal_worker_route(&request).unwrap();
+        assert_eq!(routed.url, "http://127.0.0.1:8080/");
+    }
+
+    #[test]
+    fn test_internal_route_complex_path() {
+        if !has_worker_domains() {
+            eprintln!("Skipping: WORKER_DOMAINS not set");
+            return;
+        }
+
+        let domain = &WORKER_DOMAINS[0];
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            url: format!(
+                "https://app.{}/api/v1/users/123?include=profile&format=json",
+                domain
+            ),
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+
+        let routed = try_internal_worker_route(&request).unwrap();
+        assert_eq!(
+            routed.url,
+            "http://127.0.0.1:8080/api/v1/users/123?include=profile&format=json"
+        );
+        assert_eq!(
+            routed.headers.get("x-worker-name"),
+            Some(&"app".to_string())
+        );
+    }
+
+    // ============================================================================
+    // wrap_query_as_json tests (database feature only)
+    // ============================================================================
+
+    #[cfg(feature = "database")]
+    mod database_tests {
+        use super::super::*;
+
+        #[test]
+        fn test_wrap_select_query() {
+            let sql = "SELECT * FROM users WHERE id = $1";
+            let wrapped = wrap_query_as_json(sql, QueryMode::Select);
+            assert!(wrapped.contains("jsonb_agg"));
+            assert!(wrapped.contains("row_to_json"));
+            assert!(wrapped.contains(sql));
+        }
+
+        #[test]
+        fn test_wrap_select_trims_semicolon() {
+            let sql = "SELECT * FROM users;";
+            let wrapped = wrap_query_as_json(sql, QueryMode::Select);
+            assert!(!wrapped.contains(";;"), "Should not have double semicolons");
+        }
+
+        #[test]
+        fn test_wrap_returning_mutation() {
+            let sql = "INSERT INTO users (name) VALUES ($1) RETURNING *";
+            let wrapped = wrap_query_as_json(sql, QueryMode::ReturningMutation);
+            assert!(wrapped.starts_with("WITH t AS"));
+            assert!(wrapped.contains(sql.trim_end_matches(';')));
+        }
+
+        #[test]
+        #[should_panic(expected = "Mutation queries should not be wrapped")]
+        fn test_wrap_mutation_panics() {
+            let sql = "DELETE FROM users WHERE id = $1";
+            wrap_query_as_json(sql, QueryMode::Mutation);
+        }
+    }
+
+    // ============================================================================
+    // RunnerOperations construction tests
+    // ============================================================================
+
+    #[test]
+    fn test_runner_operations_builder() {
+        let ops = RunnerOperations::new();
+        assert!(ops.bindings.assets.is_empty());
+        assert!(ops.bindings.storage.is_empty());
+        assert!(ops.bindings.kv.is_empty());
+    }
+
+    #[test]
+    fn test_runner_operations_with_user() {
+        let ops = RunnerOperations::new().with_user_id("user-123".to_string());
+        assert_eq!(ops.user_id, Some("user-123".to_string()));
+    }
+
+    #[test]
+    fn test_runner_operations_with_worker() {
+        let ops = RunnerOperations::new().with_worker_id("worker-456".to_string());
+        assert_eq!(ops.worker_id, Some("worker-456".to_string()));
+    }
+
+    #[test]
+    fn test_runner_operations_stats_initial() {
+        let ops = RunnerOperations::new();
+        assert_eq!(ops.stats.fetch_count.load(Ordering::Relaxed), 0);
+        assert_eq!(ops.stats.fetch_bytes_in.load(Ordering::Relaxed), 0);
+        assert_eq!(ops.stats.fetch_bytes_out.load(Ordering::Relaxed), 0);
+    }
+}

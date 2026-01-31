@@ -598,4 +598,100 @@ mod tests {
         // Invalid UTF-8 sequences should return None
         assert_eq!(sanitize_path("%ff%fe"), None);
     }
+
+    // ============================================================================
+    // build_s3_url tests
+    // ============================================================================
+
+    fn make_config(endpoint: &str, bucket: &str, prefix: Option<&str>) -> StorageConfig {
+        StorageConfig {
+            id: "test-config-id".to_string(),
+            endpoint: endpoint.to_string(),
+            bucket: bucket.to_string(),
+            prefix: prefix.map(|s| s.to_string()),
+            access_key_id: "test-key".to_string(),
+            secret_access_key: "test-secret".to_string(),
+            region: Some("us-east-1".to_string()),
+            public_url: None,
+        }
+    }
+
+    #[test]
+    fn test_build_s3_url_simple_path() {
+        let config = make_config("https://s3.example.com", "my-bucket", None);
+        let url = build_s3_url(&config, "/file.txt").unwrap();
+        assert_eq!(url, "https://s3.example.com/my-bucket/file.txt");
+    }
+
+    #[test]
+    fn test_build_s3_url_with_prefix() {
+        let config = make_config("https://s3.example.com", "my-bucket", Some("assets"));
+        let url = build_s3_url(&config, "/file.txt").unwrap();
+        assert_eq!(url, "https://s3.example.com/my-bucket/assets/file.txt");
+    }
+
+    #[test]
+    fn test_build_s3_url_prefix_trailing_slash() {
+        let config = make_config("https://s3.example.com", "my-bucket", Some("assets/"));
+        let url = build_s3_url(&config, "/file.txt").unwrap();
+        assert_eq!(url, "https://s3.example.com/my-bucket/assets/file.txt");
+    }
+
+    #[test]
+    fn test_build_s3_url_nested_path() {
+        let config = make_config("https://s3.example.com", "my-bucket", Some("v1"));
+        let url = build_s3_url(&config, "/images/logo.png").unwrap();
+        assert_eq!(url, "https://s3.example.com/my-bucket/v1/images/logo.png");
+    }
+
+    #[test]
+    fn test_build_s3_url_from_full_url() {
+        let config = make_config("https://s3.example.com", "my-bucket", None);
+        let url = build_s3_url(&config, "http://localhost:8080/_app/file.js").unwrap();
+        assert_eq!(url, "https://s3.example.com/my-bucket/_app/file.js");
+    }
+
+    #[test]
+    fn test_build_s3_url_traversal_rejected() {
+        let config = make_config("https://s3.example.com", "my-bucket", Some("safe"));
+        let result = build_s3_url(&config, "/../etc/passwd");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("traversal"));
+    }
+
+    #[test]
+    fn test_build_s3_url_encoded_traversal_rejected() {
+        let config = make_config("https://s3.example.com", "my-bucket", Some("safe"));
+        let result = build_s3_url(&config, "/%2e%2e/etc/passwd");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_s3_url_no_prefix_allows_any_path() {
+        // Without prefix, paths are not sanitized (direct S3 access)
+        let config = make_config("https://s3.example.com", "my-bucket", None);
+        let url = build_s3_url(&config, "/any/path/here.txt").unwrap();
+        assert_eq!(url, "https://s3.example.com/my-bucket/any/path/here.txt");
+    }
+
+    #[test]
+    fn test_build_s3_url_empty_path() {
+        let config = make_config("https://s3.example.com", "my-bucket", Some("prefix"));
+        let url = build_s3_url(&config, "/").unwrap();
+        assert_eq!(url, "https://s3.example.com/my-bucket/prefix/");
+    }
+
+    #[test]
+    fn test_build_s3_url_cloudflare_r2() {
+        let config = make_config(
+            "https://account-id.r2.cloudflarestorage.com",
+            "workers-assets",
+            Some("static"),
+        );
+        let url = build_s3_url(&config, "/css/main.css").unwrap();
+        assert_eq!(
+            url,
+            "https://account-id.r2.cloudflarestorage.com/workers-assets/static/css/main.css"
+        );
+    }
 }
