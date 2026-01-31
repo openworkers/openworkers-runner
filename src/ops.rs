@@ -225,6 +225,63 @@ impl RunnerOperations {
         self.db_pool = Some(pool);
         self
     }
+
+    /// Execute a binding fetch with the given config (shared by assets and storage).
+    fn do_binding_fetch(
+        &self,
+        binding: &str,
+        config: StorageConfig,
+        request: HttpRequest,
+    ) -> OpFuture<'_, Result<HttpResponse, String>> {
+        let binding_name = binding.to_string();
+
+        Box::pin(async move {
+            // Acquire fetch limiter permit
+            let _guard = self
+                .limiters
+                .fetch
+                .acquire()
+                .await
+                .map_err(|e| e.to_string())?;
+
+            self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
+
+            log::debug!(
+                "[ops] binding_fetch {} {} {} (user={:?}, worker={:?})",
+                binding_name,
+                request.method,
+                request.url,
+                self.user_id,
+                self.worker_id
+            );
+
+            // Build the actual S3/R2 URL
+            let url = build_s3_url(&config, &request.url)?;
+
+            // Create modified request with AWS signature
+            // Filter out Host header to avoid 421 Misdirected Request from S3/R2
+            let mut headers = request.headers.clone();
+            headers.remove("host");
+            headers.remove("Host");
+
+            let auth_request = HttpRequest {
+                url: url.clone(),
+                method: request.method,
+                headers,
+                body: request.body,
+            };
+
+            // Sign the request with AWS Signature V4
+            let signed_headers = sign_s3_request(
+                &auth_request,
+                &config.access_key_id,
+                &config.secret_access_key,
+                &config.bucket,
+            )?;
+
+            do_fetch(auth_request, &self.stats, Some(&signed_headers)).await
+        })
+    }
 }
 
 impl Default for RunnerOperations {
@@ -317,14 +374,14 @@ impl OperationsHandler for RunnerOperations {
         })
     }
 
-    /// Handle binding fetch: `env.ASSETS.fetch("/path/to/file")`
+    /// Handle binding fetch: `env.ASSETS.fetch("/path")` or `env.STORAGE.fetch("/path")`
     ///
     /// This is called when worker code uses a binding's fetch method.
     /// The runner:
-    /// 1. Looks up the binding config by name
+    /// 1. Looks up the binding config by name (assets or storage)
     /// 2. Builds the actual S3/R2 URL (endpoint + bucket + prefix + path)
-    /// 3. Injects auth headers (Bearer token for R2, AWS sig for S3)
-    /// 4. Executes the HTTP request
+    /// 3. Injects auth headers (AWS sig for S3)
+    /// 4. Executes the HTTP request with streaming response
     ///
     /// The worker never sees the credentials - only the binding name.
     fn handle_binding_fetch(
@@ -332,57 +389,9 @@ impl OperationsHandler for RunnerOperations {
         binding: &str,
         request: HttpRequest,
     ) -> OpFuture<'_, Result<HttpResponse, String>> {
-        // Check if binding exists in assets configs
-        if let Some(assets_config) = self.bindings.assets.get(binding) {
-            let config = assets_config.clone();
-            let binding_name = binding.to_string();
-
-            return Box::pin(async move {
-                // Acquire fetch limiter permit
-                let _guard = self
-                    .limiters
-                    .fetch
-                    .acquire()
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
-
-                log::debug!(
-                    "[ops] binding_fetch {} {} {} (user={:?}, worker={:?})",
-                    binding_name,
-                    request.method,
-                    request.url,
-                    self.user_id,
-                    self.worker_id
-                );
-
-                // Build the actual S3/R2 URL
-                let url = build_s3_url(&config, &request.url)?;
-
-                // Create modified request with AWS signature
-                // Filter out Host header to avoid 421 Misdirected Request from S3/R2
-                let mut headers = request.headers.clone();
-                headers.remove("host");
-                headers.remove("Host");
-
-                let auth_request = HttpRequest {
-                    url: url.clone(),
-                    method: request.method,
-                    headers,
-                    body: request.body,
-                };
-
-                // Sign the request with AWS Signature V4
-                let signed_headers = sign_s3_request(
-                    &auth_request,
-                    &config.access_key_id,
-                    &config.secret_access_key,
-                    &config.bucket,
-                )?;
-
-                do_fetch(auth_request, &self.stats, Some(&signed_headers)).await
-            });
+        // Assets bindings
+        if let Some(config) = self.bindings.assets.get(binding) {
+            return self.do_binding_fetch(binding, config.clone(), request);
         }
 
         if self.bindings.kv.contains_key(binding) {
@@ -401,9 +410,10 @@ impl OperationsHandler for RunnerOperations {
         Box::pin(async move { Err(format!("Binding '{}' not configured", binding_name)) })
     }
 
-    /// Handle storage operation: `env.STORAGE.get("key")`, `.put()`, `.head()`, `.list()`, `.delete()`
+    /// Handle storage operation: `env.STORAGE.get("key")`, `.put()`, `.head()`, `.list()`, `.delete()`, `.fetch()`
     ///
     /// Uses AWS S3 v4 signing to authenticate requests to S3-compatible storage.
+    /// Note: `StorageOp::Fetch` uses streaming via `do_fetch` for efficiency.
     fn handle_binding_storage(&self, binding: &str, op: StorageOp) -> OpFuture<'_, StorageResult> {
         let binding_name = binding.to_string();
 
@@ -420,24 +430,44 @@ impl OperationsHandler for RunnerOperations {
             }
         };
 
-        let op_name = match &op {
-            StorageOp::Get { key } => format!("get({})", key),
-            StorageOp::Fetch { key } => format!("fetch({})", key),
-            StorageOp::Put { key, .. } => format!("put({})", key),
-            StorageOp::Head { key } => format!("head({})", key),
-            StorageOp::List { prefix, .. } => format!("list(prefix={:?})", prefix),
-            StorageOp::Delete { key } => format!("delete({})", key),
-        };
-
         Box::pin(async move {
             // Acquire storage limiter permit
             if let Err(e) = self.limiters.storage.acquire().await {
                 return StorageResult::Error(e.to_string());
             }
 
-            log::debug!("[ops] storage {} {}", binding_name, op_name);
+            match op {
+                StorageOp::Fetch { key } => {
+                    log::debug!("[ops] storage {} fetch({})", binding_name, key);
 
-            execute_s3_operation(&config, op).await
+                    let request = HttpRequest {
+                        url: key,
+                        method: HttpMethod::Get,
+                        headers: Default::default(),
+                        body: RequestBody::None,
+                    };
+
+                    match self.do_binding_fetch(&binding_name, config, request).await {
+                        Ok(response) => StorageResult::Response(response),
+                        Err(e) => StorageResult::Error(e),
+                    }
+                }
+
+                other => {
+                    let op_name = match &other {
+                        StorageOp::Get { key } => format!("get({})", key),
+                        StorageOp::Fetch { .. } => unreachable!(),
+                        StorageOp::Put { key, .. } => format!("put({})", key),
+                        StorageOp::Head { key } => format!("head({})", key),
+                        StorageOp::List { prefix, .. } => format!("list(prefix={:?})", prefix),
+                        StorageOp::Delete { key } => format!("delete({})", key),
+                    };
+
+                    log::debug!("[ops] storage {} {}", binding_name, op_name);
+
+                    execute_s3_operation(&config, other).await
+                }
+            }
         })
     }
 
