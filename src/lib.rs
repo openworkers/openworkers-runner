@@ -6,6 +6,7 @@ pub mod nats;
 pub mod ops;
 pub mod ops_s3;
 pub mod runtime;
+pub mod services;
 pub mod store;
 pub mod task_executor;
 #[cfg(feature = "v8")]

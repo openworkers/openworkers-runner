@@ -27,46 +27,20 @@
 //! It only knows the binding NAME (e.g., "ASSETS"). The runner looks up
 //! the config and injects auth headers transparently.
 
-use bytes::Bytes;
-use once_cell::sync::Lazy;
 #[cfg(feature = "database")]
 use openworkers_core::{DatabaseOp, DatabaseResult, SqlParam, SqlPrimitive};
 use openworkers_core::{
     HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, OpFuture,
-    OperationsHandler, RequestBody, ResponseBody, StorageOp, StorageResult,
+    OperationsHandler, RequestBody, StorageOp, StorageResult,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-use tokio::sync::mpsc;
 
 use crate::limiter::BindingLimiters;
 use crate::ops_s3::{build_s3_url, execute_s3_operation, sign_s3_request};
+use crate::services::fetch::{do_fetch, generate_request_id, try_internal_worker_route};
 use crate::store::{Binding, DatabaseConfig, KvConfig, StorageConfig, WorkerBindingConfig};
-
-/// Worker domains for internal routing (e.g., "workers.rocks,workers.dev.localhost")
-/// URLs matching `*.{domain}` will be routed internally instead of going through DNS.
-static WORKER_DOMAINS: Lazy<Vec<String>> = Lazy::new(|| {
-    std::env::var("WORKER_DOMAINS")
-        .map(|s| {
-            s.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_else(|_| Vec::new())
-});
-
-/// Generate a unique request ID (32 chars total: prefix_hex)
-fn generate_request_id(prefix: &str) -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let hex_len = 31 - prefix.len();
-    format!("{}_{:0width$x}", prefix, nanos, width = hex_len)
-}
 
 /// Stats tracked for each worker
 #[derive(Debug, Default)]
@@ -152,34 +126,6 @@ pub struct RunnerOperations {
     pub db_pool: Option<DbPool>,
     /// Binding limiters (rate limiting for fetch, KV, database, storage)
     pub limiters: BindingLimiters,
-}
-
-// Thread-local HTTP client for fetch operations.
-//
-// Each worker thread gets its own client, created in that thread's tokio runtime.
-// This avoids the "runtime dropped the dispatch task" error that occurs when
-// a client created in one runtime is used in another.
-//
-// Configuration:
-// - pool_max_idle_per_host: Configurable via HTTP_POOL_MAX_IDLE_PER_HOST env var (default: 100)
-// - pool_idle_timeout: 90s (keep connections warm)
-// - connect_timeout: 5s (DNS + TCP handshake)
-// - timeout: 30s (total request)
-thread_local! {
-    static HTTP_CLIENT: once_cell::unsync::Lazy<reqwest::Client> = once_cell::unsync::Lazy::new(|| {
-        let pool_size = std::env::var("HTTP_POOL_MAX_IDLE_PER_HOST")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(100);
-
-        reqwest::Client::builder()
-            .pool_max_idle_per_host(pool_size)
-            .pool_idle_timeout(Duration::from_secs(90))
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(30))
-            .build()
-            .expect("Failed to create HTTP client")
-    });
 }
 
 impl RunnerOperations {
@@ -288,49 +234,6 @@ impl Default for RunnerOperations {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Check if a fetch URL matches internal worker patterns and route directly.
-///
-/// Patterns are configured via WORKER_DOMAINS env var (e.g., "workers.rocks,workers.dev.localhost")
-/// URLs matching `*.{domain}` will be routed internally.
-///
-/// Returns a modified request with internal routing if matched.
-fn try_internal_worker_route(request: &HttpRequest) -> Option<HttpRequest> {
-    let url = url::Url::parse(&request.url).ok()?;
-    let host = url.host_str()?;
-
-    // Check for internal worker patterns from WORKER_DOMAINS
-    let worker_name = WORKER_DOMAINS.iter().find_map(|domain| {
-        let suffix = format!(".{}", domain);
-        host.strip_suffix(&suffix)
-    })?;
-
-    // Build internal URL
-    let path_and_query = match url.query() {
-        Some(q) => format!("{}?{}", url.path(), q),
-        None => url.path().to_string(),
-    };
-    let internal_url = format!("http://127.0.0.1:8080{}", path_and_query);
-
-    // Create request with x-worker-name header
-    let mut headers = request.headers.clone();
-    headers.insert("x-worker-name".to_string(), worker_name.to_string());
-    headers.insert("x-request-id".to_string(), generate_request_id("internal"));
-
-    // Can't clone a streaming body, so internal routing is not supported for streams
-    let body = match &request.body {
-        RequestBody::None => RequestBody::None,
-        RequestBody::Bytes(b) => RequestBody::Bytes(b.clone()),
-        RequestBody::Stream(_) => return None,
-    };
-
-    Some(HttpRequest {
-        url: internal_url,
-        method: request.method.clone(),
-        headers,
-        body,
-    })
 }
 
 impl OperationsHandler for RunnerOperations {
@@ -1132,112 +1035,10 @@ async fn execute_mutation_tx(
     Ok(format!("{{\"rowsAffected\":{}}}", result.rows_affected()))
 }
 
-/// Execute an HTTP request via reqwest with streaming response.
-async fn do_fetch(
-    request: HttpRequest,
-    stats: &OperationsStats,
-    extra_headers: Option<&HashMap<String, String>>,
-) -> Result<HttpResponse, String> {
-    // Use thread-local HTTP client (created in this thread's runtime)
-    // Clone is cheap - reqwest::Client is an Arc internally
-    let client = HTTP_CLIENT.with(|c| (**c).clone());
-
-    // Prepare request builder
-    let mut req_builder = match request.method {
-        HttpMethod::Get => client.get(&request.url),
-        HttpMethod::Post => client.post(&request.url),
-        HttpMethod::Put => client.put(&request.url),
-        HttpMethod::Delete => client.delete(&request.url),
-        HttpMethod::Patch => client.patch(&request.url),
-        HttpMethod::Head => client.head(&request.url),
-        HttpMethod::Options => {
-            return Err("OPTIONS method not yet supported".to_string());
-        }
-    };
-
-    // Add headers from request
-    for (key, value) in &request.headers {
-        req_builder = req_builder.header(key, value);
-    }
-
-    // Add extra headers if provided
-    if let Some(headers) = extra_headers {
-        for (key, value) in headers {
-            req_builder = req_builder.header(key, value);
-        }
-    }
-
-    // Add body if present
-    if let RequestBody::Bytes(body) = &request.body {
-        stats
-            .fetch_bytes_out
-            .fetch_add(body.len() as u64, Ordering::Relaxed);
-        req_builder = req_builder.body(body.clone());
-    }
-
-    // Execute request
-    let response = req_builder
-        .send()
-        .await
-        .map_err(|e| format!("Request failed: {}", e))?;
-
-    let status = response.status().as_u16();
-
-    // Collect headers
-    let mut headers = Vec::new();
-
-    for (key, value) in response.headers() {
-        if let Ok(value_str) = value.to_str() {
-            headers.push((key.to_string(), value_str.to_string()));
-        }
-    }
-
-    // Stream the body
-    let (tx, rx) = mpsc::channel::<Result<Bytes, String>>(16);
-    let stats_clone = Arc::new(OperationsStats::new());
-
-    // Copy stats for the spawned task
-    let fetch_bytes_in = stats.fetch_bytes_in.load(Ordering::Relaxed);
-    stats_clone
-        .fetch_bytes_in
-        .store(fetch_bytes_in, Ordering::Relaxed);
-
-    // Use tokio::spawn() since worker threads now use multi_thread runtime.
-    // This allows the stream task to outlive the worker's LocalSet.
-    // The stream continues on the tokio runtime even after worker completes.
-    tokio::task::spawn(async move {
-        use futures::StreamExt;
-        let mut stream = response.bytes_stream();
-
-        while let Some(chunk_result) = stream.next().await {
-            match chunk_result {
-                Ok(chunk) => {
-                    stats_clone
-                        .fetch_bytes_in
-                        .fetch_add(chunk.len() as u64, Ordering::Relaxed);
-
-                    if tx.send(Ok(chunk)).await.is_err() {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(e.to_string())).await;
-                    break;
-                }
-            }
-        }
-    });
-
-    Ok(HttpResponse {
-        status,
-        headers,
-        body: ResponseBody::Stream(rx),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::fetch::WORKER_DOMAINS;
 
     // ============================================================================
     // generate_request_id tests
