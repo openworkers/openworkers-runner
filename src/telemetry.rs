@@ -100,8 +100,12 @@ fn init_otel() -> Result<(), Box<dyn std::error::Error>> {
             if parts.len() == 2 {
                 let key = parts[0].trim();
                 let value = parts[1].trim();
-                if let Ok(metadata_value) = MetadataValue::try_from(value) {
-                    metadata.insert(key, metadata_value);
+                // Use from_bytes to create a key without 'static requirement
+                if let (Ok(metadata_key), Ok(metadata_value)) = (
+                    tonic::metadata::MetadataKey::from_bytes(key.as_bytes()),
+                    MetadataValue::try_from(value),
+                ) {
+                    metadata.insert(metadata_key, metadata_value);
                 }
             }
         }
