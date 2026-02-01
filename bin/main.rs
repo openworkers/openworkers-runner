@@ -116,17 +116,17 @@ async fn handle_request(
             .unwrap());
     }
 
-    debug!(
-        "handle_request: {} {} in thread {:?}",
-        req.method(),
-        req.uri(),
-        std::thread::current().id()
-    );
-
     // Extract parts before consuming the body
     let method = req.method().clone();
     let uri = req.uri().clone();
     let headers = req.headers().clone();
+
+    debug!(
+        "handle_request: {} {} in thread {:?}",
+        method,
+        uri,
+        std::thread::current().id()
+    );
 
     // Acquire database connection
     let mut conn: sqlx::pool::PoolConnection<sqlx::Postgres> = match state.db.acquire().await {
@@ -145,6 +145,18 @@ async fn handle_request(
         },
         None => return Ok(error_response(400, "Missing request id")),
     };
+
+    // Create tracing span for this request and enter it immediately
+    // so all subsequent logs are included in the span
+    let span = tracing::info_span!(
+        "handle_request",
+        request_id = %request_id,
+        method = %method,
+        uri = %uri,
+        worker_id = tracing::field::Empty,
+        worker_name = tracing::field::Empty,
+    );
+    let _guard = span.enter();
 
     let host = headers
         .get("host")
@@ -199,6 +211,10 @@ async fn handle_request(
         Some(worker) => worker,
         None => return Ok(error_response(404, "Worker not found")),
     };
+
+    // Record worker info in span now that we have it
+    span.record("worker_id", &tracing::field::display(&worker.id));
+    span.record("worker_name", &tracing::field::display(&worker.name));
 
     let start = tokio::time::Instant::now();
 
@@ -261,16 +277,6 @@ async fn handle_request(
     // Create disconnect notification channel
     let (disconnect_tx, _disconnect_rx) = channel::<()>();
 
-    // Create tracing span for this request
-    let span = tracing::info_span!(
-        "handle_request",
-        worker_id = %worker.id,
-        worker_name = %worker.name,
-        request_id = %request_id,
-        method = %method,
-        uri = %uri,
-    );
-
     openworkers_runner::event_fetch::run_fetch(
         worker,
         request,
@@ -280,7 +286,7 @@ async fn handle_request(
         permit,
         state.db.clone(),
         state.wall_clock_timeout_ms,
-        span,
+        span.clone(),
     );
 
     // TODO: Pass disconnect_rx to the worker so it can stop processing
