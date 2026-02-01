@@ -25,7 +25,7 @@ fn run_scheduled(
 ) {
     // Parse script before spawning (fail fast)
     if let Err(err) = prepare_script(&worker_data) {
-        log::error!("Failed to prepare script for scheduled task: {err:?}");
+        tracing::error!("Failed to prepare script for scheduled task: {err:?}");
         return;
     }
 
@@ -36,7 +36,7 @@ fn run_scheduled(
     {
         Ok(permit) => permit,
         Err(_) => {
-            log::warn!(
+            tracing::warn!(
                 "worker pool saturated, skipping scheduled task for worker: {}",
                 data.worker_id
             );
@@ -77,24 +77,24 @@ fn run_scheduled(
         // Log the execution result
         match result {
             Ok(()) => {
-                log::debug!("scheduled task exec completed successfully");
+                tracing::debug!("scheduled task exec completed successfully");
                 // Wait for the task event handler to respond
                 match res_rx.await {
                     Ok(task_result) => {
                         if task_result.success {
-                            log::debug!("scheduled task responded successfully");
+                            tracing::debug!("scheduled task responded successfully");
                         } else {
-                            log::error!(
+                            tracing::error!(
                                 "scheduled task failed: {}",
                                 task_result.error.unwrap_or_default()
                             );
                         }
                     }
-                    Err(err) => log::error!("scheduled task response error: {err}"),
+                    Err(err) => tracing::error!("scheduled task response error: {err}"),
                 }
             }
             Err(reason) => {
-                log::error!("scheduled task terminated: {:?}", reason);
+                tracing::error!("scheduled task terminated: {:?}", reason);
             }
         }
     });
@@ -121,7 +121,7 @@ pub fn handle_scheduled(
                 .await
                 .expect("failed to subscribe to scheduled");
 
-            log::debug!("listening for scheduled tasks");
+            tracing::debug!("listening for scheduled tasks");
 
             let notify = crate::worker_pool::TASK_COMPLETION_NOTIFY.clone();
 
@@ -136,31 +136,31 @@ pub fn handle_scheduled(
                     _ = notify.notified() => {
                         // Check if draining and stop listening
                         if crate::worker_pool::is_draining() {
-                            log::info!("Runner is draining - stopping scheduled task listener");
+                            tracing::info!("Runner is draining - stopping scheduled task listener");
                             break;
                         }
                         continue;
                     }
                 };
 
-                log::debug!("scheduled task received: {:?}", msg);
+                tracing::debug!("scheduled task received: {:?}", msg);
 
                 let data: ScheduledData =
                     match serde_json::from_slice::<ScheduledData>(&msg.payload) {
                         Ok(msg) => msg,
                         Err(err) => {
-                            log::error!("failed to parse scheduled task: {:?}", err);
+                            tracing::error!("failed to parse scheduled task: {:?}", err);
                             continue;
                         }
                     };
 
-                log::debug!("scheduled task parsed: {:?}", data);
+                tracing::debug!("scheduled task parsed: {:?}", data);
 
                 // Acquire connection per-task to avoid holding it across iterations
                 let mut conn = match db.acquire().await {
                     Ok(c) => c,
                     Err(err) => {
-                        log::error!("Failed to acquire database connection: {}", err);
+                        tracing::error!("Failed to acquire database connection: {}", err);
                         continue;
                     }
                 };
@@ -170,7 +170,7 @@ pub fn handle_scheduled(
                 {
                     Some(w) => w,
                     None => {
-                        log::error!(
+                        tracing::error!(
                             "worker not found: {}",
                             crate::utils::short_id(&data.worker_id)
                         );
@@ -183,14 +183,14 @@ pub fn handle_scheduled(
                 run_scheduled(data, worker_data, db.clone(), global_log_tx.clone());
             }
 
-            log::debug!("scheduled task listener stopped");
+            tracing::debug!("scheduled task listener stopped");
         });
 
-        log::debug!("subscribing to scheduled {:?}", handle);
+        tracing::debug!("subscribing to scheduled {:?}", handle);
 
         match local.block_on(&rt, handle) {
             Ok(()) => {}
-            Err(err) => log::error!("failed to wait for end: {err}"),
+            Err(err) => tracing::error!("failed to wait for end: {err}"),
         }
     });
 }

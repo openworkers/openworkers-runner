@@ -37,7 +37,7 @@ pub async fn get(pool: &PgPool, namespace_id: &str, key: &str) -> KvResult {
     match result {
         Ok(value) => KvResult::Value(value),
         Err(e) => {
-            log::error!("[kv] get error: {}", e);
+            tracing::error!("[kv] get error: {}", e);
             KvResult::Error(format!("KV get failed: {}", e))
         }
     }
@@ -102,7 +102,7 @@ pub async fn put(
     match result {
         Ok(_) => KvResult::Ok,
         Err(e) => {
-            log::error!("[kv] put error: {}", e);
+            tracing::error!("[kv] put error: {}", e);
             KvResult::Error(format!("KV put failed: {}", e))
         }
     }
@@ -124,7 +124,7 @@ pub async fn delete(pool: &PgPool, namespace_id: &str, key: &str) -> KvResult {
     match result {
         Ok(_) => KvResult::Ok,
         Err(e) => {
-            log::error!("[kv] delete error: {}", e);
+            tracing::error!("[kv] delete error: {}", e);
             KvResult::Error(format!("KV delete failed: {}", e))
         }
     }
@@ -175,7 +175,7 @@ pub async fn list(
     match result {
         Ok(keys) => KvResult::Keys(keys),
         Err(e) => {
-            log::error!("[kv] list error: {}", e);
+            tracing::error!("[kv] list error: {}", e);
             KvResult::Error(format!("KV list failed: {}", e))
         }
     }

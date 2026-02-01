@@ -208,7 +208,7 @@ impl RunnerOperations {
 
                 self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
 
-                log::debug!(
+                tracing::debug!(
                     "[ops] binding_fetch {} {} {} (user={:?}, worker={:?})",
                     binding_name,
                     request.method,
@@ -276,7 +276,7 @@ impl OperationsHandler for RunnerOperations {
 
                 self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
 
-                log::debug!(
+                tracing::debug!(
                     "[ops] fetch {} {} (user={:?}, worker={:?})",
                     request.method,
                     request.url,
@@ -286,7 +286,7 @@ impl OperationsHandler for RunnerOperations {
 
                 // Check if this is an internal worker URL that should be routed directly
                 if let Some(internal_request) = try_internal_worker_route(&request) {
-                    log::debug!(
+                    tracing::debug!(
                         "[ops] fetch shortcut: {} -> internal routing via x-worker-name",
                         request.url
                     );
@@ -365,7 +365,7 @@ impl OperationsHandler for RunnerOperations {
 
                 match op {
                     StorageOp::Fetch { key } => {
-                        log::debug!("[ops] storage {} fetch({})", binding_name, key);
+                        tracing::debug!("[ops] storage {} fetch({})", binding_name, key);
 
                         let request = HttpRequest {
                             url: key,
@@ -390,7 +390,7 @@ impl OperationsHandler for RunnerOperations {
                             StorageOp::Delete { key } => format!("delete({})", key),
                         };
 
-                        log::debug!("[ops] storage {} {}", binding_name, op_name);
+                        tracing::debug!("[ops] storage {} {}", binding_name, op_name);
 
                         execute_s3_operation(&config, other).await
                     }
@@ -488,14 +488,14 @@ impl OperationsHandler for RunnerOperations {
                     Err(e) => return DatabaseResult::Error(e.to_string()),
                 };
 
-                log::debug!(
+                tracing::debug!(
                     "[ops] database limiter acquired, available permits: {}",
                     self.limiters.database.available_permits()
                 );
 
                 match op {
                     DatabaseOp::Query { sql, params } => {
-                        log::debug!(
+                        tracing::debug!(
                             "[ops] database {} ({:?}) query: {} (params: {:?})",
                             binding_name,
                             config.provider,
@@ -583,7 +583,7 @@ impl OperationsHandler for RunnerOperations {
 
         Box::pin(
             async move {
-                log::debug!(
+                tracing::debug!(
                     "[ops] worker binding {} -> {} ({})",
                     binding_name,
                     config.name,
@@ -634,10 +634,10 @@ impl OperationsHandler for RunnerOperations {
 
         // Also log via the log crate for debugging
         match level {
-            LogLevel::Error => log::error!("[worker] {}", message),
-            LogLevel::Warn => log::warn!("[worker] {}", message),
-            LogLevel::Info | LogLevel::Log => log::info!("[worker] {}", message),
-            LogLevel::Debug | LogLevel::Trace => log::debug!("[worker] {}", message),
+            LogLevel::Error => tracing::error!("[worker] {}", message),
+            LogLevel::Warn => tracing::warn!("[worker] {}", message),
+            LogLevel::Info | LogLevel::Log => tracing::info!("[worker] {}", message),
+            LogLevel::Debug | LogLevel::Trace => tracing::debug!("[worker] {}", message),
         }
     }
 }

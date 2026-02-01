@@ -89,7 +89,7 @@ fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponent
     let script = match prepare_script(&config.worker_data) {
         Ok(s) => s,
         Err(err) => {
-            log::error!("Failed to prepare script: {err:?}");
+            tracing::error!("Failed to prepare script: {err:?}");
             return None;
         }
     };
@@ -127,7 +127,7 @@ async fn run_task_with_timeout_worker(
             match tokio::time::timeout(timeout_duration, worker.exec(task)).await {
                 Ok(result) => result,
                 Err(_) => {
-                    log::error!(
+                    tracing::error!(
                         "Task execution timeout after {}ms (external timeout)",
                         timeout_ms
                     );
@@ -209,7 +209,7 @@ pub async fn execute_task_await_v8_pooled(
                         create_worker(components.script, limits, components.ops, &code_type)
                             .await
                             .map_err(|err| {
-                                log::error!("Failed to create worker: {err:?}");
+                                tracing::error!("Failed to create worker: {err:?}");
                                 err
                             })?;
 
@@ -224,7 +224,7 @@ pub async fn execute_task_await_v8_pooled(
         })
         .await
         .unwrap_or_else(|_| {
-            log::error!("Worker pool channel closed unexpectedly");
+            tracing::error!("Worker pool channel closed unexpectedly");
             Err(TerminationReason::Other(
                 "Worker pool channel closed".to_string(),
             ))
@@ -275,7 +275,7 @@ pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), Termi
                 )
                 .await
                 .map_err(|err| {
-                    log::error!("Failed to create worker: {err:?}");
+                    tracing::error!("Failed to create worker: {err:?}");
                     err
                 })?;
 
@@ -292,7 +292,7 @@ pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), Termi
             })
             .await
             .unwrap_or_else(|_| {
-                log::error!("Worker pool channel closed unexpectedly");
+                tracing::error!("Worker pool channel closed unexpectedly");
                 Err(TerminationReason::Other(
                     "Worker pool channel closed".to_string(),
                 ))
@@ -328,7 +328,7 @@ pub fn execute_task(config: TaskExecutionConfig) {
         {
             Ok(w) => w,
             Err(err) => {
-                log::error!("Failed to create worker: {err:?}");
+                tracing::error!("Failed to create worker: {err:?}");
                 components.log_handler.flush();
                 return;
             }
@@ -337,8 +337,8 @@ pub fn execute_task(config: TaskExecutionConfig) {
         let result = run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
 
         match result {
-            Ok(()) => log::debug!("Task completed successfully"),
-            Err(reason) => log::error!("Task failed: {:?}", reason),
+            Ok(()) => tracing::debug!("Task completed successfully"),
+            Err(reason) => tracing::error!("Task failed: {:?}", reason),
         }
 
         // CRITICAL: Flush logs before worker is dropped to prevent log loss

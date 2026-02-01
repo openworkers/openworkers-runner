@@ -4,12 +4,12 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
-use log::{debug, error, warn};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpSocket;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::oneshot::channel;
+use tracing::{debug, error, info, warn};
 
 use openworkers_core::{HttpRequest, HttpResponse, HyperBody};
 use openworkers_runner::store::WorkerIdentifier;
@@ -559,14 +559,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             _ = sigint.recv() => {},
         }
 
-        log::info!(
+        tracing::info!(
             "Received signal - initiating graceful drain (press Ctrl+C again to force exit)"
         );
         openworkers_runner::worker_pool::set_draining(true);
 
         // Check if already no active tasks
         if openworkers_runner::worker_pool::get_active_tasks() == 0 {
-            log::info!("No active tasks - shutting down immediately");
+            tracing::info!("No active tasks - shutting down immediately");
             let _ = shutdown_tx_signal.send(()).await;
             return;
         }
@@ -577,7 +577,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             _ = sigint.recv() => {},
         }
 
-        log::warn!("Received second signal - forcing exit");
+        tracing::warn!("Received second signal - forcing exit");
         std::process::exit(1);
     });
 
@@ -594,7 +594,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 debug!("Draining: {} active tasks remaining", active);
 
                 if active == 0 {
-                    log::info!("All tasks completed while draining - shutting down gracefully");
+                    tracing::info!("All tasks completed while draining - shutting down gracefully");
                     let _ = shutdown_tx_drain.send(()).await;
                     break;
                 }
@@ -612,7 +612,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .unwrap_or(4)
         });
 
-    println!(
+    info!(
         "Listening on http://{} with {} listeners",
         addr, num_listeners
     );
@@ -658,7 +658,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Wait for graceful shutdown signal
     shutdown_rx.recv().await;
 
-    log::info!("Shutdown signal received - exiting");
+    tracing::info!("Shutdown signal received - exiting");
 
     Ok(())
 }

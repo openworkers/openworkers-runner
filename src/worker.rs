@@ -126,7 +126,7 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
                     let mut cache = TRANSPILE_CACHE.lock().unwrap();
 
                     if let Some(cached_code) = cache.get(&cache_key) {
-                        log::debug!(
+                        tracing::debug!(
                             "transpile cache HIT: worker={}, version={}",
                             crate::utils::short_id(&data.id),
                             data.version
@@ -135,7 +135,7 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
                     }
                 }
 
-                log::debug!(
+                tracing::debug!(
                     "transpile cache MISS: worker={}, version={}",
                     crate::utils::short_id(&data.id),
                     data.version

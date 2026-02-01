@@ -89,12 +89,12 @@ impl SequentialWorkerPool {
                         }
                     });
 
-                    log::debug!("Worker thread {} shutting down", thread_idx);
+                    tracing::debug!("Worker thread {} shutting down", thread_idx);
                 })
                 .expect("Failed to spawn worker thread");
         }
 
-        log::info!(
+        tracing::info!(
             "Sequential worker pool initialized with {} threads",
             pool_size
         );
@@ -121,7 +121,7 @@ impl SequentialWorkerPool {
 
         // Send to the selected thread's queue
         if let Err(e) = self.senders[thread_idx].send(boxed_task) {
-            log::error!("Failed to send task to worker thread {}: {}", thread_idx, e);
+            tracing::error!("Failed to send task to worker thread {}: {}", thread_idx, e);
         }
     }
 
@@ -170,7 +170,7 @@ pub static WORKER_SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(pool_size * default_multiplier);
 
-    log::info!(
+    tracing::info!(
         "Initializing worker semaphore with {} max queued workers",
         max_queued
     );
@@ -198,9 +198,9 @@ pub static IS_DRAINING: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 pub fn set_draining(draining: bool) {
     IS_DRAINING.store(draining, Ordering::SeqCst);
     if draining {
-        log::info!("Runner is now draining - refusing new requests");
+        tracing::info!("Runner is now draining - refusing new requests");
     } else {
-        log::info!("Runner is no longer draining - accepting requests");
+        tracing::info!("Runner is no longer draining - accepting requests");
     }
 }
 

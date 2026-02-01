@@ -23,7 +23,7 @@ pub fn start_log_publisher() -> std::sync::mpsc::Sender<LogMessage> {
 
         rt.block_on(async {
             let nc = crate::nats::nats_connect().await;
-            log::info!(
+            tracing::info!(
                 "Global log publisher started (batching: {}msg/{}ms)",
                 BATCH_SIZE,
                 BATCH_TIMEOUT_MS
@@ -81,7 +81,7 @@ pub fn start_log_publisher() -> std::sync::mpsc::Sender<LogMessage> {
                 }
             }
 
-            log::warn!("Global log publisher stopped");
+            tracing::warn!("Global log publisher stopped");
         });
     });
 
@@ -93,12 +93,12 @@ async fn flush_batch(nc: &async_nats::Client, batch: &mut Vec<LogMessage>) {
         return;
     }
 
-    log::debug!("Flushing batch of {} log messages", batch.len());
+    tracing::debug!("Flushing batch of {} log messages", batch.len());
 
     for log_msg in batch.drain(..) {
         if let LogMessage::Log { worker_id, event } = log_msg {
             // Also log locally for debugging
-            log::debug!(
+            tracing::debug!(
                 "[worker:{}] [{}] {}",
                 &worker_id[..8.min(worker_id.len())],
                 event.level,
@@ -109,14 +109,14 @@ async fn flush_batch(nc: &async_nats::Client, batch: &mut Vec<LogMessage>) {
             let subject = format!("{}.console.{}", worker_id, level);
 
             if let Err(err) = nc.publish(subject, event.message.into()).await {
-                log::error!("failed to publish log to NATS: {:?}", err);
+                tracing::error!("failed to publish log to NATS: {:?}", err);
             }
         }
     }
 
     // Single flush for the entire batch instead of one per message
     if let Err(err) = nc.flush().await {
-        log::error!("failed to flush NATS batch: {:?}", err);
+        tracing::error!("failed to flush NATS batch: {:?}", err);
     }
 }
 
@@ -127,7 +127,7 @@ async fn flush_worker(nc: &async_nats::Client, batch: &mut Vec<LogMessage>, work
         .partition(|msg| matches!(msg, LogMessage::Log { worker_id: id, .. } if id == worker_id));
 
     if !worker_logs.is_empty() {
-        log::debug!(
+        tracing::debug!(
             "Flushing {} logs for worker {}",
             worker_logs.len(),
             crate::utils::short_id(worker_id)
@@ -136,7 +136,7 @@ async fn flush_worker(nc: &async_nats::Client, batch: &mut Vec<LogMessage>, work
         for log_msg in worker_logs {
             if let LogMessage::Log { worker_id, event } = log_msg {
                 // Also log locally for debugging
-                log::debug!(
+                tracing::debug!(
                     "[worker:{}] [{}] {}",
                     &worker_id[..8.min(worker_id.len())],
                     event.level,
@@ -147,14 +147,14 @@ async fn flush_worker(nc: &async_nats::Client, batch: &mut Vec<LogMessage>, work
                 let subject = format!("{}.console.{}", worker_id, level);
 
                 if let Err(err) = nc.publish(subject, event.message.into()).await {
-                    log::error!("failed to publish log to NATS: {:?}", err);
+                    tracing::error!("failed to publish log to NATS: {:?}", err);
                 }
             }
         }
 
         // Flush only this worker's logs
         if let Err(err) = nc.flush().await {
-            log::error!("failed to flush worker logs: {:?}", err);
+            tracing::error!("failed to flush worker logs: {:?}", err);
         }
     }
 
@@ -171,7 +171,7 @@ pub struct WorkerLogHandler {
 impl WorkerLogHandler {
     /// Signal that this worker is done and logs should be flushed
     pub fn flush(self) {
-        log::debug!(
+        tracing::debug!(
             "Flushing logs for worker: {}",
             crate::utils::short_id(&self.worker_id)
         );
@@ -201,7 +201,7 @@ pub fn create_log_handler(
                 worker_id: worker_id_clone.clone(),
                 event,
             }) {
-                log::error!("Failed to send log to global publisher: {:?}", e);
+                tracing::error!("Failed to send log to global publisher: {:?}", e);
                 break;
             }
         }

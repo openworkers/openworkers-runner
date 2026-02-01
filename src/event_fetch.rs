@@ -24,7 +24,7 @@ pub fn run_fetch(
 ) {
     // Parse script before spawning (fail fast)
     if let Err(err) = prepare_script(&worker_data) {
-        log::error!("Failed to prepare script: {err:?}");
+        tracing::error!("Failed to prepare script: {err:?}");
         res_tx
             .send(HttpResponse {
                 status: 500,
