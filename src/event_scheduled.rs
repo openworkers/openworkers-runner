@@ -196,10 +196,11 @@ pub fn handle_scheduled(
 
                 // Create span for this scheduled task early
                 let task_id = format!("scheduled-{}", data.id);
+                let cron = format!("\"{}\"", data.cron);
                 let span = tracing::info_span!(
                     "scheduled_task",
                     task_id = %task_id,
-                    cron = %data.cron,
+                    cron = %cron,
                     worker_id = tracing::field::Empty,
                     worker_name = tracing::field::Empty,
                     user_id = tracing::field::Empty,
