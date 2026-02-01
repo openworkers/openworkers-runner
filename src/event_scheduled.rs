@@ -17,11 +17,53 @@ pub struct ScheduledData {
     pub worker_id: String,
 }
 
+/// Handler for a scheduled task that executes within the span context
+async fn handle_scheduled_task(
+    span: tracing::Span,
+    task_id: String,
+    data: ScheduledData,
+    db: sqlx::Pool<sqlx::Postgres>,
+    global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
+) {
+    // Acquire connection per-task to avoid holding it across iterations
+    let mut conn = match db.acquire().await {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::error!("Failed to acquire database connection: {}", err);
+            return;
+        }
+    };
+
+    let worker_id = store::WorkerIdentifier::Id(data.worker_id.clone());
+    let worker_data = match store::get_worker_with_bindings(&mut conn, worker_id).await {
+        Some(w) => w,
+        None => {
+            tracing::error!(
+                "worker not found: {}",
+                crate::utils::short_id(&data.worker_id)
+            );
+            return;
+        }
+    };
+
+    // Record worker info in span now that we have it
+    span.record("worker_id", tracing::field::display(&worker_data.id));
+    span.record("worker_name", tracing::field::display(&worker_data.name));
+    span.record("user_id", tracing::field::display(&worker_data.user_id));
+
+    // Connection is dropped here, returned to pool
+    drop(conn);
+
+    run_scheduled(task_id, data, worker_data, db, global_log_tx, span);
+}
+
 fn run_scheduled(
+    task_id: String,
     data: ScheduledData,
     worker_data: WorkerWithBindings,
     db_pool: DbPool,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
+    span: tracing::Span,
 ) {
     // Parse script before spawning (fail fast)
     if let Err(err) = prepare_script(&worker_data) {
@@ -46,58 +88,54 @@ fn run_scheduled(
 
     // Execute task using common executor (fire-and-forget)
     // Note: scheduled tasks create their own response channel internally
-    tokio::spawn(async move {
-        // Create task event with schedule source
-        let task_id = format!("scheduled-{}", data.id);
-        let (event, res_rx) = Event::from_schedule(task_id.clone(), data.scheduled_time);
+    // Span is inherited from parent context via .instrument()
+    use tracing::Instrument;
 
-        // Create tracing span for this scheduled task
-        let span = tracing::info_span!(
-            "scheduled_task",
-            worker_id = %worker_data.id,
-            worker_name = %worker_data.name,
-            task_id = %task_id,
-            cron = %data.cron,
-        );
+    tokio::spawn(
+        async move {
+            // Create task event with schedule source
+            let (event, res_rx) = Event::from_schedule(task_id, data.scheduled_time);
 
-        let config = TaskExecutionConfig {
-            worker_data,
-            permit,
-            task: event,
-            db_pool,
-            global_log_tx,
-            limits: task_executor::TaskExecutionConfig::default_limits(),
-            external_timeout_ms: None, // No external timeout for scheduled tasks
-            span,
-        };
+            let config = TaskExecutionConfig {
+                worker_data,
+                permit,
+                task: event,
+                db_pool,
+                global_log_tx,
+                limits: task_executor::TaskExecutionConfig::default_limits(),
+                external_timeout_ms: None, // No external timeout for scheduled tasks
+                span: tracing::Span::current(),
+            };
 
-        // Execute the task
-        let result = task_executor::execute_task_await(config).await;
+            // Execute the task
+            let result = task_executor::execute_task_await(config).await;
 
-        // Log the execution result
-        match result {
-            Ok(()) => {
-                tracing::debug!("scheduled task exec completed successfully");
-                // Wait for the task event handler to respond
-                match res_rx.await {
-                    Ok(task_result) => {
-                        if task_result.success {
-                            tracing::debug!("scheduled task responded successfully");
-                        } else {
-                            tracing::error!(
-                                "scheduled task failed: {}",
-                                task_result.error.unwrap_or_default()
-                            );
+            // Log the execution result
+            match result {
+                Ok(()) => {
+                    tracing::debug!("scheduled task exec completed successfully");
+                    // Wait for the task event handler to respond
+                    match res_rx.await {
+                        Ok(task_result) => {
+                            if task_result.success {
+                                tracing::debug!("scheduled task responded successfully");
+                            } else {
+                                tracing::error!(
+                                    "scheduled task failed: {}",
+                                    task_result.error.unwrap_or_default()
+                                );
+                            }
                         }
+                        Err(err) => tracing::error!("scheduled task response error: {err}"),
                     }
-                    Err(err) => tracing::error!("scheduled task response error: {err}"),
+                }
+                Err(reason) => {
+                    tracing::error!("scheduled task terminated: {:?}", reason);
                 }
             }
-            Err(reason) => {
-                tracing::error!("scheduled task terminated: {:?}", reason);
-            }
         }
-    });
+        .instrument(span),
+    );
 }
 
 pub fn handle_scheduled(
@@ -156,31 +194,30 @@ pub fn handle_scheduled(
 
                 tracing::debug!("scheduled task parsed: {:?}", data);
 
-                // Acquire connection per-task to avoid holding it across iterations
-                let mut conn = match db.acquire().await {
-                    Ok(c) => c,
-                    Err(err) => {
-                        tracing::error!("Failed to acquire database connection: {}", err);
-                        continue;
-                    }
-                };
+                // Create span for this scheduled task early
+                let task_id = format!("scheduled-{}", data.id);
+                let span = tracing::info_span!(
+                    "scheduled_task",
+                    task_id = %task_id,
+                    cron = %data.cron,
+                    worker_id = tracing::field::Empty,
+                    worker_name = tracing::field::Empty,
+                    user_id = tracing::field::Empty,
+                );
 
-                let worker_id = store::WorkerIdentifier::Id(data.worker_id.clone());
-                let worker_data = match store::get_worker_with_bindings(&mut conn, worker_id).await
-                {
-                    Some(w) => w,
-                    None => {
-                        tracing::error!(
-                            "worker not found: {}",
-                            crate::utils::short_id(&data.worker_id)
-                        );
-                        continue;
-                    }
-                };
+                // Use Instrument trait for async operations
+                use tracing::Instrument;
 
-                // Connection is dropped here, returned to pool
-
-                run_scheduled(data, worker_data, db.clone(), global_log_tx.clone());
+                // Execute the task handler within the span context
+                handle_scheduled_task(
+                    span.clone(),
+                    task_id,
+                    data,
+                    db.clone(),
+                    global_log_tx.clone(),
+                )
+                .instrument(span)
+                .await;
             }
 
             tracing::debug!("scheduled task listener stopped");
