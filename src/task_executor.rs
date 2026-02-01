@@ -56,6 +56,7 @@ pub struct TaskExecutionConfig {
     pub global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
     pub limits: RuntimeLimits,
     pub external_timeout_ms: Option<u64>,
+    pub span: tracing::Span,
 }
 
 impl TaskExecutionConfig {
@@ -96,7 +97,8 @@ fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponent
             .with_worker_id(config.worker_data.id.clone())
             .with_log_tx(log_tx)
             .with_bindings(config.worker_data.bindings.clone())
-            .with_db_pool(config.db_pool.clone()),
+            .with_db_pool(config.db_pool.clone())
+            .with_span(config.span.clone()),
     );
 
     Some(TaskComponents {

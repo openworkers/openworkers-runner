@@ -49,7 +49,16 @@ fn run_scheduled(
     tokio::spawn(async move {
         // Create task event with schedule source
         let task_id = format!("scheduled-{}", data.id);
-        let (event, res_rx) = Event::from_schedule(task_id, data.scheduled_time);
+        let (event, res_rx) = Event::from_schedule(task_id.clone(), data.scheduled_time);
+
+        // Create tracing span for this scheduled task
+        let span = tracing::info_span!(
+            "scheduled_task",
+            worker_id = %worker_data.id,
+            worker_name = %worker_data.name,
+            task_id = %task_id,
+            cron = %data.cron,
+        );
 
         let config = TaskExecutionConfig {
             worker_data,
@@ -59,6 +68,7 @@ fn run_scheduled(
             global_log_tx,
             limits: task_executor::TaskExecutionConfig::default_limits(),
             external_timeout_ms: None, // No external timeout for scheduled tasks
+            span,
         };
 
         // Execute the task

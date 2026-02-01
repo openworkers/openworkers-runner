@@ -19,6 +19,7 @@ pub fn run_fetch(
     permit: tokio::sync::OwnedSemaphorePermit,
     db_pool: DbPool,
     wall_clock_timeout_ms: u64,
+    span: tracing::Span,
 ) {
     // Parse script before spawning (fail fast)
     if let Err(err) = prepare_script(&worker_data) {
@@ -46,6 +47,7 @@ pub fn run_fetch(
         global_log_tx,
         limits: task_executor::TaskExecutionConfig::default_limits(),
         external_timeout_ms: Some(wall_clock_timeout_ms),
+        span,
     };
 
     // Spawn async task to execute and send result back

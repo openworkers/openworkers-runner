@@ -261,6 +261,16 @@ async fn handle_request(
     // Create disconnect notification channel
     let (disconnect_tx, _disconnect_rx) = channel::<()>();
 
+    // Create tracing span for this request
+    let span = tracing::info_span!(
+        "handle_request",
+        worker_id = %worker.id,
+        worker_name = %worker.name,
+        request_id = %request_id,
+        method = %method,
+        uri = %uri,
+    );
+
     openworkers_runner::event_fetch::run_fetch(
         worker,
         request,
@@ -270,6 +280,7 @@ async fn handle_request(
         permit,
         state.db.clone(),
         state.wall_clock_timeout_ms,
+        span,
     );
 
     // TODO: Pass disconnect_rx to the worker so it can stop processing

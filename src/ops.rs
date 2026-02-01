@@ -37,6 +37,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use tracing::Instrument;
+
 use crate::limiter::BindingLimiters;
 #[cfg(feature = "database")]
 use crate::services::database::{self as db_service, QueryMode};
@@ -129,6 +131,8 @@ pub struct RunnerOperations {
     pub db_pool: Option<DbPool>,
     /// Binding limiters (rate limiting for fetch, KV, database, storage)
     pub limiters: BindingLimiters,
+    /// Tracing span for async operations (propagates trace context)
+    pub span: tracing::Span,
 }
 
 impl RunnerOperations {
@@ -141,12 +145,19 @@ impl RunnerOperations {
             bindings: BindingConfigs::new(),
             db_pool: None,
             limiters: BindingLimiters::default(),
+            span: tracing::Span::none(),
         }
     }
 
     /// Create with custom limiters based on RuntimeLimits
     pub fn with_limiters(mut self, limiters: BindingLimiters) -> Self {
         self.limiters = limiters;
+        self
+    }
+
+    /// Attach tracing span for context propagation
+    pub fn with_span(mut self, span: tracing::Span) -> Self {
+        self.span = span;
         self
     }
 
@@ -183,6 +194,7 @@ impl RunnerOperations {
         request: HttpRequest,
     ) -> OpFuture<'_, Result<HttpResponse, String>> {
         let binding_name = binding.to_string();
+        let span = self.span.clone();
 
         Box::pin(async move {
             // Acquire fetch limiter permit
@@ -229,7 +241,7 @@ impl RunnerOperations {
             )?;
 
             do_fetch(auth_request, &self.stats, Some(&signed_headers)).await
-        })
+        }.instrument(span))
     }
 }
 
@@ -248,6 +260,7 @@ impl OperationsHandler for RunnerOperations {
     /// Special case: URLs matching `*.workers.rocks` or `*.workers.dev.localhost`
     /// are routed internally to avoid DNS lookup and external network hop.
     fn handle_fetch(&self, request: HttpRequest) -> OpFuture<'_, Result<HttpResponse, String>> {
+        let span = self.span.clone();
         Box::pin(async move {
             // Acquire fetch limiter permit (blocks if at concurrent limit, errors if total exceeded)
             let _guard = self
@@ -277,7 +290,7 @@ impl OperationsHandler for RunnerOperations {
             }
 
             do_fetch(request, &self.stats, None).await
-        })
+        }.instrument(span))
     }
 
     /// Handle binding fetch: `env.ASSETS.fetch("/path")` or `env.STORAGE.fetch("/path")`
@@ -336,6 +349,7 @@ impl OperationsHandler for RunnerOperations {
             }
         };
 
+        let span = self.span.clone();
         Box::pin(async move {
             // Acquire storage limiter permit
             if let Err(e) = self.limiters.storage.acquire().await {
@@ -374,7 +388,7 @@ impl OperationsHandler for RunnerOperations {
                     execute_s3_operation(&config, other).await
                 }
             }
-        })
+        }.instrument(span))
     }
 
     /// Handle KV operation: `env.KV.get("key")`, `.put()`, `.delete()`
@@ -402,6 +416,7 @@ impl OperationsHandler for RunnerOperations {
         };
 
         let namespace_id = config.id.clone();
+        let span = self.span.clone();
 
         Box::pin(async move {
             // Acquire KV limiter permit
@@ -421,7 +436,7 @@ impl OperationsHandler for RunnerOperations {
                     kv_service::list(&pool, &namespace_id, prefix.as_deref(), limit).await
                 }
             }
-        })
+        }.instrument(span))
     }
 
     /// Handle database operation: `env.DB.query("SELECT ...")`
@@ -451,6 +466,7 @@ impl OperationsHandler for RunnerOperations {
 
         // Get shared pool for schema mode
         let shared_pool = self.db_pool.clone();
+        let span = self.span.clone();
 
         Box::pin(async move {
             // Acquire database limiter permit - hold guard until query completes
@@ -519,7 +535,7 @@ impl OperationsHandler for RunnerOperations {
                     }
                 }
             }
-        })
+        }.instrument(span))
     }
 
     /// Handle worker binding: `env.SERVICE.fetch(request)`
@@ -542,6 +558,8 @@ impl OperationsHandler for RunnerOperations {
                 });
             }
         };
+
+        let span = self.span.clone();
 
         Box::pin(async move {
             log::debug!(
@@ -574,7 +592,7 @@ impl OperationsHandler for RunnerOperations {
 
             // Execute the request through the runner
             do_fetch(internal_request, &OperationsStats::new(), None).await
-        })
+        }.instrument(span))
     }
 
     /// Handle log: `console.log("message")`
