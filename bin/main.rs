@@ -226,8 +226,8 @@ async fn handle_request(
     };
 
     // Record worker info in span now that we have it
-    span.record("worker_id", &tracing::field::display(&worker.id));
-    span.record("worker_name", &tracing::field::display(&worker.name));
+    span.record("worker_id", tracing::field::display(&worker.id));
+    span.record("worker_name", tracing::field::display(&worker.name));
 
     let start = tokio::time::Instant::now();
 
@@ -393,7 +393,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(100); // Default: 100ms
 
-    let v8_execute_mode = openworkers_runner::V8ExecuteMode::from_env();
+    let v8_execute_mode = openworkers_runner::V8ExecuteMode::get();
 
     debug!(
         "Isolate pool config: max_size={}, heap_initial={}MB, heap_max={}MB, wall_clock_timeout={}ms, cpu_time_limit={}ms",

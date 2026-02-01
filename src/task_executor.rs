@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 
@@ -22,19 +22,24 @@ pub enum V8ExecuteMode {
     Oneshot,
 }
 
+/// Cached execution mode (read once from environment)
+static V8_EXECUTE_MODE: OnceLock<V8ExecuteMode> = OnceLock::new();
+
 impl V8ExecuteMode {
-    /// Parse from environment variable value (case-insensitive)
-    pub fn from_env() -> Self {
-        match std::env::var("V8_EXECUTE")
-            .ok()
-            .map(|s| s.to_uppercase())
-            .as_deref()
-        {
-            Some("PINNED") => Self::Pinned,
-            Some("POOLED") => Self::Pooled,
-            Some("ONESHOT") => Self::Oneshot,
-            _ => Self::default(),
-        }
+    /// Get the execution mode (cached, read from V8_EXECUTE env var on first call)
+    pub fn get() -> Self {
+        *V8_EXECUTE_MODE.get_or_init(|| {
+            match std::env::var("V8_EXECUTE")
+                .ok()
+                .map(|s| s.to_uppercase())
+                .as_deref()
+            {
+                Some("PINNED") => Self::Pinned,
+                Some("POOLED") => Self::Pooled,
+                Some("ONESHOT") => Self::Oneshot,
+                _ => Self::default(),
+            }
+        })
     }
 }
 
@@ -170,7 +175,7 @@ pub async fn execute_task_await_v8_pooled(
     let permit = config.permit;
     let limits = config.limits;
     let code_type = components.code_type.clone();
-    let execute_mode = V8ExecuteMode::from_env();
+    let execute_mode = V8ExecuteMode::get();
 
     WORKER_POOL
         .spawn_await(move || async move {

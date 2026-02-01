@@ -6,6 +6,7 @@ use crate::worker::prepare_script;
 use openworkers_core::{
     Event, FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, TerminationReason,
 };
+use tracing::Instrument;
 
 type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>;
 
@@ -47,12 +48,16 @@ pub fn run_fetch(
         global_log_tx,
         limits: task_executor::TaskExecutionConfig::default_limits(),
         external_timeout_ms: Some(wall_clock_timeout_ms),
-        span,
+        span: span.clone(),
     };
 
     // Spawn async task to execute and send result back
-    tokio::spawn(async move {
-        let result = task_executor::execute_task_await(config).await;
-        let _ = termination_tx.send(result);
-    });
+    // Instrument with span to propagate trace context to worker pool thread
+    tokio::spawn(
+        async move {
+            let result = task_executor::execute_task_await(config).await;
+            let _ = termination_tx.send(result);
+        }
+        .instrument(span),
+    );
 }
