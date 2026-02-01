@@ -149,27 +149,36 @@ async fn handle_request(
         None => return Ok(error_response(400, "Missing request id")),
     };
 
-    // Create tracing span for this request and enter it immediately
-    // so all subsequent logs are included in the span
+    // Create tracing span for this request
     let span = tracing::info_span!(
-        "handle_request",
+        "request",
         request_id = %request_id,
         method = %method,
         uri = %uri,
         worker_id = tracing::field::Empty,
         worker_name = tracing::field::Empty,
     );
-    let _guard = span.enter();
 
-    // Log request within span (same info as before span, but now traced)
-    debug!(
-        "handle_request: {} {} in thread {:?}, x-worker-id: {:?}, x-worker-name: {:?}",
-        method,
-        uri,
-        std::thread::current().id(),
-        headers.get("x-worker-id").and_then(|h| h.to_str().ok()),
-        headers.get("x-worker-name").and_then(|h| h.to_str().ok())
-    );
+    // Use Instrument trait for async operations
+    use tracing::Instrument;
+
+    // Execute the rest of the handler within the span context
+    handle_worker_request(state, span.clone(), &mut conn, &method, &uri, &headers, req)
+        .instrument(span)
+        .await
+}
+
+/// Inner handler that executes within the request span context
+async fn handle_worker_request(
+    state: &AppState,
+    span: tracing::Span,
+    conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
+    method: &hyper::Method,
+    uri: &hyper::Uri,
+    headers: &hyper::HeaderMap,
+    req: Request<hyper::body::Incoming>,
+) -> Result<Response<HyperBody>, std::convert::Infallible> {
+    debug!("handle_request: {} {}", method, uri);
 
     let host = headers
         .get("host")
@@ -200,14 +209,11 @@ async fn handle_request(
             worker_name = Some(host.split('.').next().unwrap().to_string());
         } else {
             worker_id =
-                openworkers_runner::store::get_worker_id_from_domain(&mut conn, host.clone()).await;
+                openworkers_runner::store::get_worker_id_from_domain(conn, host.clone()).await;
         }
     }
 
-    debug!(
-        "request_id: {}, worker_id: {:?}, worker_name: {:?}",
-        request_id, worker_id, worker_name
-    );
+    debug!("worker_id: {:?}, worker_name: {:?}", worker_id, worker_name);
 
     let worker_identifier = match (worker_id, worker_name) {
         (Some(id), _) => WorkerIdentifier::Id(id),
@@ -215,8 +221,7 @@ async fn handle_request(
         _ => return Ok(error_response(400, "Missing worker id or name")),
     };
 
-    let worker =
-        openworkers_runner::store::get_worker_with_bindings(&mut conn, worker_identifier).await;
+    let worker = openworkers_runner::store::get_worker_with_bindings(conn, worker_identifier).await;
 
     debug!("worker found: {:?}", worker.is_some());
 
@@ -241,7 +246,7 @@ async fn handle_request(
     };
 
     // Convert to our HttpRequest using the extracted parts
-    let mut request = HttpRequest::from_hyper_parts(&method, &uri, &headers, body_bytes, "http");
+    let mut request = HttpRequest::from_hyper_parts(method, uri, headers, body_bytes, "http");
 
     // Add worker headers if not present
     if !request.headers.contains_key("x-worker-id") {

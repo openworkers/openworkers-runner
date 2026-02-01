@@ -182,43 +182,43 @@ pub async fn execute_task_await_v8_pooled(
     WORKER_POOL
         .spawn_await(move || {
             async move {
-            // Wrap permit to automatically notify drain monitor on drop
-            let _permit = TaskPermit::new(permit);
+                // Wrap permit to automatically notify drain monitor on drop
+                let _permit = TaskPermit::new(permit);
 
-            let result = match execute_mode {
-                V8ExecuteMode::Pinned => {
-                    // Thread-pinned pool (default, best performance)
-                    openworkers_runtime_v8::execute_pinned(
-                        &owner_id,
-                        components.script,
-                        components.ops,
-                        task,
-                    )
-                    .await
-                }
-                V8ExecuteMode::Pooled => {
-                    // Global pool with mutex
-                    openworkers_runtime_v8::execute_pooled(
-                        &owner_id,
-                        components.script,
-                        components.ops,
-                        task,
-                    )
-                    .await
-                }
-                V8ExecuteMode::Oneshot => {
-                    // Fresh isolate per request (no caching)
-                    let mut worker =
-                        create_worker(components.script, limits, components.ops, &code_type)
-                            .await
-                            .map_err(|err| {
-                                tracing::error!("Failed to create worker: {err:?}");
-                                err
-                            })?;
+                let result = match execute_mode {
+                    V8ExecuteMode::Pinned => {
+                        // Thread-pinned pool (default, best performance)
+                        openworkers_runtime_v8::execute_pinned(
+                            &owner_id,
+                            components.script,
+                            components.ops,
+                            task,
+                        )
+                        .await
+                    }
+                    V8ExecuteMode::Pooled => {
+                        // Global pool with mutex
+                        openworkers_runtime_v8::execute_pooled(
+                            &owner_id,
+                            components.script,
+                            components.ops,
+                            task,
+                        )
+                        .await
+                    }
+                    V8ExecuteMode::Oneshot => {
+                        // Fresh isolate per request (no caching)
+                        let mut worker =
+                            create_worker(components.script, limits, components.ops, &code_type)
+                                .await
+                                .map_err(|err| {
+                                    tracing::error!("Failed to create worker: {err:?}");
+                                    err
+                                })?;
 
-                    worker.exec(task).await
-                }
-            };
+                        worker.exec(task).await
+                    }
+                };
 
                 // CRITICAL: Flush logs before returning
                 components.log_handler.flush();
@@ -271,23 +271,23 @@ pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), Termi
         WORKER_POOL
             .spawn_await(move || {
                 async move {
-                // Wrap permit to automatically notify drain monitor on drop
-                let _permit = TaskPermit::new(permit);
+                    // Wrap permit to automatically notify drain monitor on drop
+                    let _permit = TaskPermit::new(permit);
 
-                let mut worker = crate::worker::create_worker(
-                    components.script,
-                    limits,
-                    components.ops,
-                    &components.code_type,
-                )
-                .await
-                .map_err(|err| {
-                    tracing::error!("Failed to create worker: {err:?}");
-                    err
-                })?;
+                    let mut worker = crate::worker::create_worker(
+                        components.script,
+                        limits,
+                        components.ops,
+                        &components.code_type,
+                    )
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Failed to create worker: {err:?}");
+                        err
+                    })?;
 
-                let result =
-                    run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
+                    let result =
+                        run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
 
                     // CRITICAL: Flush logs before worker is dropped to prevent log loss
                     components.log_handler.flush();
