@@ -157,6 +157,7 @@ async fn handle_request(
         uri = %uri,
         worker_id = tracing::field::Empty,
         worker_name = tracing::field::Empty,
+        user_id = tracing::field::Empty,
     );
 
     // Use Instrument trait for async operations
@@ -233,6 +234,7 @@ async fn handle_worker_request(
     // Record worker info in span now that we have it
     span.record("worker_id", tracing::field::display(&worker.id));
     span.record("worker_name", tracing::field::display(&worker.name));
+    span.record("user_id", tracing::field::display(&worker.user_id));
 
     let start = tokio::time::Instant::now();
 
