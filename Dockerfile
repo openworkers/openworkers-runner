@@ -10,7 +10,7 @@ FROM chef AS builder
 
 ARG RUNTIME=v8
 
-ENV FEATURES=$RUNTIME,database
+ENV FEATURES=$RUNTIME,database,telemetry
 ENV RUST_BACKTRACE=1
 ENV RUNTIME_SNAPSHOT_PATH=/build/snapshot.bin
 
