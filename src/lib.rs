@@ -18,6 +18,9 @@ pub mod worker_pool;
 // Re-export TerminationReason for use in bin/main.rs
 pub use openworkers_core::TerminationReason;
 
+// Re-export V8ExecuteMode for configuration
+pub use task_executor::V8ExecuteMode;
+
 // Re-export Operations for convenience
 pub use ops::{BindingConfigs, DbPool, OperationsStats, RunnerOperations};
 

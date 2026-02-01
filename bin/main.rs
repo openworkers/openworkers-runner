@@ -363,10 +363,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(100); // Default: 100ms
 
+    let v8_execute_mode = openworkers_runner::V8ExecuteMode::from_env();
+
     debug!(
         "Isolate pool config: max_size={}, heap_initial={}MB, heap_max={}MB, wall_clock_timeout={}ms, cpu_time_limit={}ms",
         pool_max_size, heap_initial_mb, heap_max_mb, wall_clock_timeout_ms, cpu_time_limit_ms
     );
+    debug!("V8 execution mode: {:?}", v8_execute_mode);
 
     let db_url = match std::env::var("DATABASE_URL") {
         Ok(url) => url,
@@ -480,11 +483,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ..Default::default()
         };
 
-        openworkers_runtime_v8::init_pinned_pool(pool_max_size, pool_limits);
-        debug!(
-            "Initialized thread-pinned isolate pool with {} isolates per thread",
-            pool_max_size
-        );
+        match v8_execute_mode {
+            openworkers_runner::V8ExecuteMode::Pinned => {
+                openworkers_runtime_v8::init_pinned_pool(pool_max_size, pool_limits);
+                debug!(
+                    "Initialized pinned isolate pool with {} isolates max",
+                    pool_max_size
+                );
+            }
+            openworkers_runner::V8ExecuteMode::Pooled => {
+                openworkers_runtime_v8::init_pool(pool_max_size, pool_limits);
+                debug!(
+                    "Initialized global isolate pool with {} isolates max",
+                    pool_max_size
+                );
+            }
+            openworkers_runner::V8ExecuteMode::Oneshot => {
+                debug!("Oneshot mode: no isolate pool initialized");
+            }
+        }
     }
 
     openworkers_runner::event_scheduled::handle_scheduled(pool.clone(), log_tx.clone());
@@ -556,7 +573,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let num_listeners = 4;
+    let num_listeners = std::env::var("HTTP_LISTENERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+        });
 
     println!(
         "Listening on http://{} with {} listeners",

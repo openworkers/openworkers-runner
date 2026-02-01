@@ -10,6 +10,34 @@ use crate::worker_pool::{TaskPermit, WORKER_POOL};
 
 use openworkers_core::{Event, RuntimeLimits, Script, TerminationReason};
 
+/// V8 execution mode - controls how isolates are managed
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum V8ExecuteMode {
+    /// Thread-pinned pool with per-owner isolation (default, best performance)
+    #[default]
+    Pinned,
+    /// Global pool with mutex-based access
+    Pooled,
+    /// Fresh isolate per request (no caching, useful for debugging)
+    Oneshot,
+}
+
+impl V8ExecuteMode {
+    /// Parse from environment variable value (case-insensitive)
+    pub fn from_env() -> Self {
+        match std::env::var("V8_EXECUTE")
+            .ok()
+            .map(|s| s.to_uppercase())
+            .as_deref()
+        {
+            Some("PINNED") => Self::Pinned,
+            Some("POOLED") => Self::Pooled,
+            Some("ONESHOT") => Self::Oneshot,
+            _ => Self::default(),
+        }
+    }
+}
+
 pub const DEFAULT_CPU_TIME_MS: u64 = 100;
 
 // In test mode, use shorter timeout to fail fast
@@ -113,13 +141,18 @@ async fn run_task_with_timeout_worker(
 /// - LRU eviction of idle isolates
 /// - Queue with backpressure when at capacity
 ///
+/// Execution mode is controlled by V8_EXECUTE env var:
+/// - PINNED (default): Thread-pinned pool, best performance
+/// - POOLED: Global pool with mutex
+/// - ONESHOT: Fresh isolate per request (no caching)
+///
 /// Execution steps:
 /// 1. Parse script (fail fast)
 /// 2. Setup logging
 /// 3. Round-robin thread selection (WORKER_POOL)
-/// 4. Acquire isolate for this owner from thread-local pool
+/// 4. Acquire/create isolate based on V8_EXECUTE mode
 /// 5. Execute task with v8::Locker
-/// 6. Release isolate to thread-local pool
+/// 6. Release/drop isolate
 /// 7. Flush logs
 #[cfg(feature = "v8")]
 pub async fn execute_task_await_v8_pooled(
@@ -133,21 +166,49 @@ pub async fn execute_task_await_v8_pooled(
     let owner_id = config.worker_data.user_id.clone();
     let task = config.task;
     let permit = config.permit;
+    let limits = config.limits;
+    let code_type = components.code_type.clone();
+    let execute_mode = V8ExecuteMode::from_env();
 
     WORKER_POOL
         .spawn_await(move || async move {
             // Wrap permit to automatically notify drain monitor on drop
             let _permit = TaskPermit::new(permit);
 
-            // Use the thread-pinned pool execution API from runtime-v8
-            // owner_id is the tenant (user_id), not the worker_id
-            let result = openworkers_runtime_v8::execute_pinned(
-                &owner_id,
-                components.script,
-                components.ops,
-                task,
-            )
-            .await;
+            let result = match execute_mode {
+                V8ExecuteMode::Pinned => {
+                    // Thread-pinned pool (default, best performance)
+                    openworkers_runtime_v8::execute_pinned(
+                        &owner_id,
+                        components.script,
+                        components.ops,
+                        task,
+                    )
+                    .await
+                }
+                V8ExecuteMode::Pooled => {
+                    // Global pool with mutex
+                    openworkers_runtime_v8::execute_pooled(
+                        &owner_id,
+                        components.script,
+                        components.ops,
+                        task,
+                    )
+                    .await
+                }
+                V8ExecuteMode::Oneshot => {
+                    // Fresh isolate per request (no caching)
+                    let mut worker =
+                        create_worker(components.script, limits, components.ops, &code_type)
+                            .await
+                            .map_err(|err| {
+                                log::error!("Failed to create worker: {err:?}");
+                                err
+                            })?;
+
+                    worker.exec(task).await
+                }
+            };
 
             // CRITICAL: Flush logs before returning
             components.log_handler.flush();
