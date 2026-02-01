@@ -432,7 +432,7 @@ dependencies = [
  "bitflags",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.12.1",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -2705,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2752,8 +2752,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.12.1"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.12.1#8af4a1e5a099484df7d07e2eb73af827bf941be3"
+version = "0.12.2"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.12.2#8e275c918f2e16a13702e760c12f60d9f10d727a"
 dependencies = [
  "bytes",
  "futures",
@@ -2778,7 +2778,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.12.1#8af4a1e5a099484df7d07e2eb73af827bf941be3"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.12.2#8e275c918f2e16a13702e760c12f60d9f10d727a"
 dependencies = [
  "proc-macro2",
  "quote",
