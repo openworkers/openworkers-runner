@@ -1,6 +1,7 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
+use tracing::Instrument;
 
 use crate::log::WorkerLogHandler;
 use crate::ops::{DbPool, RunnerOperations};
@@ -176,9 +177,11 @@ pub async fn execute_task_await_v8_pooled(
     let limits = config.limits;
     let code_type = components.code_type.clone();
     let execute_mode = V8ExecuteMode::get();
+    let span = config.span.clone();
 
     WORKER_POOL
-        .spawn_await(move || async move {
+        .spawn_await(move || {
+            async move {
             // Wrap permit to automatically notify drain monitor on drop
             let _permit = TaskPermit::new(permit);
 
@@ -217,10 +220,12 @@ pub async fn execute_task_await_v8_pooled(
                 }
             };
 
-            // CRITICAL: Flush logs before returning
-            components.log_handler.flush();
+                // CRITICAL: Flush logs before returning
+                components.log_handler.flush();
 
-            result
+                result
+            }
+            .instrument(span)
         })
         .await
         .unwrap_or_else(|_| {
@@ -261,9 +266,11 @@ pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), Termi
         let task = config.task;
         let external_timeout_ms = config.external_timeout_ms;
         let permit = config.permit;
+        let span = config.span.clone();
 
         WORKER_POOL
-            .spawn_await(move || async move {
+            .spawn_await(move || {
+                async move {
                 // Wrap permit to automatically notify drain monitor on drop
                 let _permit = TaskPermit::new(permit);
 
@@ -282,13 +289,15 @@ pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), Termi
                 let result =
                     run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
 
-                // CRITICAL: Flush logs before worker is dropped to prevent log loss
-                components.log_handler.flush();
+                    // CRITICAL: Flush logs before worker is dropped to prevent log loss
+                    components.log_handler.flush();
 
-                // TaskPermit is automatically dropped here, releasing the semaphore
-                // and notifying the drain monitor
+                    // TaskPermit is automatically dropped here, releasing the semaphore
+                    // and notifying the drain monitor
 
-                result
+                    result
+                }
+                .instrument(span)
             })
             .await
             .unwrap_or_else(|_| {
