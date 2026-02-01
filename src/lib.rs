@@ -2,6 +2,7 @@ pub mod event_fetch;
 pub mod event_scheduled;
 pub mod limiter;
 pub mod log;
+pub mod metrics;
 pub mod nats;
 pub mod ops;
 pub mod ops_s3;

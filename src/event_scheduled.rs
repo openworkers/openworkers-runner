@@ -25,6 +25,9 @@ async fn handle_scheduled_task(
     db: sqlx::Pool<sqlx::Postgres>,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
 ) {
+    // Start metrics timer
+    let mut metrics_timer = crate::metrics::MetricsTimer::new();
+
     // Acquire connection per-task to avoid holding it across iterations
     let mut conn = match db.acquire().await {
         Ok(c) => c,
@@ -51,10 +54,29 @@ async fn handle_scheduled_task(
     span.record("worker_name", tracing::field::display(&worker_data.name));
     span.record("user_id", tracing::field::display(&worker_data.user_id));
 
+    // Add metrics labels
+    #[cfg(feature = "telemetry")]
+    {
+        use opentelemetry::KeyValue;
+        metrics_timer = metrics_timer.with_labels(vec![
+            KeyValue::new("worker_id", worker_data.id.clone()),
+            KeyValue::new("user_id", worker_data.user_id.clone()),
+            KeyValue::new("cron", data.cron.clone()),
+        ]);
+    }
+
     // Connection is dropped here, returned to pool
     drop(conn);
 
-    run_scheduled(task_id, data, worker_data, db, global_log_tx, span);
+    run_scheduled(
+        task_id,
+        data,
+        worker_data,
+        db,
+        global_log_tx,
+        span,
+        metrics_timer,
+    );
 }
 
 fn run_scheduled(
@@ -64,6 +86,7 @@ fn run_scheduled(
     db_pool: DbPool,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
     span: tracing::Span,
+    mut metrics_timer: crate::metrics::MetricsTimer,
 ) {
     // Parse script before spawning (fail fast)
     if let Err(err) = prepare_script(&worker_data) {
@@ -85,6 +108,9 @@ fn run_scheduled(
             return;
         }
     };
+
+    // Mark worker spawned (for queue time metric)
+    metrics_timer.mark_worker_spawned();
 
     // Execute task using common executor (fire-and-forget)
     // Note: scheduled tasks create their own response channel internally
@@ -110,8 +136,8 @@ fn run_scheduled(
             // Execute the task
             let result = task_executor::execute_task_await(config).await;
 
-            // Log the execution result
-            match result {
+            // Log the execution result and track success
+            let success = match result {
                 Ok(()) => {
                     tracing::debug!("scheduled task exec completed successfully");
                     // Wait for the task event handler to respond
@@ -119,20 +145,29 @@ fn run_scheduled(
                         Ok(task_result) => {
                             if task_result.success {
                                 tracing::debug!("scheduled task responded successfully");
+                                true
                             } else {
                                 tracing::error!(
                                     "scheduled task failed: {}",
                                     task_result.error.unwrap_or_default()
                                 );
+                                false
                             }
                         }
-                        Err(err) => tracing::error!("scheduled task response error: {err}"),
+                        Err(err) => {
+                            tracing::error!("scheduled task response error: {err}");
+                            false
+                        }
                     }
                 }
                 Err(reason) => {
                     tracing::error!("scheduled task terminated: {:?}", reason);
+                    false
                 }
-            }
+            };
+
+            // Record metrics
+            metrics_timer.record_scheduled_task(success);
         }
         .instrument(span),
     );

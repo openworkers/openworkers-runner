@@ -181,6 +181,9 @@ async fn handle_worker_request(
 ) -> Result<Response<HyperBody>, std::convert::Infallible> {
     debug!("handle_request: {} {}", method, uri);
 
+    // Start metrics timer
+    let mut metrics_timer = openworkers_runner::metrics::MetricsTimer::new();
+
     let host = headers
         .get("host")
         .and_then(|h| h.to_str().ok())
@@ -235,6 +238,17 @@ async fn handle_worker_request(
     span.record("worker_id", tracing::field::display(&worker.id));
     span.record("worker_name", tracing::field::display(&worker.name));
     span.record("user_id", tracing::field::display(&worker.user_id));
+
+    // Add metrics labels
+    #[cfg(feature = "telemetry")]
+    {
+        use opentelemetry::KeyValue;
+        metrics_timer = metrics_timer.with_labels(vec![
+            KeyValue::new("method", method.to_string()),
+            KeyValue::new("worker_id", worker.id.clone()),
+            KeyValue::new("user_id", worker.user_id.clone()),
+        ]);
+    }
 
     let start = tokio::time::Instant::now();
 
@@ -297,6 +311,9 @@ async fn handle_worker_request(
     // Create disconnect notification channel
     let (disconnect_tx, _disconnect_rx) = channel::<()>();
 
+    // Mark worker spawned (for queue time metric)
+    metrics_timer.mark_worker_spawned();
+
     openworkers_runner::event_fetch::run_fetch(
         worker,
         request,
@@ -311,10 +328,10 @@ async fn handle_worker_request(
 
     // TODO: Pass disconnect_rx to the worker so it can stop processing
 
-    let response = match res_rx.await {
+    let (response, success) = match res_rx.await {
         Ok(res) => {
             // Convert to hyper Response with disconnect notification
-            res.into_hyper_with_disconnect(Some(disconnect_tx))
+            (res.into_hyper_with_disconnect(Some(disconnect_tx)), true)
         }
         Err(_) => {
             // Worker didn't send response, check termination reason
@@ -324,7 +341,7 @@ async fn handle_worker_request(
                 .await
                 .unwrap_or(Err(TerminationReason::Other("Unknown error".to_string())));
 
-            match result {
+            let resp = match result {
                 Ok(()) => {
                     error!("worker completed but did not send response");
                     error_response(
@@ -346,11 +363,15 @@ async fn handle_worker_request(
                     };
                     resp
                 }
-            }
+            };
+            (resp, false)
         }
     };
 
     debug!("handle_request done in {}ms", start.elapsed().as_millis());
+
+    // Record metrics
+    metrics_timer.record_http_request(success);
 
     Ok(response)
 }

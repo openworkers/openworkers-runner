@@ -10,7 +10,6 @@
 //!
 //! // With telemetry feature + OTLP_ENDPOINT: OpenTelemetry
 //! // OTLP_ENDPOINT=https://otlp.example.com:4317
-//! // OTLP_API_KEY=xxx (optional, convenience for api-key header)
 //! // OTLP_HEADERS=key1=value1,key2=value2 (optional, for custom headers)
 //! // OTLP_SERVICE_NAME=openworkers-runner (optional)
 //! telemetry::init();
@@ -79,7 +78,6 @@ fn init_otel() -> Result<(), Box<dyn std::error::Error>> {
     let otlp_endpoint = std::env::var("OTLP_ENDPOINT")?;
     let service_name =
         std::env::var("OTLP_SERVICE_NAME").unwrap_or_else(|_| "openworkers-runner".to_string());
-    let api_key = std::env::var("OTLP_API_KEY").ok();
     let headers = std::env::var("OTLP_HEADERS").ok();
 
     // Generate unique instance ID (first 8 chars of UUID v4)
@@ -87,11 +85,6 @@ fn init_otel() -> Result<(), Box<dyn std::error::Error>> {
 
     // Prepare metadata headers for authentication
     let mut metadata = MetadataMap::new();
-
-    // Convenience: OTLP_API_KEY sets api-key header
-    if let Some(key) = &api_key {
-        metadata.insert("api-key", MetadataValue::try_from(key)?);
-    }
 
     // Parse OTLP_HEADERS (format: key1=value1,key2=value2)
     if let Some(headers_str) = headers {
@@ -145,7 +138,7 @@ fn init_otel() -> Result<(), Box<dyn std::error::Error>> {
     let mut log_builder = opentelemetry_otlp::LogExporter::builder()
         .with_tonic()
         .with_endpoint(&otlp_endpoint)
-        .with_metadata(metadata);
+        .with_metadata(metadata.clone());
 
     if use_tls {
         log_builder = log_builder.with_tls_config(ClientTlsConfig::new().with_native_roots());
@@ -155,9 +148,33 @@ fn init_otel() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create logger provider
     let logger_provider = SdkLoggerProvider::builder()
-        .with_resource(resource)
+        .with_resource(resource.clone())
         .with_batch_exporter(log_exporter)
         .build();
+
+    // Create OTLP metrics exporter
+    let mut metrics_builder = opentelemetry_otlp::MetricExporter::builder()
+        .with_tonic()
+        .with_endpoint(&otlp_endpoint)
+        .with_metadata(metadata.clone());
+
+    if use_tls {
+        metrics_builder =
+            metrics_builder.with_tls_config(ClientTlsConfig::new().with_native_roots());
+    }
+
+    let metrics_exporter = metrics_builder.build()?;
+
+    // Create meter provider
+    let meter_provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+        .with_resource(resource)
+        .with_reader(opentelemetry_sdk::metrics::PeriodicReader::builder(metrics_exporter).build())
+        .build();
+
+    opentelemetry::global::set_meter_provider(meter_provider);
+
+    // Initialize metrics
+    crate::metrics::init_metrics();
 
     // Tracing layer for spans
     let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
