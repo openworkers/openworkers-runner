@@ -121,11 +121,14 @@ async fn handle_request(
     let uri = req.uri().clone();
     let headers = req.headers().clone();
 
+    // Log request before span creation (worker not yet identified)
     debug!(
-        "handle_request: {} {} in thread {:?}",
+        "handle_request: {} {} in thread {:?}, x-worker-id: {:?}, x-worker-name: {:?}",
         method,
         uri,
-        std::thread::current().id()
+        std::thread::current().id(),
+        headers.get("x-worker-id").and_then(|h| h.to_str().ok()),
+        headers.get("x-worker-name").and_then(|h| h.to_str().ok())
     );
 
     // Acquire database connection
@@ -157,6 +160,16 @@ async fn handle_request(
         worker_name = tracing::field::Empty,
     );
     let _guard = span.enter();
+
+    // Log request within span (same info as before span, but now traced)
+    debug!(
+        "handle_request: {} {} in thread {:?}, x-worker-id: {:?}, x-worker-name: {:?}",
+        method,
+        uri,
+        std::thread::current().id(),
+        headers.get("x-worker-id").and_then(|h| h.to_str().ok()),
+        headers.get("x-worker-name").and_then(|h| h.to_str().ok())
+    );
 
     let host = headers
         .get("host")
