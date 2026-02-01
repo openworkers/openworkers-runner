@@ -26,6 +26,7 @@ async fn handle_scheduled_task(
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
 ) {
     // Start metrics timer
+    #[cfg_attr(not(feature = "telemetry"), allow(unused_mut))]
     let mut metrics_timer = crate::metrics::MetricsTimer::new();
 
     // Acquire connection per-task to avoid holding it across iterations
