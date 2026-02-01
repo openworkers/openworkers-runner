@@ -10,7 +10,8 @@
 //!
 //! // With telemetry feature + OTLP_ENDPOINT: OpenTelemetry
 //! // OTLP_ENDPOINT=https://otlp.example.com:4317
-//! // OTLP_API_KEY=xxx (optional)
+//! // OTLP_API_KEY=xxx (optional, convenience for api-key header)
+//! // OTLP_HEADERS=key1=value1,key2=value2 (optional, for custom headers)
 //! // OTLP_SERVICE_NAME=openworkers-runner (optional)
 //! telemetry::init();
 //!
@@ -79,14 +80,31 @@ fn init_otel() -> Result<(), Box<dyn std::error::Error>> {
     let service_name =
         std::env::var("OTLP_SERVICE_NAME").unwrap_or_else(|_| "openworkers-runner".to_string());
     let api_key = std::env::var("OTLP_API_KEY").ok();
+    let headers = std::env::var("OTLP_HEADERS").ok();
 
     // Generate unique instance ID (first 8 chars of UUID v4)
     let instance_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
 
     // Prepare metadata headers for authentication
     let mut metadata = MetadataMap::new();
+
+    // Convenience: OTLP_API_KEY sets api-key header
     if let Some(key) = &api_key {
         metadata.insert("api-key", MetadataValue::try_from(key)?);
+    }
+
+    // Parse OTLP_HEADERS (format: key1=value1,key2=value2)
+    if let Some(headers_str) = headers {
+        for header in headers_str.split(',') {
+            let parts: Vec<&str> = header.trim().splitn(2, '=').collect();
+            if parts.len() == 2 {
+                let key = parts[0].trim();
+                let value = parts[1].trim();
+                if let Ok(metadata_value) = MetadataValue::try_from(value) {
+                    metadata.insert(key, metadata_value);
+                }
+            }
+        }
     }
 
     // Configure TLS if endpoint is HTTPS
