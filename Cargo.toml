@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.12.3"
+version = "0.12.4"
 edition = "2024"
 license = "MIT"
 default-run = "openworkers-runner"
@@ -12,6 +12,14 @@ default = ["database"]
 v8 = ["dep:openworkers-runtime-v8"]
 wasm = ["dep:openworkers-runtime-wasm", "openworkers-core/wasm"]
 database = ["dep:postgate"]
+telemetry = [
+    "dep:opentelemetry",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry_sdk",
+    "dep:tracing-opentelemetry",
+    "dep:opentelemetry-appender-tracing",
+    "dep:tonic",
+]
 # Disabled runtimes (require core 0.5, we're on 0.7) - kept as empty features to avoid cfg warnings
 deno = []
 quickjs = []
@@ -31,6 +39,18 @@ flume = "0.12.0"
 once_cell = "1.19"
 env_logger = "0.11.6"
 lru = "0.16.3"
+
+# Tracing (always available)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# OpenTelemetry (optional, via telemetry feature)
+opentelemetry = { version = "0.31", optional = true }
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "tls-roots"], optional = true }
+tonic = { version = "0.14", optional = true }
+opentelemetry_sdk = { version = "0.31", optional = true }
+tracing-opentelemetry = { version = "0.32", optional = true }
+opentelemetry-appender-tracing = { version = "0.31", features = ["experimental_use_tracing_span_context"], optional = true }
 sqlx = { version = "0.8.6", features = [ "runtime-tokio", "postgres", "uuid", "bigdecimal", "rust_decimal" ] }
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls", "json", "stream"] }
 

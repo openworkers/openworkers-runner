@@ -333,7 +333,7 @@ fn error_response(status: u16, message: &str) -> Response<HyperBody> {
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     dotenvy::dotenv().ok();
-    env_logger::init();
+    openworkers_runner::telemetry::init();
 
     debug!("start main (hyper)");
 
