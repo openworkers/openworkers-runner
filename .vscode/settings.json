@@ -2,6 +2,7 @@
   "rust-analyzer.cargo.features": ["v8", "database"],
   "cSpell.words": [
     "actix",
+    "appender",
     "bigdecimal",
     "buildx",
     "chrono",

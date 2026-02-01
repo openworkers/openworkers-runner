@@ -73,7 +73,7 @@ pub async fn execute_with_schema(
     // Use a transaction to set search_path, then execute the query
     let safe_schema = schema_name.replace('"', "\"\"");
 
-    log::debug!(
+    tracing::debug!(
         "[db] pool stats - size: {}, idle: {}, acquiring transaction...",
         pool.size(),
         pool.num_idle()
@@ -84,7 +84,7 @@ pub async fn execute_with_schema(
         .await
         .map_err(|e| format!("Failed to start transaction: {}", e))?;
 
-    log::debug!("[db] transaction acquired in {:?}", start.elapsed());
+    tracing::debug!("[db] transaction acquired in {:?}", start.elapsed());
 
     // Set the search_path for this transaction
     sqlx::query(&format!("SET LOCAL search_path TO \"{}\"", safe_schema))
@@ -92,7 +92,7 @@ pub async fn execute_with_schema(
         .await
         .map_err(|e| format!("Failed to set search_path: {}", e))?;
 
-    log::debug!("[db] search_path set in {:?}", start.elapsed());
+    tracing::debug!("[db] search_path set in {:?}", start.elapsed());
 
     // Execute the user query
     let result = match mode {
@@ -100,14 +100,14 @@ pub async fn execute_with_schema(
         _ => execute_json_query_tx(&mut tx, sql, params, mode).await?,
     };
 
-    log::debug!("[db] query executed in {:?}", start.elapsed());
+    tracing::debug!("[db] query executed in {:?}", start.elapsed());
 
     // Commit the transaction
     tx.commit()
         .await
         .map_err(|e| format!("Failed to commit transaction: {}", e))?;
 
-    log::debug!("[db] transaction committed in {:?}", start.elapsed());
+    tracing::debug!("[db] transaction committed in {:?}", start.elapsed());
 
     Ok(result)
 }

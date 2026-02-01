@@ -4,7 +4,7 @@ use base64::engine::general_purpose::STANDARD;
 pub async fn nats_connect() -> async_nats::Client {
     let nats_servers = std::env::var("NATS_SERVERS").expect("env NATS_SERVERS is required");
 
-    log::debug!("connecting to nats: {nats_servers}");
+    tracing::debug!("connecting to nats: {nats_servers}");
 
     match std::env::var("NATS_CREDENTIALS") {
         Ok(credentials) => {

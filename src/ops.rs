@@ -37,6 +37,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use tracing::Instrument;
+
 use crate::limiter::BindingLimiters;
 #[cfg(feature = "database")]
 use crate::services::database::{self as db_service, QueryMode};
@@ -129,6 +131,8 @@ pub struct RunnerOperations {
     pub db_pool: Option<DbPool>,
     /// Binding limiters (rate limiting for fetch, KV, database, storage)
     pub limiters: BindingLimiters,
+    /// Tracing span for async operations (propagates trace context)
+    pub span: tracing::Span,
 }
 
 impl RunnerOperations {
@@ -141,12 +145,19 @@ impl RunnerOperations {
             bindings: BindingConfigs::new(),
             db_pool: None,
             limiters: BindingLimiters::default(),
+            span: tracing::Span::none(),
         }
     }
 
     /// Create with custom limiters based on RuntimeLimits
     pub fn with_limiters(mut self, limiters: BindingLimiters) -> Self {
         self.limiters = limiters;
+        self
+    }
+
+    /// Attach tracing span for context propagation
+    pub fn with_span(mut self, span: tracing::Span) -> Self {
+        self.span = span;
         self
     }
 
@@ -183,53 +194,57 @@ impl RunnerOperations {
         request: HttpRequest,
     ) -> OpFuture<'_, Result<HttpResponse, String>> {
         let binding_name = binding.to_string();
+        let span = self.span.clone();
 
-        Box::pin(async move {
-            // Acquire fetch limiter permit
-            let _guard = self
-                .limiters
-                .fetch
-                .acquire()
-                .await
-                .map_err(|e| e.to_string())?;
+        Box::pin(
+            async move {
+                // Acquire fetch limiter permit
+                let _guard = self
+                    .limiters
+                    .fetch
+                    .acquire()
+                    .await
+                    .map_err(|e| e.to_string())?;
 
-            self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
+                self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
 
-            log::debug!(
-                "[ops] binding_fetch {} {} {} (user={:?}, worker={:?})",
-                binding_name,
-                request.method,
-                request.url,
-                self.user_id,
-                self.worker_id
-            );
+                tracing::debug!(
+                    "[ops] binding_fetch {} {} {} (user={:?}, worker={:?})",
+                    binding_name,
+                    request.method,
+                    request.url,
+                    self.user_id,
+                    self.worker_id
+                );
 
-            // Build the actual S3/R2 URL
-            let url = build_s3_url(&config, &request.url)?;
+                // Build the actual S3/R2 URL
+                let url = build_s3_url(&config, &request.url)?;
 
-            // Create modified request with AWS signature
-            // Filter out Host header to avoid 421 Misdirected Request from S3/R2
-            let mut headers = request.headers.clone();
-            headers.remove("host");
-            headers.remove("Host");
+                // Create modified request with AWS signature
+                // Filter out Host header to avoid 421 Misdirected Request from S3/R2
+                let mut headers = request.headers.clone();
+                headers.remove("host");
+                headers.remove("Host");
 
-            let auth_request = HttpRequest {
-                url: url.clone(),
-                method: request.method,
-                headers,
-                body: request.body,
-            };
+                let auth_request = HttpRequest {
+                    url: url.clone(),
+                    method: request.method,
+                    headers,
+                    body: request.body,
+                };
 
-            // Sign the request with AWS Signature V4
-            let signed_headers = sign_s3_request(
-                &auth_request,
-                &config.access_key_id,
-                &config.secret_access_key,
-                &config.bucket,
-            )?;
+                // Sign the request with AWS Signature V4
+                let signed_headers = sign_s3_request(
+                    &auth_request,
+                    &config.access_key_id,
+                    &config.secret_access_key,
+                    &config.bucket,
+                )?;
 
-            do_fetch(auth_request, &self.stats, Some(&signed_headers)).await
-        })
+                do_fetch(auth_request, &self.stats, Some(&signed_headers)).await
+            }
+            .instrument(span),
+        )
     }
 }
 
@@ -248,36 +263,40 @@ impl OperationsHandler for RunnerOperations {
     /// Special case: URLs matching `*.workers.rocks` or `*.workers.dev.localhost`
     /// are routed internally to avoid DNS lookup and external network hop.
     fn handle_fetch(&self, request: HttpRequest) -> OpFuture<'_, Result<HttpResponse, String>> {
-        Box::pin(async move {
-            // Acquire fetch limiter permit (blocks if at concurrent limit, errors if total exceeded)
-            let _guard = self
-                .limiters
-                .fetch
-                .acquire()
-                .await
-                .map_err(|e| e.to_string())?;
+        let span = self.span.clone();
+        Box::pin(
+            async move {
+                // Acquire fetch limiter permit (blocks if at concurrent limit, errors if total exceeded)
+                let _guard = self
+                    .limiters
+                    .fetch
+                    .acquire()
+                    .await
+                    .map_err(|e| e.to_string())?;
 
-            self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
+                self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
 
-            log::debug!(
-                "[ops] fetch {} {} (user={:?}, worker={:?})",
-                request.method,
-                request.url,
-                self.user_id,
-                self.worker_id
-            );
-
-            // Check if this is an internal worker URL that should be routed directly
-            if let Some(internal_request) = try_internal_worker_route(&request) {
-                log::debug!(
-                    "[ops] fetch shortcut: {} -> internal routing via x-worker-name",
-                    request.url
+                tracing::debug!(
+                    "[ops] fetch {} {} (user={:?}, worker={:?})",
+                    request.method,
+                    request.url,
+                    self.user_id,
+                    self.worker_id
                 );
-                return do_fetch(internal_request, &self.stats, None).await;
-            }
 
-            do_fetch(request, &self.stats, None).await
-        })
+                // Check if this is an internal worker URL that should be routed directly
+                if let Some(internal_request) = try_internal_worker_route(&request) {
+                    tracing::debug!(
+                        "[ops] fetch shortcut: {} -> internal routing via x-worker-name",
+                        request.url
+                    );
+                    return do_fetch(internal_request, &self.stats, None).await;
+                }
+
+                do_fetch(request, &self.stats, None).await
+            }
+            .instrument(span),
+        )
     }
 
     /// Handle binding fetch: `env.ASSETS.fetch("/path")` or `env.STORAGE.fetch("/path")`
@@ -336,45 +355,49 @@ impl OperationsHandler for RunnerOperations {
             }
         };
 
-        Box::pin(async move {
-            // Acquire storage limiter permit
-            if let Err(e) = self.limiters.storage.acquire().await {
-                return StorageResult::Error(e.to_string());
-            }
+        let span = self.span.clone();
+        Box::pin(
+            async move {
+                // Acquire storage limiter permit
+                if let Err(e) = self.limiters.storage.acquire().await {
+                    return StorageResult::Error(e.to_string());
+                }
 
-            match op {
-                StorageOp::Fetch { key } => {
-                    log::debug!("[ops] storage {} fetch({})", binding_name, key);
+                match op {
+                    StorageOp::Fetch { key } => {
+                        tracing::debug!("[ops] storage {} fetch({})", binding_name, key);
 
-                    let request = HttpRequest {
-                        url: key,
-                        method: HttpMethod::Get,
-                        headers: Default::default(),
-                        body: RequestBody::None,
-                    };
+                        let request = HttpRequest {
+                            url: key,
+                            method: HttpMethod::Get,
+                            headers: Default::default(),
+                            body: RequestBody::None,
+                        };
 
-                    match self.do_binding_fetch(&binding_name, config, request).await {
-                        Ok(response) => StorageResult::Response(response),
-                        Err(e) => StorageResult::Error(e),
+                        match self.do_binding_fetch(&binding_name, config, request).await {
+                            Ok(response) => StorageResult::Response(response),
+                            Err(e) => StorageResult::Error(e),
+                        }
+                    }
+
+                    other => {
+                        let op_name = match &other {
+                            StorageOp::Get { key } => format!("get({})", key),
+                            StorageOp::Fetch { .. } => unreachable!(),
+                            StorageOp::Put { key, .. } => format!("put({})", key),
+                            StorageOp::Head { key } => format!("head({})", key),
+                            StorageOp::List { prefix, .. } => format!("list(prefix={:?})", prefix),
+                            StorageOp::Delete { key } => format!("delete({})", key),
+                        };
+
+                        tracing::debug!("[ops] storage {} {}", binding_name, op_name);
+
+                        execute_s3_operation(&config, other).await
                     }
                 }
-
-                other => {
-                    let op_name = match &other {
-                        StorageOp::Get { key } => format!("get({})", key),
-                        StorageOp::Fetch { .. } => unreachable!(),
-                        StorageOp::Put { key, .. } => format!("put({})", key),
-                        StorageOp::Head { key } => format!("head({})", key),
-                        StorageOp::List { prefix, .. } => format!("list(prefix={:?})", prefix),
-                        StorageOp::Delete { key } => format!("delete({})", key),
-                    };
-
-                    log::debug!("[ops] storage {} {}", binding_name, op_name);
-
-                    execute_s3_operation(&config, other).await
-                }
             }
-        })
+            .instrument(span),
+        )
     }
 
     /// Handle KV operation: `env.KV.get("key")`, `.put()`, `.delete()`
@@ -402,26 +425,30 @@ impl OperationsHandler for RunnerOperations {
         };
 
         let namespace_id = config.id.clone();
+        let span = self.span.clone();
 
-        Box::pin(async move {
-            // Acquire KV limiter permit
-            if let Err(e) = self.limiters.kv.acquire().await {
-                return KvResult::Error(e.to_string());
-            }
+        Box::pin(
+            async move {
+                // Acquire KV limiter permit
+                if let Err(e) = self.limiters.kv.acquire().await {
+                    return KvResult::Error(e.to_string());
+                }
 
-            match op {
-                KvOp::Get { key } => kv_service::get(&pool, &namespace_id, &key).await,
-                KvOp::Put {
-                    key,
-                    value,
-                    expires_in,
-                } => kv_service::put(&pool, &namespace_id, &key, &value, expires_in).await,
-                KvOp::Delete { key } => kv_service::delete(&pool, &namespace_id, &key).await,
-                KvOp::List { prefix, limit } => {
-                    kv_service::list(&pool, &namespace_id, prefix.as_deref(), limit).await
+                match op {
+                    KvOp::Get { key } => kv_service::get(&pool, &namespace_id, &key).await,
+                    KvOp::Put {
+                        key,
+                        value,
+                        expires_in,
+                    } => kv_service::put(&pool, &namespace_id, &key, &value, expires_in).await,
+                    KvOp::Delete { key } => kv_service::delete(&pool, &namespace_id, &key).await,
+                    KvOp::List { prefix, limit } => {
+                        kv_service::list(&pool, &namespace_id, prefix.as_deref(), limit).await
+                    }
                 }
             }
-        })
+            .instrument(span),
+        )
     }
 
     /// Handle database operation: `env.DB.query("SELECT ...")`
@@ -451,75 +478,84 @@ impl OperationsHandler for RunnerOperations {
 
         // Get shared pool for schema mode
         let shared_pool = self.db_pool.clone();
+        let span = self.span.clone();
 
-        Box::pin(async move {
-            // Acquire database limiter permit - hold guard until query completes
-            let _guard = match self.limiters.database.acquire().await {
-                Ok(guard) => guard,
-                Err(e) => return DatabaseResult::Error(e.to_string()),
-            };
+        Box::pin(
+            async move {
+                // Acquire database limiter permit - hold guard until query completes
+                let _guard = match self.limiters.database.acquire().await {
+                    Ok(guard) => guard,
+                    Err(e) => return DatabaseResult::Error(e.to_string()),
+                };
 
-            log::debug!(
-                "[ops] database limiter acquired, available permits: {}",
-                self.limiters.database.available_permits()
-            );
+                tracing::debug!(
+                    "[ops] database limiter acquired, available permits: {}",
+                    self.limiters.database.available_permits()
+                );
 
-            match op {
-                DatabaseOp::Query { sql, params } => {
-                    log::debug!(
-                        "[ops] database {} ({:?}) query: {} (params: {:?})",
-                        binding_name,
-                        config.provider,
-                        sql,
-                        params
-                    );
+                match op {
+                    DatabaseOp::Query { sql, params } => {
+                        tracing::debug!(
+                            "[ops] database {} ({:?}) query: {} (params: {:?})",
+                            binding_name,
+                            config.provider,
+                            sql,
+                            params
+                        );
 
-                    // Validate the SQL using postgate parser (allow all operations)
-                    let allowed_ops = std::collections::HashSet::new();
+                        // Validate the SQL using postgate parser (allow all operations)
+                        let allowed_ops = std::collections::HashSet::new();
 
-                    let parsed = match postgate::parse_and_validate(&sql, &allowed_ops) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            return DatabaseResult::Error(format!("SQL validation failed: {}", e));
-                        }
-                    };
-
-                    let mode = QueryMode::from_parsed(&parsed);
-
-                    // Execute based on provider mode
-                    let result = if let Some(ref conn_str) = config.connection_string {
-                        // postgres provider: direct connection
-                        db_service::execute_with_connection_string(conn_str, &sql, &params, mode)
-                            .await
-                    } else if let Some(ref schema_name) = config.schema_name {
-                        // platform provider: multi-tenant on shared pool
-                        match shared_pool {
-                            Some(pool) => {
-                                db_service::execute_with_schema(
-                                    &pool,
-                                    schema_name,
-                                    &sql,
-                                    &params,
-                                    mode,
-                                )
-                                .await
+                        let parsed = match postgate::parse_and_validate(&sql, &allowed_ops) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                return DatabaseResult::Error(format!(
+                                    "SQL validation failed: {}",
+                                    e
+                                ));
                             }
-                            None => Err("Shared database pool not configured".to_string()),
-                        }
-                    } else {
-                        Err(
-                            "Database config has neither connection_string nor schema_name"
-                                .to_string(),
-                        )
-                    };
+                        };
 
-                    match result {
-                        Ok(json) => DatabaseResult::Rows(json),
-                        Err(e) => DatabaseResult::Error(e),
+                        let mode = QueryMode::from_parsed(&parsed);
+
+                        // Execute based on provider mode
+                        let result = if let Some(ref conn_str) = config.connection_string {
+                            // postgres provider: direct connection
+                            db_service::execute_with_connection_string(
+                                conn_str, &sql, &params, mode,
+                            )
+                            .await
+                        } else if let Some(ref schema_name) = config.schema_name {
+                            // platform provider: multi-tenant on shared pool
+                            match shared_pool {
+                                Some(pool) => {
+                                    db_service::execute_with_schema(
+                                        &pool,
+                                        schema_name,
+                                        &sql,
+                                        &params,
+                                        mode,
+                                    )
+                                    .await
+                                }
+                                None => Err("Shared database pool not configured".to_string()),
+                            }
+                        } else {
+                            Err(
+                                "Database config has neither connection_string nor schema_name"
+                                    .to_string(),
+                            )
+                        };
+
+                        match result {
+                            Ok(json) => DatabaseResult::Rows(json),
+                            Err(e) => DatabaseResult::Error(e),
+                        }
                     }
                 }
             }
-        })
+            .instrument(span),
+        )
     }
 
     /// Handle worker binding: `env.SERVICE.fetch(request)`
@@ -543,38 +579,43 @@ impl OperationsHandler for RunnerOperations {
             }
         };
 
-        Box::pin(async move {
-            log::debug!(
-                "[ops] worker binding {} -> {} ({})",
-                binding_name,
-                config.name,
-                config.id
-            );
+        let span = self.span.clone();
 
-            // Build the internal URL for the target worker
-            // Runner listens on port 8080
-            let path = if request.url.starts_with('/') {
-                request.url.clone()
-            } else {
-                format!("/{}", request.url)
-            };
-            let internal_url = format!("http://127.0.0.1:8080{}", path);
+        Box::pin(
+            async move {
+                tracing::debug!(
+                    "[ops] worker binding {} -> {} ({})",
+                    binding_name,
+                    config.name,
+                    config.id
+                );
 
-            // Create the request with x-worker-id header to route to target
-            let mut headers = request.headers.clone();
-            headers.insert("x-worker-id".to_string(), config.id.clone());
-            headers.insert("x-request-id".to_string(), generate_request_id("binding"));
+                // Build the internal URL for the target worker
+                // Runner listens on port 8080
+                let path = if request.url.starts_with('/') {
+                    request.url.clone()
+                } else {
+                    format!("/{}", request.url)
+                };
+                let internal_url = format!("http://127.0.0.1:8080{}", path);
 
-            let internal_request = HttpRequest {
-                url: internal_url,
-                method: request.method,
-                headers,
-                body: request.body,
-            };
+                // Create the request with x-worker-id header to route to target
+                let mut headers = request.headers.clone();
+                headers.insert("x-worker-id".to_string(), config.id.clone());
+                headers.insert("x-request-id".to_string(), generate_request_id("binding"));
 
-            // Execute the request through the runner
-            do_fetch(internal_request, &OperationsStats::new(), None).await
-        })
+                let internal_request = HttpRequest {
+                    url: internal_url,
+                    method: request.method,
+                    headers,
+                    body: request.body,
+                };
+
+                // Execute the request through the runner
+                do_fetch(internal_request, &OperationsStats::new(), None).await
+            }
+            .instrument(span),
+        )
     }
 
     /// Handle log: `console.log("message")`
@@ -593,10 +634,10 @@ impl OperationsHandler for RunnerOperations {
 
         // Also log via the log crate for debugging
         match level {
-            LogLevel::Error => log::error!("[worker] {}", message),
-            LogLevel::Warn => log::warn!("[worker] {}", message),
-            LogLevel::Info | LogLevel::Log => log::info!("[worker] {}", message),
-            LogLevel::Debug | LogLevel::Trace => log::debug!("[worker] {}", message),
+            LogLevel::Error => tracing::error!("[worker] {}", message),
+            LogLevel::Warn => tracing::warn!("[worker] {}", message),
+            LogLevel::Info | LogLevel::Log => tracing::info!("[worker] {}", message),
+            LogLevel::Debug | LogLevel::Trace => tracing::debug!("[worker] {}", message),
         }
     }
 }

@@ -17,15 +17,57 @@ pub struct ScheduledData {
     pub worker_id: String,
 }
 
+/// Handler for a scheduled task that executes within the span context
+async fn handle_scheduled_task(
+    span: tracing::Span,
+    task_id: String,
+    data: ScheduledData,
+    db: sqlx::Pool<sqlx::Postgres>,
+    global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
+) {
+    // Acquire connection per-task to avoid holding it across iterations
+    let mut conn = match db.acquire().await {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::error!("Failed to acquire database connection: {}", err);
+            return;
+        }
+    };
+
+    let worker_id = store::WorkerIdentifier::Id(data.worker_id.clone());
+    let worker_data = match store::get_worker_with_bindings(&mut conn, worker_id).await {
+        Some(w) => w,
+        None => {
+            tracing::error!(
+                "worker not found: {}",
+                crate::utils::short_id(&data.worker_id)
+            );
+            return;
+        }
+    };
+
+    // Record worker info in span now that we have it
+    span.record("worker_id", tracing::field::display(&worker_data.id));
+    span.record("worker_name", tracing::field::display(&worker_data.name));
+    span.record("user_id", tracing::field::display(&worker_data.user_id));
+
+    // Connection is dropped here, returned to pool
+    drop(conn);
+
+    run_scheduled(task_id, data, worker_data, db, global_log_tx, span);
+}
+
 fn run_scheduled(
+    task_id: String,
     data: ScheduledData,
     worker_data: WorkerWithBindings,
     db_pool: DbPool,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
+    span: tracing::Span,
 ) {
     // Parse script before spawning (fail fast)
     if let Err(err) = prepare_script(&worker_data) {
-        log::error!("Failed to prepare script for scheduled task: {err:?}");
+        tracing::error!("Failed to prepare script for scheduled task: {err:?}");
         return;
     }
 
@@ -36,7 +78,7 @@ fn run_scheduled(
     {
         Ok(permit) => permit,
         Err(_) => {
-            log::warn!(
+            tracing::warn!(
                 "worker pool saturated, skipping scheduled task for worker: {}",
                 data.worker_id
             );
@@ -46,48 +88,54 @@ fn run_scheduled(
 
     // Execute task using common executor (fire-and-forget)
     // Note: scheduled tasks create their own response channel internally
-    tokio::spawn(async move {
-        // Create task event with schedule source
-        let task_id = format!("scheduled-{}", data.id);
-        let (event, res_rx) = Event::from_schedule(task_id, data.scheduled_time);
+    // Span is inherited from parent context via .instrument()
+    use tracing::Instrument;
 
-        let config = TaskExecutionConfig {
-            worker_data,
-            permit,
-            task: event,
-            db_pool,
-            global_log_tx,
-            limits: task_executor::TaskExecutionConfig::default_limits(),
-            external_timeout_ms: None, // No external timeout for scheduled tasks
-        };
+    tokio::spawn(
+        async move {
+            // Create task event with schedule source
+            let (event, res_rx) = Event::from_schedule(task_id, data.scheduled_time);
 
-        // Execute the task
-        let result = task_executor::execute_task_await(config).await;
+            let config = TaskExecutionConfig {
+                worker_data,
+                permit,
+                task: event,
+                db_pool,
+                global_log_tx,
+                limits: task_executor::TaskExecutionConfig::default_limits(),
+                external_timeout_ms: None, // No external timeout for scheduled tasks
+                span: tracing::Span::current(),
+            };
 
-        // Log the execution result
-        match result {
-            Ok(()) => {
-                log::debug!("scheduled task exec completed successfully");
-                // Wait for the task event handler to respond
-                match res_rx.await {
-                    Ok(task_result) => {
-                        if task_result.success {
-                            log::debug!("scheduled task responded successfully");
-                        } else {
-                            log::error!(
-                                "scheduled task failed: {}",
-                                task_result.error.unwrap_or_default()
-                            );
+            // Execute the task
+            let result = task_executor::execute_task_await(config).await;
+
+            // Log the execution result
+            match result {
+                Ok(()) => {
+                    tracing::debug!("scheduled task exec completed successfully");
+                    // Wait for the task event handler to respond
+                    match res_rx.await {
+                        Ok(task_result) => {
+                            if task_result.success {
+                                tracing::debug!("scheduled task responded successfully");
+                            } else {
+                                tracing::error!(
+                                    "scheduled task failed: {}",
+                                    task_result.error.unwrap_or_default()
+                                );
+                            }
                         }
+                        Err(err) => tracing::error!("scheduled task response error: {err}"),
                     }
-                    Err(err) => log::error!("scheduled task response error: {err}"),
+                }
+                Err(reason) => {
+                    tracing::error!("scheduled task terminated: {:?}", reason);
                 }
             }
-            Err(reason) => {
-                log::error!("scheduled task terminated: {:?}", reason);
-            }
         }
-    });
+        .instrument(span),
+    );
 }
 
 pub fn handle_scheduled(
@@ -111,7 +159,7 @@ pub fn handle_scheduled(
                 .await
                 .expect("failed to subscribe to scheduled");
 
-            log::debug!("listening for scheduled tasks");
+            tracing::debug!("listening for scheduled tasks");
 
             let notify = crate::worker_pool::TASK_COMPLETION_NOTIFY.clone();
 
@@ -126,61 +174,61 @@ pub fn handle_scheduled(
                     _ = notify.notified() => {
                         // Check if draining and stop listening
                         if crate::worker_pool::is_draining() {
-                            log::info!("Runner is draining - stopping scheduled task listener");
+                            tracing::info!("Runner is draining - stopping scheduled task listener");
                             break;
                         }
                         continue;
                     }
                 };
 
-                log::debug!("scheduled task received: {:?}", msg);
+                tracing::debug!("scheduled task received: {:?}", msg);
 
                 let data: ScheduledData =
                     match serde_json::from_slice::<ScheduledData>(&msg.payload) {
                         Ok(msg) => msg,
                         Err(err) => {
-                            log::error!("failed to parse scheduled task: {:?}", err);
+                            tracing::error!("failed to parse scheduled task: {:?}", err);
                             continue;
                         }
                     };
 
-                log::debug!("scheduled task parsed: {:?}", data);
+                tracing::debug!("scheduled task parsed: {:?}", data);
 
-                // Acquire connection per-task to avoid holding it across iterations
-                let mut conn = match db.acquire().await {
-                    Ok(c) => c,
-                    Err(err) => {
-                        log::error!("Failed to acquire database connection: {}", err);
-                        continue;
-                    }
-                };
+                // Create span for this scheduled task early
+                let task_id = format!("scheduled-{}", data.id);
+                let cron = format!("\"{}\"", data.cron);
+                let span = tracing::info_span!(
+                    "scheduled_task",
+                    task_id = %task_id,
+                    cron = %cron,
+                    worker_id = tracing::field::Empty,
+                    worker_name = tracing::field::Empty,
+                    user_id = tracing::field::Empty,
+                );
 
-                let worker_id = store::WorkerIdentifier::Id(data.worker_id.clone());
-                let worker_data = match store::get_worker_with_bindings(&mut conn, worker_id).await
-                {
-                    Some(w) => w,
-                    None => {
-                        log::error!(
-                            "worker not found: {}",
-                            crate::utils::short_id(&data.worker_id)
-                        );
-                        continue;
-                    }
-                };
+                // Use Instrument trait for async operations
+                use tracing::Instrument;
 
-                // Connection is dropped here, returned to pool
-
-                run_scheduled(data, worker_data, db.clone(), global_log_tx.clone());
+                // Execute the task handler within the span context
+                handle_scheduled_task(
+                    span.clone(),
+                    task_id,
+                    data,
+                    db.clone(),
+                    global_log_tx.clone(),
+                )
+                .instrument(span)
+                .await;
             }
 
-            log::debug!("scheduled task listener stopped");
+            tracing::debug!("scheduled task listener stopped");
         });
 
-        log::debug!("subscribing to scheduled {:?}", handle);
+        tracing::debug!("subscribing to scheduled {:?}", handle);
 
         match local.block_on(&rt, handle) {
             Ok(()) => {}
-            Err(err) => log::error!("failed to wait for end: {err}"),
+            Err(err) => tracing::error!("failed to wait for end: {err}"),
         }
     });
 }

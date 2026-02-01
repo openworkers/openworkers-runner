@@ -1,6 +1,7 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
+use tracing::Instrument;
 
 use crate::log::WorkerLogHandler;
 use crate::ops::{DbPool, RunnerOperations};
@@ -22,19 +23,24 @@ pub enum V8ExecuteMode {
     Oneshot,
 }
 
+/// Cached execution mode (read once from environment)
+static V8_EXECUTE_MODE: OnceLock<V8ExecuteMode> = OnceLock::new();
+
 impl V8ExecuteMode {
-    /// Parse from environment variable value (case-insensitive)
-    pub fn from_env() -> Self {
-        match std::env::var("V8_EXECUTE")
-            .ok()
-            .map(|s| s.to_uppercase())
-            .as_deref()
-        {
-            Some("PINNED") => Self::Pinned,
-            Some("POOLED") => Self::Pooled,
-            Some("ONESHOT") => Self::Oneshot,
-            _ => Self::default(),
-        }
+    /// Get the execution mode (cached, read from V8_EXECUTE env var on first call)
+    pub fn get() -> Self {
+        *V8_EXECUTE_MODE.get_or_init(|| {
+            match std::env::var("V8_EXECUTE")
+                .ok()
+                .map(|s| s.to_uppercase())
+                .as_deref()
+            {
+                Some("PINNED") => Self::Pinned,
+                Some("POOLED") => Self::Pooled,
+                Some("ONESHOT") => Self::Oneshot,
+                _ => Self::default(),
+            }
+        })
     }
 }
 
@@ -56,6 +62,7 @@ pub struct TaskExecutionConfig {
     pub global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
     pub limits: RuntimeLimits,
     pub external_timeout_ms: Option<u64>,
+    pub span: tracing::Span,
 }
 
 impl TaskExecutionConfig {
@@ -83,7 +90,7 @@ fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponent
     let script = match prepare_script(&config.worker_data) {
         Ok(s) => s,
         Err(err) => {
-            log::error!("Failed to prepare script: {err:?}");
+            tracing::error!("Failed to prepare script: {err:?}");
             return None;
         }
     };
@@ -96,7 +103,8 @@ fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponent
             .with_worker_id(config.worker_data.id.clone())
             .with_log_tx(log_tx)
             .with_bindings(config.worker_data.bindings.clone())
-            .with_db_pool(config.db_pool.clone()),
+            .with_db_pool(config.db_pool.clone())
+            .with_span(config.span.clone()),
     );
 
     Some(TaskComponents {
@@ -120,7 +128,7 @@ async fn run_task_with_timeout_worker(
             match tokio::time::timeout(timeout_duration, worker.exec(task)).await {
                 Ok(result) => result,
                 Err(_) => {
-                    log::error!(
+                    tracing::error!(
                         "Task execution timeout after {}ms (external timeout)",
                         timeout_ms
                     );
@@ -168,56 +176,60 @@ pub async fn execute_task_await_v8_pooled(
     let permit = config.permit;
     let limits = config.limits;
     let code_type = components.code_type.clone();
-    let execute_mode = V8ExecuteMode::from_env();
+    let execute_mode = V8ExecuteMode::get();
+    let span = config.span.clone();
 
     WORKER_POOL
-        .spawn_await(move || async move {
-            // Wrap permit to automatically notify drain monitor on drop
-            let _permit = TaskPermit::new(permit);
+        .spawn_await(move || {
+            async move {
+                // Wrap permit to automatically notify drain monitor on drop
+                let _permit = TaskPermit::new(permit);
 
-            let result = match execute_mode {
-                V8ExecuteMode::Pinned => {
-                    // Thread-pinned pool (default, best performance)
-                    openworkers_runtime_v8::execute_pinned(
-                        &owner_id,
-                        components.script,
-                        components.ops,
-                        task,
-                    )
-                    .await
-                }
-                V8ExecuteMode::Pooled => {
-                    // Global pool with mutex
-                    openworkers_runtime_v8::execute_pooled(
-                        &owner_id,
-                        components.script,
-                        components.ops,
-                        task,
-                    )
-                    .await
-                }
-                V8ExecuteMode::Oneshot => {
-                    // Fresh isolate per request (no caching)
-                    let mut worker =
-                        create_worker(components.script, limits, components.ops, &code_type)
-                            .await
-                            .map_err(|err| {
-                                log::error!("Failed to create worker: {err:?}");
-                                err
-                            })?;
+                let result = match execute_mode {
+                    V8ExecuteMode::Pinned => {
+                        // Thread-pinned pool (default, best performance)
+                        openworkers_runtime_v8::execute_pinned(
+                            &owner_id,
+                            components.script,
+                            components.ops,
+                            task,
+                        )
+                        .await
+                    }
+                    V8ExecuteMode::Pooled => {
+                        // Global pool with mutex
+                        openworkers_runtime_v8::execute_pooled(
+                            &owner_id,
+                            components.script,
+                            components.ops,
+                            task,
+                        )
+                        .await
+                    }
+                    V8ExecuteMode::Oneshot => {
+                        // Fresh isolate per request (no caching)
+                        let mut worker =
+                            create_worker(components.script, limits, components.ops, &code_type)
+                                .await
+                                .map_err(|err| {
+                                    tracing::error!("Failed to create worker: {err:?}");
+                                    err
+                                })?;
 
-                    worker.exec(task).await
-                }
-            };
+                        worker.exec(task).await
+                    }
+                };
 
-            // CRITICAL: Flush logs before returning
-            components.log_handler.flush();
+                // CRITICAL: Flush logs before returning
+                components.log_handler.flush();
 
-            result
+                result
+            }
+            .instrument(span)
         })
         .await
         .unwrap_or_else(|_| {
-            log::error!("Worker pool channel closed unexpectedly");
+            tracing::error!("Worker pool channel closed unexpectedly");
             Err(TerminationReason::Other(
                 "Worker pool channel closed".to_string(),
             ))
@@ -254,38 +266,42 @@ pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), Termi
         let task = config.task;
         let external_timeout_ms = config.external_timeout_ms;
         let permit = config.permit;
+        let span = config.span.clone();
 
         WORKER_POOL
-            .spawn_await(move || async move {
-                // Wrap permit to automatically notify drain monitor on drop
-                let _permit = TaskPermit::new(permit);
+            .spawn_await(move || {
+                async move {
+                    // Wrap permit to automatically notify drain monitor on drop
+                    let _permit = TaskPermit::new(permit);
 
-                let mut worker = crate::worker::create_worker(
-                    components.script,
-                    limits,
-                    components.ops,
-                    &components.code_type,
-                )
-                .await
-                .map_err(|err| {
-                    log::error!("Failed to create worker: {err:?}");
-                    err
-                })?;
+                    let mut worker = crate::worker::create_worker(
+                        components.script,
+                        limits,
+                        components.ops,
+                        &components.code_type,
+                    )
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Failed to create worker: {err:?}");
+                        err
+                    })?;
 
-                let result =
-                    run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
+                    let result =
+                        run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
 
-                // CRITICAL: Flush logs before worker is dropped to prevent log loss
-                components.log_handler.flush();
+                    // CRITICAL: Flush logs before worker is dropped to prevent log loss
+                    components.log_handler.flush();
 
-                // TaskPermit is automatically dropped here, releasing the semaphore
-                // and notifying the drain monitor
+                    // TaskPermit is automatically dropped here, releasing the semaphore
+                    // and notifying the drain monitor
 
-                result
+                    result
+                }
+                .instrument(span)
             })
             .await
             .unwrap_or_else(|_| {
-                log::error!("Worker pool channel closed unexpectedly");
+                tracing::error!("Worker pool channel closed unexpectedly");
                 Err(TerminationReason::Other(
                     "Worker pool channel closed".to_string(),
                 ))
@@ -321,7 +337,7 @@ pub fn execute_task(config: TaskExecutionConfig) {
         {
             Ok(w) => w,
             Err(err) => {
-                log::error!("Failed to create worker: {err:?}");
+                tracing::error!("Failed to create worker: {err:?}");
                 components.log_handler.flush();
                 return;
             }
@@ -330,8 +346,8 @@ pub fn execute_task(config: TaskExecutionConfig) {
         let result = run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
 
         match result {
-            Ok(()) => log::debug!("Task completed successfully"),
-            Err(reason) => log::error!("Task failed: {:?}", reason),
+            Ok(()) => tracing::debug!("Task completed successfully"),
+            Err(reason) => tracing::error!("Task failed: {:?}", reason),
         }
 
         // CRITICAL: Flush logs before worker is dropped to prevent log loss

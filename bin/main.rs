@@ -4,12 +4,12 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
-use log::{debug, error, warn};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpSocket;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::oneshot::channel;
+use tracing::{debug, error, info, warn};
 
 use openworkers_core::{HttpRequest, HttpResponse, HyperBody};
 use openworkers_runner::store::WorkerIdentifier;
@@ -116,17 +116,20 @@ async fn handle_request(
             .unwrap());
     }
 
-    debug!(
-        "handle_request: {} {} in thread {:?}",
-        req.method(),
-        req.uri(),
-        std::thread::current().id()
-    );
-
     // Extract parts before consuming the body
     let method = req.method().clone();
     let uri = req.uri().clone();
     let headers = req.headers().clone();
+
+    // Log request before span creation (worker not yet identified)
+    debug!(
+        "handle_request: {} {} in thread {:?}, x-worker-id: {:?}, x-worker-name: {:?}",
+        method,
+        uri,
+        std::thread::current().id(),
+        headers.get("x-worker-id").and_then(|h| h.to_str().ok()),
+        headers.get("x-worker-name").and_then(|h| h.to_str().ok())
+    );
 
     // Acquire database connection
     let mut conn: sqlx::pool::PoolConnection<sqlx::Postgres> = match state.db.acquire().await {
@@ -145,6 +148,38 @@ async fn handle_request(
         },
         None => return Ok(error_response(400, "Missing request id")),
     };
+
+    // Create tracing span for this request
+    let span = tracing::info_span!(
+        "request",
+        request_id = %request_id,
+        method = %method,
+        uri = %uri,
+        worker_id = tracing::field::Empty,
+        worker_name = tracing::field::Empty,
+        user_id = tracing::field::Empty,
+    );
+
+    // Use Instrument trait for async operations
+    use tracing::Instrument;
+
+    // Execute the rest of the handler within the span context
+    handle_worker_request(state, span.clone(), &mut conn, &method, &uri, &headers, req)
+        .instrument(span)
+        .await
+}
+
+/// Inner handler that executes within the request span context
+async fn handle_worker_request(
+    state: &AppState,
+    span: tracing::Span,
+    conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
+    method: &hyper::Method,
+    uri: &hyper::Uri,
+    headers: &hyper::HeaderMap,
+    req: Request<hyper::body::Incoming>,
+) -> Result<Response<HyperBody>, std::convert::Infallible> {
+    debug!("handle_request: {} {}", method, uri);
 
     let host = headers
         .get("host")
@@ -175,14 +210,11 @@ async fn handle_request(
             worker_name = Some(host.split('.').next().unwrap().to_string());
         } else {
             worker_id =
-                openworkers_runner::store::get_worker_id_from_domain(&mut conn, host.clone()).await;
+                openworkers_runner::store::get_worker_id_from_domain(conn, host.clone()).await;
         }
     }
 
-    debug!(
-        "request_id: {}, worker_id: {:?}, worker_name: {:?}",
-        request_id, worker_id, worker_name
-    );
+    debug!("worker_id: {:?}, worker_name: {:?}", worker_id, worker_name);
 
     let worker_identifier = match (worker_id, worker_name) {
         (Some(id), _) => WorkerIdentifier::Id(id),
@@ -190,8 +222,7 @@ async fn handle_request(
         _ => return Ok(error_response(400, "Missing worker id or name")),
     };
 
-    let worker =
-        openworkers_runner::store::get_worker_with_bindings(&mut conn, worker_identifier).await;
+    let worker = openworkers_runner::store::get_worker_with_bindings(conn, worker_identifier).await;
 
     debug!("worker found: {:?}", worker.is_some());
 
@@ -199,6 +230,11 @@ async fn handle_request(
         Some(worker) => worker,
         None => return Ok(error_response(404, "Worker not found")),
     };
+
+    // Record worker info in span now that we have it
+    span.record("worker_id", tracing::field::display(&worker.id));
+    span.record("worker_name", tracing::field::display(&worker.name));
+    span.record("user_id", tracing::field::display(&worker.user_id));
 
     let start = tokio::time::Instant::now();
 
@@ -212,7 +248,7 @@ async fn handle_request(
     };
 
     // Convert to our HttpRequest using the extracted parts
-    let mut request = HttpRequest::from_hyper_parts(&method, &uri, &headers, body_bytes, "http");
+    let mut request = HttpRequest::from_hyper_parts(method, uri, headers, body_bytes, "http");
 
     // Add worker headers if not present
     if !request.headers.contains_key("x-worker-id") {
@@ -270,6 +306,7 @@ async fn handle_request(
         permit,
         state.db.clone(),
         state.wall_clock_timeout_ms,
+        span.clone(),
     );
 
     // TODO: Pass disconnect_rx to the worker so it can stop processing
@@ -333,7 +370,7 @@ fn error_response(status: u16, message: &str) -> Response<HyperBody> {
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     dotenvy::dotenv().ok();
-    env_logger::init();
+    openworkers_runner::telemetry::init();
 
     debug!("start main (hyper)");
 
@@ -363,7 +400,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(100); // Default: 100ms
 
-    let v8_execute_mode = openworkers_runner::V8ExecuteMode::from_env();
+    let v8_execute_mode = openworkers_runner::V8ExecuteMode::get();
 
     debug!(
         "Isolate pool config: max_size={}, heap_initial={}MB, heap_max={}MB, wall_clock_timeout={}ms, cpu_time_limit={}ms",
@@ -529,14 +566,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             _ = sigint.recv() => {},
         }
 
-        log::info!(
+        tracing::info!(
             "Received signal - initiating graceful drain (press Ctrl+C again to force exit)"
         );
         openworkers_runner::worker_pool::set_draining(true);
 
         // Check if already no active tasks
         if openworkers_runner::worker_pool::get_active_tasks() == 0 {
-            log::info!("No active tasks - shutting down immediately");
+            tracing::info!("No active tasks - shutting down immediately");
             let _ = shutdown_tx_signal.send(()).await;
             return;
         }
@@ -547,7 +584,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             _ = sigint.recv() => {},
         }
 
-        log::warn!("Received second signal - forcing exit");
+        tracing::warn!("Received second signal - forcing exit");
         std::process::exit(1);
     });
 
@@ -564,7 +601,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 debug!("Draining: {} active tasks remaining", active);
 
                 if active == 0 {
-                    log::info!("All tasks completed while draining - shutting down gracefully");
+                    tracing::info!("All tasks completed while draining - shutting down gracefully");
                     let _ = shutdown_tx_drain.send(()).await;
                     break;
                 }
@@ -582,7 +619,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .unwrap_or(4)
         });
 
-    println!(
+    info!(
         "Listening on http://{} with {} listeners",
         addr, num_listeners
     );
@@ -628,7 +665,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Wait for graceful shutdown signal
     shutdown_rx.recv().await;
 
-    log::info!("Shutdown signal received - exiting");
+    tracing::info!("Shutdown signal received - exiting");
 
     Ok(())
 }

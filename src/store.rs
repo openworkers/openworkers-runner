@@ -199,7 +199,7 @@ pub async fn get_worker(
     conn: &mut sqlx::PgConnection,
     identifier: WorkerIdentifier,
 ) -> Option<WorkerData> {
-    log::debug!("get_worker: {:?}", identifier);
+    tracing::debug!("get_worker: {:?}", identifier);
 
     let query = format!(
         r#"
@@ -235,7 +235,7 @@ pub async fn get_worker(
         .await
     {
         Ok(worker) => {
-            log::debug!(
+            tracing::debug!(
                 "worker found: id: {}, version: {}, code_type: {:?}",
                 worker.id,
                 worker.version,
@@ -244,7 +244,7 @@ pub async fn get_worker(
             Some(worker)
         }
         Err(err) => {
-            log::warn!("worker not found: {:?}", err);
+            tracing::warn!("worker not found: {:?}", err);
             None
         }
     }
@@ -263,7 +263,7 @@ pub async fn get_worker_with_bindings(
     conn: &mut sqlx::PgConnection,
     identifier: WorkerIdentifier,
 ) -> Option<WorkerWithBindings> {
-    log::debug!("get_worker_with_bindings: {:?}", identifier);
+    tracing::debug!("get_worker_with_bindings: {:?}", identifier);
 
     // First get the basic worker data with code from deployments
     let worker_query = format!(
@@ -307,7 +307,7 @@ pub async fn get_worker_with_bindings(
     {
         Ok(w) => w,
         Err(err) => {
-            log::warn!("worker not found: {:?}", err);
+            tracing::warn!("worker not found: {:?}", err);
             return None;
         }
     };
@@ -330,7 +330,7 @@ pub async fn get_worker_with_bindings(
     {
         Ok(rows) => rows,
         Err(err) => {
-            log::warn!("failed to fetch bindings: {:?}", err);
+            tracing::warn!("failed to fetch bindings: {:?}", err);
             Vec::new()
         }
     };
@@ -418,7 +418,7 @@ pub async fn get_worker_with_bindings(
         }
     }
 
-    log::debug!(
+    tracing::debug!(
         "worker found: id: {}, version: {}, bindings: {}, type: {}",
         short_id(&basic.id),
         basic.version,
@@ -477,7 +477,7 @@ async fn fetch_storage_config(
             public_url: row.public_url,
         }),
         Err(err) => {
-            log::warn!("failed to fetch storage_config {}: {:?}", config_id, err);
+            tracing::warn!("failed to fetch storage_config {}: {:?}", config_id, err);
             None
         }
     }
@@ -507,7 +507,7 @@ async fn fetch_kv_config(conn: &mut sqlx::PgConnection, config_id: &str) -> Opti
             name: row.name,
         }),
         Err(err) => {
-            log::warn!("failed to fetch kv_config {}: {:?}", config_id, err);
+            tracing::warn!("failed to fetch kv_config {}: {:?}", config_id, err);
             None
         }
     }
@@ -550,7 +550,7 @@ async fn fetch_database_config(
             timeout_seconds: row.timeout_seconds,
         }),
         Err(err) => {
-            log::warn!("failed to fetch database_config {}: {:?}", config_id, err);
+            tracing::warn!("failed to fetch database_config {}: {:?}", config_id, err);
             None
         }
     }
@@ -583,7 +583,7 @@ async fn fetch_worker_binding_config(
             name: row.name,
         }),
         Err(err) => {
-            log::warn!(
+            tracing::warn!(
                 "failed to fetch worker_binding {}: {:?}",
                 short_id(worker_id),
                 err
@@ -605,7 +605,7 @@ pub async fn get_worker_id_from_domain(
     match query.fetch_one(conn).await {
         Ok(worker_id) => worker_id,
         Err(err) => {
-            log::warn!("failed to get worker id from domain: {:?}", err);
+            tracing::warn!("failed to get worker id from domain: {:?}", err);
             None
         }
     }
