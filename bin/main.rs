@@ -155,7 +155,7 @@ async fn handle_request(
         request_id = %request_id,
         http_method = %method,
         uri = %uri,
-        hostname = tracing::field::Empty,
+        http_host = tracing::field::Empty,
         response_status_code = tracing::field::Empty,
         worker_id = tracing::field::Empty,
         worker_name = tracing::field::Empty,
@@ -190,9 +190,9 @@ async fn handle_worker_request(
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
-    // Record hostname (even if worker not found)
+    // Record HTTP host header (even if worker not found)
     if let Some(ref hostname) = host {
-        span.record("hostname", hostname.as_str());
+        span.record("http_host", hostname.as_str());
     }
 
     let worker_id = headers
