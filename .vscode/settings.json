@@ -1,5 +1,5 @@
 {
-  "rust-analyzer.cargo.features": ["v8", "database"],
+  "rust-analyzer.cargo.features": ["v8", "database", "telemetry"],
   "cSpell.words": [
     "actix",
     "appender",

@@ -702,6 +702,26 @@ impl std::fmt::Display for BackendType {
     }
 }
 
+/// Asset type for storage routes (mapped from priority)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AssetType {
+    Immutable,   // priority 3 - hashed files, cache forever
+    Static,      // priority 2 - public files (robots.txt, favicon, etc.)
+    Prerendered, // priority 1 - HTML pages (need .html extension)
+}
+
+impl AssetType {
+    /// Map from database priority to asset type
+    pub fn from_priority(priority: i32) -> Option<Self> {
+        match priority {
+            3 => Some(AssetType::Immutable),
+            2 => Some(AssetType::Static),
+            1 => Some(AssetType::Prerendered),
+            _ => None,
+        }
+    }
+}
+
 /// Project route
 #[derive(Debug, Clone)]
 pub struct Route {
@@ -720,6 +740,7 @@ pub struct RequestResolution {
     pub project_id: Option<String>,
     pub backend_type: BackendType,
     pub assets_storage_id: Option<String>,
+    pub asset_type: Option<AssetType>,
 }
 
 /// Resolve worker from request in a single DB call
@@ -740,10 +761,11 @@ pub async fn resolve_worker_from_request(
         project_id: Option<String>,
         backend_type: BackendType,
         assets_storage_id: Option<String>,
+        priority: Option<i32>,
     }
 
     let result = sqlx::query_as::<_, ResolutionRow>(
-        "SELECT worker_id::text, project_id::text, backend_type, assets_storage_id::text
+        "SELECT worker_id::text, project_id::text, backend_type, assets_storage_id::text, priority
          FROM resolve_worker_from_request($1, $2::uuid, $3, $4)",
     )
     .bind(domain)
@@ -759,6 +781,7 @@ pub async fn resolve_worker_from_request(
             project_id: row.project_id,
             backend_type: row.backend_type,
             assets_storage_id: row.assets_storage_id,
+            asset_type: row.priority.and_then(AssetType::from_priority),
         }),
         Err(err) => {
             tracing::debug!("Failed to resolve request: {:?}", err);

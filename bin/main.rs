@@ -239,38 +239,40 @@ async fn handle_worker_request(
     // Handle resolution result
     let worker = match resolution {
         Some(res) => {
+            use openworkers_runner::BackendType;
+            use openworkers_runner::store::get_worker_with_bindings;
+
             // Project routing: check backend type
             if res.project_id.is_some() {
                 // Record backend type for telemetry
                 span.record("backend_type", tracing::field::display(&res.backend_type));
 
                 match res.backend_type {
-                    openworkers_runner::BackendType::Worker => {
+                    BackendType::Worker => {
                         if let Some(worker_id) = res.worker_id {
-                            let worker = openworkers_runner::store::get_worker_with_bindings(
-                                conn,
-                                WorkerIdentifier::Id(worker_id),
-                            )
-                            .await;
+                            let worker =
+                                get_worker_with_bindings(conn, WorkerIdentifier::Id(worker_id))
+                                    .await;
 
                             match worker {
                                 Some(w) => w,
                                 None => {
                                     return Ok(error_response_with_span(
                                         &span,
-                                        404,
-                                        "Worker not found",
+                                        500,
+                                        "Route has worker backend but worker not found",
                                     ));
                                 }
                             }
                         } else {
-                            return Ok(error_response(
+                            return Ok(error_response_with_span(
+                                &span,
                                 500,
                                 "Route has worker backend but no worker_id",
                             ));
                         }
                     }
-                    openworkers_runner::BackendType::Storage => {
+                    BackendType::Storage => {
                         use openworkers_core::{
                             HttpMethod, HttpRequest, OperationsHandler, RequestBody,
                         };
@@ -279,7 +281,11 @@ async fn handle_worker_request(
                         let storage_config_id = match &res.assets_storage_id {
                             Some(id) => id,
                             None => {
-                                return Ok(error_response(500, "ASSETS storage config not found"));
+                                return Ok(error_response_with_span(
+                                    &span,
+                                    500,
+                                    "ASSETS storage config not found",
+                                ));
                             }
                         };
 
@@ -287,9 +293,16 @@ async fn handle_worker_request(
                         let storage_config =
                             openworkers_runner::store::get_storage_config(conn, storage_config_id)
                                 .await;
+
                         let storage_config = match storage_config {
                             Some(config) => config,
-                            None => return Ok(error_response(500, "Storage config not found")),
+                            None => {
+                                return Ok(error_response_with_span(
+                                    &span,
+                                    500,
+                                    "Storage config not found",
+                                ));
+                            }
                         };
 
                         // Create RunnerOperations with ASSETS binding to get limiters and stats
@@ -300,9 +313,25 @@ async fn handle_worker_request(
                             },
                         ]);
 
+                        // Transform path for prerendered routes (add .html extension)
+                        // Static routes are stored with .html extension and don't need transformation
+                        let request_path = if matches!(
+                            res.asset_type,
+                            Some(openworkers_runner::store::AssetType::Prerendered)
+                        ) && !path.contains('.')
+                        {
+                            if path == "/" || path.is_empty() {
+                                "/index.html".to_string()
+                            } else {
+                                format!("{}.html", path)
+                            }
+                        } else {
+                            path.to_string()
+                        };
+
                         // Create HttpRequest for binding fetch
                         let http_request = HttpRequest {
-                            url: path.to_string(),
+                            url: request_path,
                             method: HttpMethod::Get,
                             headers: std::collections::HashMap::new(),
                             body: RequestBody::None,
@@ -331,8 +360,12 @@ async fn handle_worker_request(
                                 );
 
                                 error!("Failed to fetch from storage: {}", e);
-                                span.record("response_status_code", 404u16);
-                                return Ok(error_response(404, "File not found"));
+                                span.record("response_status_code", 500u16);
+                                return Ok(error_response_with_span(
+                                    &span,
+                                    500,
+                                    "Failed to fetch from storage",
+                                ));
                             }
                         }
                     }
@@ -341,16 +374,18 @@ async fn handle_worker_request(
             // Standalone worker
             else if let Some(worker_id) = res.worker_id {
                 // Record backend type for standalone workers
-                span.record("backend_type", "worker");
-                let worker = openworkers_runner::store::get_worker_with_bindings(
-                    conn,
-                    WorkerIdentifier::Id(worker_id),
-                )
-                .await;
+                span.record("backend_type", tracing::field::display(BackendType::Worker));
+                let worker = get_worker_with_bindings(conn, WorkerIdentifier::Id(worker_id)).await;
 
                 match worker {
                     Some(w) => w,
-                    None => return Ok(error_response_with_span(&span, 404, "Worker not found")),
+                    None => {
+                        return Ok(error_response_with_span(
+                            &span,
+                            500,
+                            "Route has worker_id but worker not found",
+                        ));
+                    }
                 }
             } else {
                 return Ok(error_response_with_span(
@@ -363,8 +398,8 @@ async fn handle_worker_request(
         None => {
             return Ok(error_response_with_span(
                 &span,
-                404,
-                "Endpoint or route not found",
+                502,
+                "No worker or project found for request",
             ));
         }
     };
