@@ -36,9 +36,9 @@ RUN cargo chef prepare --recipe-path recipe.json
 FROM prepare AS platform
 
 ARG RUNTIME=v8
+ARG TELEMETRY=false
 ARG TARGETPLATFORM
-
-ENV FEATURES=$RUNTIME,database,telemetry
+    
 ENV RUST_BACKTRACE=1
 ENV RUNTIME_SNAPSHOT_PATH=/build/snapshot.bin
 
@@ -49,12 +49,13 @@ RUN touch $RUNTIME_SNAPSHOT_PATH
 # Copy recipe from planner
 COPY --from=planner /build/recipe.json recipe.json
 
-RUN echo "Building for $TARGETPLATFORM with features $FEATURES"
-
 # Build dependencies for target platform
-RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/git \
-    --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/registry \
-    --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=/build/target \
+RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME-$TELEMETRY,sharing=locked,target=$CARGO_HOME/git \
+    --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME-$TELEMETRY,sharing=locked,target=$CARGO_HOME/registry \
+    --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME-$TELEMETRY,sharing=locked,target=/build/target \
+    FEATURES="$RUNTIME,database"; \
+    if [ "$TELEMETRY" = "true" ]; then FEATURES="$FEATURES,telemetry"; fi; \
+    echo "Building for $TARGETPLATFORM with features $FEATURES"; \
     case "$TARGETPLATFORM" in \
         "linux/arm64") cargo chef cook --release --features=$FEATURES --target aarch64-unknown-linux-gnu --recipe-path recipe.json ;; \
         "linux/amd64") cargo chef cook --release --features=$FEATURES --target x86_64-unknown-linux-gnu --recipe-path recipe.json ;; \
@@ -68,9 +69,11 @@ COPY . /build
 # 1. Build the snapshot generator for the TARGET platform
 # 2. Run it (via QEMU emulation explicitly) to generate the snapshot.bin
 # 3. Build the final runner which embeds the snapshot.bin
-RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/git \
-    --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=$CARGO_HOME/registry \
-    --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME,sharing=locked,target=/build/target \
+RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME-$TELEMETRY,sharing=locked,target=$CARGO_HOME/git \
+    --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME-$TELEMETRY,sharing=locked,target=$CARGO_HOME/registry \
+    --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME-$TELEMETRY,sharing=locked,target=/build/target \
+    FEATURES="$RUNTIME,database"; \
+    if [ "$TELEMETRY" = "true" ]; then FEATURES="$FEATURES,telemetry"; fi; \
     case "$TARGETPLATFORM" in \
         "linux/arm64") \
             # Build snapshot generator for target \

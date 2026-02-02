@@ -153,8 +153,10 @@ async fn handle_request(
     let span = tracing::info_span!(
         "request",
         request_id = %request_id,
-        method = %method,
+        http_method = %method,
         uri = %uri,
+        hostname = tracing::field::Empty,
+        response_status_code = tracing::field::Empty,
         worker_id = tracing::field::Empty,
         worker_name = tracing::field::Empty,
         user_id = tracing::field::Empty,
@@ -187,6 +189,11 @@ async fn handle_worker_request(
         .get("host")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
+
+    // Record hostname (even if worker not found)
+    if let Some(ref hostname) = host {
+        span.record("hostname", hostname.as_str());
+    }
 
     let worker_id = headers
         .get("x-worker-id")
@@ -244,7 +251,13 @@ async fn handle_worker_request(
 
                             match worker {
                                 Some(w) => w,
-                                None => return Ok(error_response(404, "Worker not found")),
+                                None => {
+                                    return Ok(error_response_with_span(
+                                        &span,
+                                        404,
+                                        "Worker not found",
+                                    ));
+                                }
                             }
                         } else {
                             return Ok(error_response(
@@ -299,8 +312,13 @@ async fn handle_worker_request(
                                     metrics_timer.start.elapsed().as_millis()
                                 );
 
-                                // Convert HttpResponse to hyper::Response (handles streaming too!)
-                                return Ok(http_response.into_hyper());
+                                // Record status code and convert to hyper response
+                                let hyper_response = http_response.into_hyper();
+                                span.record(
+                                    "response_status_code",
+                                    hyper_response.status().as_u16(),
+                                );
+                                return Ok(hyper_response);
                             }
                             Err(e) => {
                                 debug!(
@@ -309,6 +327,7 @@ async fn handle_worker_request(
                                 );
 
                                 error!("Failed to fetch from storage: {}", e);
+                                span.record("response_status_code", 404u16);
                                 return Ok(error_response(404, "File not found"));
                             }
                         }
@@ -325,17 +344,22 @@ async fn handle_worker_request(
 
                 match worker {
                     Some(w) => w,
-                    None => return Ok(error_response(404, "Worker not found")),
+                    None => return Ok(error_response_with_span(&span, 404, "Worker not found")),
                 }
             } else {
-                return Ok(error_response(
+                return Ok(error_response_with_span(
+                    &span,
                     500,
                     "Invalid resolution: no worker_id or project_id",
                 ));
             }
         }
         None => {
-            return Ok(error_response(404, "Endpoint or route not found"));
+            return Ok(error_response_with_span(
+                &span,
+                404,
+                "Endpoint or route not found",
+            ));
         }
     };
 
@@ -475,7 +499,8 @@ async fn handle_worker_request(
 
     debug!("handle_request done in {}ms", start.elapsed().as_millis());
 
-    // Record metrics
+    // Record response status code and metrics
+    span.record("response_status_code", response.status().as_u16());
     metrics_timer.record_http_request(success);
 
     Ok(response)
@@ -491,6 +516,15 @@ fn error_response(status: u16, message: &str) -> Response<HyperBody> {
         .header("content-type", "text/plain")
         .body(full_body(message.to_string()))
         .unwrap()
+}
+
+fn error_response_with_span(
+    span: &tracing::Span,
+    status: u16,
+    message: &str,
+) -> Response<HyperBody> {
+    span.record("response_status_code", status);
+    error_response(status, message)
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
