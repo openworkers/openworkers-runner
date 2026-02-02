@@ -313,13 +313,15 @@ pub async fn get_worker_with_bindings(
     };
 
     // Get all bindings for this worker
+    // If worker is in a project, use project's environment_id, otherwise use worker's environment_id
     let bindings_query = r#"
         SELECT
             V.key,
             V.value,
             V.type as binding_type
-        FROM environment_values AS V
-        JOIN workers AS W ON W.environment_id = V.environment_id AND W.user_id = V.user_id
+        FROM workers AS W
+        LEFT JOIN projects AS P ON W.project_id = P.id
+        JOIN environment_values AS V ON V.environment_id = COALESCE(P.environment_id, W.environment_id) AND V.user_id = W.user_id
         WHERE W.id::text = $1
     "#;
 
@@ -593,20 +595,225 @@ async fn fetch_worker_binding_config(
     }
 }
 
+/// Endpoint type from DB enum
+#[derive(Debug, Clone, sqlx::Type)]
+#[sqlx(type_name = "enum_endpoint_type", rename_all = "lowercase")]
+pub enum EndpointType {
+    Worker,
+    Project,
+}
+
+/// Endpoint resolution result
+#[derive(Debug, Clone)]
+pub enum Endpoint {
+    Worker { worker_id: String },
+    Project { project_id: String },
+}
+
+/// Get endpoint by name (from subdomain like mon-app.workers.rocks)
+pub async fn get_endpoint_by_name(conn: &mut sqlx::PgConnection, name: &str) -> Option<Endpoint> {
+    #[derive(sqlx::FromRow)]
+    struct EndpointRow {
+        #[sqlx(rename = "type")]
+        endpoint_type: EndpointType,
+        worker_id: Option<String>,
+        project_id: Option<String>,
+    }
+
+    tracing::debug!("Looking up endpoint by name: {}", name);
+
+    let result = sqlx::query_as::<_, EndpointRow>(
+        "SELECT type, worker_id::text, project_id::text FROM endpoints WHERE name = $1",
+    )
+    .bind(name)
+    .fetch_one(conn)
+    .await;
+
+    match result {
+        Ok(row) => {
+            tracing::debug!(
+                "Found endpoint: type={:?}, worker_id={:?}, project_id={:?}",
+                row.endpoint_type,
+                row.worker_id,
+                row.project_id
+            );
+            match row.endpoint_type {
+                EndpointType::Worker => row.worker_id.map(|id| Endpoint::Worker { worker_id: id }),
+                EndpointType::Project => row
+                    .project_id
+                    .map(|id| Endpoint::Project { project_id: id }),
+            }
+        }
+        Err(err) => {
+            tracing::warn!("Failed to get endpoint by name '{}': {:?}", name, err);
+            None
+        }
+    }
+}
+
+/// Get endpoint from custom domain
+pub async fn get_endpoint_from_domain(
+    conn: &mut sqlx::PgConnection,
+    domain: &str,
+) -> Option<Endpoint> {
+    #[derive(sqlx::FromRow)]
+    struct DomainRow {
+        worker_id: Option<String>,
+        project_id: Option<String>,
+    }
+
+    let result = sqlx::query_as::<_, DomainRow>(
+        "SELECT worker_id::text, project_id::text FROM domains WHERE name = $1",
+    )
+    .bind(domain)
+    .fetch_one(conn)
+    .await;
+
+    match result {
+        Ok(row) => {
+            if let Some(worker_id) = row.worker_id {
+                Some(Endpoint::Worker { worker_id })
+            } else {
+                row.project_id
+                    .map(|project_id| Endpoint::Project { project_id })
+            }
+        }
+        Err(err) => {
+            tracing::warn!("failed to get endpoint from domain {}: {:?}", domain, err);
+            None
+        }
+    }
+}
+
+/// Backend type for project routes
+#[derive(Debug, Clone, sqlx::Type)]
+#[sqlx(type_name = "enum_backend_type", rename_all = "lowercase")]
+pub enum BackendType {
+    Worker,
+    Storage,
+}
+
+/// Project route
+#[derive(Debug, Clone)]
+pub struct Route {
+    pub pattern: String,
+    pub priority: i32,
+    pub backend_type: BackendType,
+    pub worker_id: Option<String>,
+    pub storage_config_id: Option<String>,
+    pub cache_ttl: Option<i32>,
+}
+
+/// Request resolution result
+#[derive(Debug, Clone)]
+pub struct RequestResolution {
+    pub worker_id: Option<String>,
+    pub project_id: Option<String>,
+    pub backend_type: BackendType,
+    pub assets_storage_id: Option<String>,
+}
+
+/// Resolve worker from request in a single DB call
+/// This calls the PL/SQL function resolve_worker_from_request() which handles:
+/// - Endpoint resolution (from domain, worker_id, or worker_name)
+/// - Route matching (for projects)
+/// - Backend resolution (worker or storage)
+pub async fn resolve_worker_from_request(
+    conn: &mut sqlx::PgConnection,
+    domain: Option<&str>,
+    worker_id: Option<&str>,
+    worker_name: Option<&str>,
+    path: &str,
+) -> Option<RequestResolution> {
+    #[derive(sqlx::FromRow)]
+    struct ResolutionRow {
+        worker_id: Option<String>,
+        project_id: Option<String>,
+        backend_type: BackendType,
+        assets_storage_id: Option<String>,
+    }
+
+    let result = sqlx::query_as::<_, ResolutionRow>(
+        "SELECT worker_id::text, project_id::text, backend_type, assets_storage_id::text
+         FROM resolve_worker_from_request($1, $2::uuid, $3, $4)",
+    )
+    .bind(domain)
+    .bind(worker_id)
+    .bind(worker_name)
+    .bind(path)
+    .fetch_one(conn)
+    .await;
+
+    match result {
+        Ok(row) => Some(RequestResolution {
+            worker_id: row.worker_id,
+            project_id: row.project_id,
+            backend_type: row.backend_type,
+            assets_storage_id: row.assets_storage_id,
+        }),
+        Err(err) => {
+            tracing::debug!("Failed to resolve request: {:?}", err);
+            None
+        }
+    }
+}
+
+/// Get storage config by ID
+pub async fn get_storage_config(
+    conn: &mut sqlx::PgConnection,
+    storage_config_id: &str,
+) -> Option<StorageConfig> {
+    #[derive(sqlx::FromRow)]
+    struct StorageConfigRow {
+        id: String,
+        bucket: String,
+        prefix: Option<String>,
+        access_key_id: String,
+        secret_access_key: String,
+        endpoint: String,
+        region: Option<String>,
+        public_url: Option<String>,
+    }
+
+    let result = sqlx::query_as::<_, StorageConfigRow>(
+        "SELECT id::text, bucket, prefix, access_key_id, secret_access_key, endpoint, region, public_url
+         FROM storage_configs
+         WHERE id = $1::uuid",
+    )
+    .bind(storage_config_id)
+    .fetch_one(conn)
+    .await;
+
+    match result {
+        Ok(row) => Some(StorageConfig {
+            id: row.id,
+            bucket: row.bucket,
+            prefix: row.prefix,
+            access_key_id: row.access_key_id,
+            secret_access_key: row.secret_access_key,
+            endpoint: row.endpoint,
+            region: row.region,
+            public_url: row.public_url,
+        }),
+        Err(err) => {
+            tracing::warn!(
+                "Failed to get storage config {}: {:?}",
+                storage_config_id,
+                err
+            );
+            None
+        }
+    }
+}
+
+/// Legacy function - kept for backwards compatibility
 pub async fn get_worker_id_from_domain(
     conn: &mut sqlx::PgConnection,
     domain: String,
 ) -> Option<String> {
-    let query = sqlx::query_scalar!(
-        "SELECT worker_id::text FROM domains WHERE name = $1 LIMIT 1",
-        domain
-    );
-
-    match query.fetch_one(conn).await {
-        Ok(worker_id) => worker_id,
-        Err(err) => {
-            tracing::warn!("failed to get worker id from domain: {:?}", err);
-            None
-        }
+    // Use new endpoint resolution, return worker_id if it's a worker endpoint
+    match get_endpoint_from_domain(conn, &domain).await {
+        Some(Endpoint::Worker { worker_id }) => Some(worker_id),
+        _ => None,
     }
 }

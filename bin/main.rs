@@ -164,7 +164,7 @@ async fn handle_request(
     use tracing::Instrument;
 
     // Execute the rest of the handler within the span context
-    handle_worker_request(state, span.clone(), &mut conn, &method, &uri, &headers, req)
+    handle_worker_request(state, span.clone(), &mut conn, req)
         .instrument(span)
         .await
 }
@@ -174,12 +174,11 @@ async fn handle_worker_request(
     state: &AppState,
     span: tracing::Span,
     conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
-    method: &hyper::Method,
-    uri: &hyper::Uri,
-    headers: &hyper::HeaderMap,
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<HyperBody>, std::convert::Infallible> {
-    debug!("handle_request: {} {}", method, uri);
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let headers = req.headers().clone();
 
     // Start metrics timer
     let mut metrics_timer = openworkers_runner::metrics::MetricsTimer::new();
@@ -189,49 +188,155 @@ async fn handle_worker_request(
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
-    let mut worker_id = headers
+    let worker_id = headers
         .get("x-worker-id")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
-    let mut worker_name = headers
+    let worker_name = headers
         .get("x-worker-name")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
     debug!(
-        "host: {:?}, worker_id: {:?}, worker_name: {:?}",
-        host, worker_id, worker_name
+        "handle_request: {} {}{} ({})",
+        method,
+        host.as_deref().unwrap_or(""),
+        uri,
+        worker_id
+            .as_deref()
+            .or(worker_name.as_deref())
+            .unwrap_or("no worker info")
     );
 
-    // Resolve worker from domain if not provided
-    if worker_id.is_none()
-        && worker_name.is_none()
-        && let Some(ref host) = host
-    {
-        if host.contains(".workers.") {
-            worker_name = Some(host.split('.').next().unwrap().to_string());
-        } else {
-            worker_id =
-                openworkers_runner::store::get_worker_id_from_domain(conn, host.clone()).await;
+    let path = req.uri().path();
+
+    debug!(
+        "host: {:?}, worker_id: {:?}, worker_name: {:?}, path: {}",
+        host, worker_id, worker_name, path
+    );
+
+    // Resolve request in a single DB call (handles endpoint resolution + routing)
+    let resolution = openworkers_runner::store::resolve_worker_from_request(
+        conn,
+        host.as_deref(),
+        worker_id.as_deref(),
+        worker_name.as_deref(),
+        path,
+    )
+    .await;
+
+    debug!("Request resolved: {:?}", resolution);
+
+    // Handle resolution result
+    let worker = match resolution {
+        Some(res) => {
+            // Project routing: check backend type
+            if res.project_id.is_some() {
+                match res.backend_type {
+                    openworkers_runner::BackendType::Worker => {
+                        if let Some(worker_id) = res.worker_id {
+                            let worker = openworkers_runner::store::get_worker_with_bindings(
+                                conn,
+                                WorkerIdentifier::Id(worker_id),
+                            )
+                            .await;
+
+                            match worker {
+                                Some(w) => w,
+                                None => return Ok(error_response(404, "Worker not found")),
+                            }
+                        } else {
+                            return Ok(error_response(
+                                500,
+                                "Route has worker backend but no worker_id",
+                            ));
+                        }
+                    }
+                    openworkers_runner::BackendType::Storage => {
+                        use openworkers_core::{
+                            HttpMethod, HttpRequest, OperationsHandler, RequestBody,
+                        };
+
+                        // Serve static file from storage via ASSETS binding
+                        let storage_config_id = match &res.assets_storage_id {
+                            Some(id) => id,
+                            None => {
+                                return Ok(error_response(500, "ASSETS storage config not found"));
+                            }
+                        };
+
+                        // Load storage config
+                        let storage_config =
+                            openworkers_runner::store::get_storage_config(conn, storage_config_id)
+                                .await;
+                        let storage_config = match storage_config {
+                            Some(config) => config,
+                            None => return Ok(error_response(500, "Storage config not found")),
+                        };
+
+                        // Create RunnerOperations with ASSETS binding to get limiters and stats
+                        let ops = openworkers_runner::RunnerOperations::new().with_bindings(vec![
+                            openworkers_runner::store::Binding::Assets {
+                                key: "ASSETS".to_string(),
+                                config: storage_config,
+                            },
+                        ]);
+
+                        // Create HttpRequest for binding fetch
+                        let http_request = HttpRequest {
+                            url: path.to_string(),
+                            method: HttpMethod::Get,
+                            headers: std::collections::HashMap::new(),
+                            body: RequestBody::None,
+                        };
+
+                        // Use handle_binding_fetch to get limiters and stats
+                        match ops.handle_binding_fetch("ASSETS", http_request).await {
+                            Ok(http_response) => {
+                                debug!(
+                                    "handle_request done (storage) in {}ms",
+                                    metrics_timer.start.elapsed().as_millis()
+                                );
+
+                                // Convert HttpResponse to hyper::Response (handles streaming too!)
+                                return Ok(http_response.into_hyper());
+                            }
+                            Err(e) => {
+                                debug!(
+                                    "handle_request done (storage) in {}ms (failed)",
+                                    metrics_timer.start.elapsed().as_millis()
+                                );
+
+                                error!("Failed to fetch from storage: {}", e);
+                                return Ok(error_response(404, "File not found"));
+                            }
+                        }
+                    }
+                }
+            }
+            // Standalone worker
+            else if let Some(worker_id) = res.worker_id {
+                let worker = openworkers_runner::store::get_worker_with_bindings(
+                    conn,
+                    WorkerIdentifier::Id(worker_id),
+                )
+                .await;
+
+                match worker {
+                    Some(w) => w,
+                    None => return Ok(error_response(404, "Worker not found")),
+                }
+            } else {
+                return Ok(error_response(
+                    500,
+                    "Invalid resolution: no worker_id or project_id",
+                ));
+            }
         }
-    }
-
-    debug!("worker_id: {:?}, worker_name: {:?}", worker_id, worker_name);
-
-    let worker_identifier = match (worker_id, worker_name) {
-        (Some(id), _) => WorkerIdentifier::Id(id),
-        (None, Some(name)) => WorkerIdentifier::Name(name),
-        _ => return Ok(error_response(400, "Missing worker id or name")),
-    };
-
-    let worker = openworkers_runner::store::get_worker_with_bindings(conn, worker_identifier).await;
-
-    debug!("worker found: {:?}", worker.is_some());
-
-    let worker = match worker {
-        Some(worker) => worker,
-        None => return Ok(error_response(404, "Worker not found")),
+        None => {
+            return Ok(error_response(404, "Endpoint or route not found"));
+        }
     };
 
     // Record worker info in span now that we have it
@@ -262,7 +367,7 @@ async fn handle_worker_request(
     };
 
     // Convert to our HttpRequest using the extracted parts
-    let mut request = HttpRequest::from_hyper_parts(method, uri, headers, body_bytes, "http");
+    let mut request = HttpRequest::from_hyper_parts(&method, &uri, &headers, body_bytes, "http");
 
     // Add worker headers if not present
     if !request.headers.contains_key("x-worker-id") {

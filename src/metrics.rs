@@ -107,7 +107,7 @@ pub fn metrics() -> Option<&'static Metrics> {
 /// Timer for tracking request/task duration and phases
 pub struct MetricsTimer {
     #[cfg_attr(not(feature = "telemetry"), allow(dead_code))]
-    start: Instant,
+    pub start: Instant,
     #[cfg(feature = "telemetry")]
     worker_spawned: Option<Instant>,
     #[cfg(feature = "telemetry")]
