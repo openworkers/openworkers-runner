@@ -693,6 +693,15 @@ pub enum BackendType {
     Storage,
 }
 
+impl std::fmt::Display for BackendType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackendType::Worker => write!(f, "worker"),
+            BackendType::Storage => write!(f, "storage"),
+        }
+    }
+}
+
 /// Project route
 #[derive(Debug, Clone)]
 pub struct Route {

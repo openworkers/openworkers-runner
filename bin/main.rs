@@ -157,6 +157,7 @@ async fn handle_request(
         uri = %uri,
         http_host = tracing::field::Empty,
         response_status_code = tracing::field::Empty,
+        backend_type = tracing::field::Empty,
         worker_id = tracing::field::Empty,
         worker_name = tracing::field::Empty,
         user_id = tracing::field::Empty,
@@ -240,6 +241,9 @@ async fn handle_worker_request(
         Some(res) => {
             // Project routing: check backend type
             if res.project_id.is_some() {
+                // Record backend type for telemetry
+                span.record("backend_type", tracing::field::display(&res.backend_type));
+
                 match res.backend_type {
                     openworkers_runner::BackendType::Worker => {
                         if let Some(worker_id) = res.worker_id {
@@ -336,6 +340,8 @@ async fn handle_worker_request(
             }
             // Standalone worker
             else if let Some(worker_id) = res.worker_id {
+                // Record backend type for standalone workers
+                span.record("backend_type", "worker");
                 let worker = openworkers_runner::store::get_worker_with_bindings(
                     conn,
                     WorkerIdentifier::Id(worker_id),
