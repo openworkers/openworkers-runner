@@ -461,12 +461,12 @@ async fn handle_worker_request(
             .insert("x-worker-id".to_string(), worker.id.clone());
     }
 
-    if !request.headers.contains_key("x-worker-name") {
-        if let Some(name) = &worker.name {
-            request
-                .headers
-                .insert("x-worker-name".to_string(), name.clone());
-        }
+    if !request.headers.contains_key("x-worker-name")
+        && let Some(name) = &worker.name
+    {
+        request
+            .headers
+            .insert("x-worker-name".to_string(), name.clone());
     }
 
     // Acquire worker slot with timeout
