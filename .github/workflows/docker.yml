@@ -31,7 +31,7 @@ jobs:
             ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=${{ matrix.runtime }}${{ matrix.telemetry && '-telemetry' || '' }},enable={{is_default_branch}}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' && matrix.runtime == 'v8' && !matrix.telemetry }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' && matrix.runtime == 'v8' && !matrix.telemetry }}
             type=ref,event=branch,suffix=-${{ matrix.runtime }}${{ matrix.telemetry && '-telemetry' || '' }}
             type=ref,event=tag,suffix=-${{ matrix.runtime }}${{ matrix.telemetry && '-telemetry' || '' }}
       - name: Set up Docker Buildx
@@ -54,5 +54,4 @@ jobs:
             TELEMETRY=${{ matrix.telemetry }}
           cache-from: type=gha,scope=${{ matrix.runtime }}-${{ matrix.telemetry }}
           cache-to: type=gha,mode=max,scope=${{ matrix.runtime }}-${{ matrix.telemetry }}
-          # TODO: re-enable linux/arm64 once openworkers-v8 provides prebuilt binaries for aarch64-unknown-linux-gnu
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
