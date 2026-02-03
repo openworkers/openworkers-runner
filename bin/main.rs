@@ -242,12 +242,30 @@ async fn handle_worker_request(
             use openworkers_runner::BackendType;
             use openworkers_runner::store::get_worker_with_bindings;
 
+            // Check if backend_type is None
+            let backend_type = match res.backend_type {
+                Some(bt) => bt,
+                None => {
+                    // If neither worker_id nor project_id is set, worker/project not found (502)
+                    // If at least one is set, route not found (404)
+                    if res.worker_id.is_none() && res.project_id.is_none() {
+                        return Ok(error_response_with_span(
+                            &span,
+                            502,
+                            "No worker or project found for request",
+                        ));
+                    } else {
+                        return Ok(error_response_with_span(&span, 404, "Not Found"));
+                    }
+                }
+            };
+
             // Project routing: check backend type
             if res.project_id.is_some() {
                 // Record backend type for telemetry
-                span.record("backend_type", tracing::field::display(&res.backend_type));
+                span.record("backend_type", tracing::field::display(&backend_type));
 
-                match res.backend_type {
+                match backend_type {
                     BackendType::Worker => {
                         if let Some(worker_id) = res.worker_id {
                             let worker =
@@ -406,7 +424,9 @@ async fn handle_worker_request(
 
     // Record worker info in span now that we have it
     span.record("worker_id", tracing::field::display(&worker.id));
-    span.record("worker_name", tracing::field::display(&worker.name));
+    if let Some(name) = &worker.name {
+        span.record("worker_name", tracing::field::display(name));
+    }
     span.record("user_id", tracing::field::display(&worker.user_id));
 
     // Add metrics labels
@@ -442,9 +462,11 @@ async fn handle_worker_request(
     }
 
     if !request.headers.contains_key("x-worker-name") {
-        request
-            .headers
-            .insert("x-worker-name".to_string(), worker.name.clone());
+        if let Some(name) = &worker.name {
+            request
+                .headers
+                .insert("x-worker-name".to_string(), name.clone());
+        }
     }
 
     // Acquire worker slot with timeout

@@ -52,7 +52,9 @@ async fn handle_scheduled_task(
 
     // Record worker info in span now that we have it
     span.record("worker_id", tracing::field::display(&worker_data.id));
-    span.record("worker_name", tracing::field::display(&worker_data.name));
+    if let Some(name) = &worker_data.name {
+        span.record("worker_name", tracing::field::display(name));
+    }
     span.record("user_id", tracing::field::display(&worker_data.user_id));
 
     // Add metrics labels

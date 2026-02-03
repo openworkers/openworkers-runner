@@ -586,7 +586,7 @@ impl OperationsHandler for RunnerOperations {
                 tracing::debug!(
                     "[ops] worker binding {} -> {} ({})",
                     binding_name,
-                    config.name,
+                    config.name.as_deref().unwrap_or("<anonymous>"),
                     config.id
                 );
 

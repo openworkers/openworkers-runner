@@ -90,7 +90,7 @@ pub struct DatabaseConfig {
 #[derive(Clone, Debug)]
 pub struct WorkerBindingConfig {
     pub id: String,
-    pub name: String,
+    pub name: Option<String>,
 }
 
 /// A worker binding (environment variable or resource binding)
@@ -145,7 +145,7 @@ pub fn bindings_to_infos(bindings: &[Binding]) -> Vec<openworkers_core::BindingI
 #[derive(Debug, FromRow)]
 pub struct WorkerData {
     pub id: String,
-    pub name: String,
+    pub name: Option<String>,
     pub user_id: String,
     pub env: Option<sqlx::types::Json<std::collections::HashMap<String, String>>>,
     pub code: Vec<u8>,
@@ -157,7 +157,7 @@ pub struct WorkerData {
 #[derive(Debug)]
 pub struct WorkerWithBindings {
     pub id: String,
-    pub name: String,
+    pub name: Option<String>,
     /// Owner/tenant ID for isolate pool isolation
     pub user_id: String,
     pub code: Vec<u8>,
@@ -293,7 +293,7 @@ pub async fn get_worker_with_bindings(
     #[derive(Debug, FromRow)]
     struct BasicWorker {
         id: String,
-        name: String,
+        name: Option<String>,
         user_id: String,
         code: Vec<u8>,
         code_type: CodeType,
@@ -566,7 +566,7 @@ async fn fetch_worker_binding_config(
     #[derive(Debug, FromRow)]
     struct Row {
         id: String,
-        name: String,
+        name: Option<String>,
     }
 
     let query = r#"
@@ -738,7 +738,7 @@ pub struct Route {
 pub struct RequestResolution {
     pub worker_id: Option<String>,
     pub project_id: Option<String>,
-    pub backend_type: BackendType,
+    pub backend_type: Option<BackendType>,
     pub assets_storage_id: Option<String>,
     pub asset_type: Option<AssetType>,
 }
@@ -759,7 +759,7 @@ pub async fn resolve_worker_from_request(
     struct ResolutionRow {
         worker_id: Option<String>,
         project_id: Option<String>,
-        backend_type: BackendType,
+        backend_type: Option<BackendType>,
         assets_storage_id: Option<String>,
         priority: Option<i32>,
     }
