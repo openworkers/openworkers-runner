@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.12.3"
+version = "0.12.3-pkru"
 edition = "2024"
 license = "MIT"
 default-run = "openworkers-runner"
@@ -38,7 +38,7 @@ reqwest = { version = "0.13.1", default-features = false, features = ["rustls", 
 openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.12.0", features = ["hyper"] }
 
 # Runtime backend (v8 only for now, others require older version of core)
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.12.2", optional = true, features = ["ptrcomp"] }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.12.2-pkru", optional = true, features = ["ptrcomp"] }
 
 # WASM runtime (optional)
 # openworkers-runtime-wasm = { path = "../openworkers-runtime-wasm", optional = true }
