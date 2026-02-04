@@ -2883,8 +2883,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-core"
-version = "0.12.0"
-source = "git+https://github.com/openworkers/openworkers-core?tag=v0.12.0#51a3d17e3fe11e4f5316c16fdf46df16be2bf1d9"
+version = "0.13.0"
+source = "git+https://github.com/openworkers/openworkers-core?tag=v0.13.0#5686ecd7f573f50309d13100e908a143fa3b837c"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -2908,7 +2908,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.12.12"
+version = "0.13.0"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2932,7 +2932,7 @@ dependencies = [
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
- "openworkers-core 0.12.0",
+ "openworkers-core 0.13.0",
  "openworkers-runtime-v8",
  "openworkers-runtime-wasm",
  "percent-encoding",
@@ -2963,14 +2963,14 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.12.2"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.12.2#8e275c918f2e16a13702e760c12f60d9f10d727a"
+version = "0.13.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.0#650cab923d15cb03f3741fb324698e8d5b2a5450"
 dependencies = [
  "bytes",
  "futures",
  "libc",
  "lru",
- "openworkers-core 0.12.0",
+ "openworkers-core 0.13.0",
  "openworkers-glue-v8",
  "openworkers-runtime-v8-gc-derive",
  "openworkers-serde-v8",
@@ -2989,7 +2989,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.12.2#8e275c918f2e16a13702e760c12f60d9f10d727a"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.0#650cab923d15cb03f3741fb324698e8d5b2a5450"
 dependencies = [
  "proc-macro2",
  "quote",
