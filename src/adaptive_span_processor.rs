@@ -1,15 +1,43 @@
 //! Adaptive span processor for tail-based sampling
 //!
-//! Filters spans at export time based on worker traffic, after all attributes
-//! are set. This allows sampling decisions based on worker.id even when it's
-//! recorded after span creation.
+//! Implements traffic-aware sampling that filters spans at export time.
+//! High-traffic workers get lower sampling rates while low-traffic workers
+//! maintain high visibility.
+//!
+//! ## How it works
+//!
+//! 1. Spans are created normally with all attributes
+//! 2. When span ends, processor checks `worker_id` attribute
+//! 3. Calculates sampling rate based on recent traffic (sliding window)
+//! 4. Drops spans probabilistically before export
+//!
+//! ## Sampling formula
+//!
+//! ```text
+//! rate = min_rate + (max_rate - min_rate) / (1 + req_per_min / threshold)
+//!
+//! Examples with min=0.01, max=1.0, threshold=10:
+//! - 0 req/min   → 100% sampling
+//! - 10 req/min  → 50% sampling
+//! - 100 req/min → ~10% sampling
+//! - ∞           → 1% sampling (asymptote)
+//! ```
+//!
+//! Traffic is measured with exponential decay (60s half-life) to create
+//! a sliding window effect.
 
-use opentelemetry::trace::{SpanContext, SpanId, TraceId};
+use opentelemetry::trace::TraceId;
 use opentelemetry_sdk::export::trace::SpanData;
-use opentelemetry_sdk::trace::{SpanProcessor, Context};
+use opentelemetry_sdk::trace::{Context, SpanProcessor};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+/// Decay half-life for traffic measurement (seconds)
+const DECAY_HALF_LIFE: f64 = 60.0;
+
+/// Traffic threshold for 50% sampling rate (req/min)
+const TRAFFIC_THRESHOLD: f64 = 10.0;
 
 /// Span processor that applies adaptive sampling at export time
 pub struct AdaptiveSpanProcessor<T: SpanProcessor> {
@@ -46,18 +74,19 @@ impl<T: SpanProcessor> AdaptiveSpanProcessor<T> {
             .attributes
             .iter()
             .find(|kv| kv.key.as_str() == "worker_id")
-            .map(|kv| kv.value.to_string());
+            .map(|kv| kv.value.to_string())
+            .filter(|id| !id.is_empty() && id != "Empty");
 
+        // Always export spans without worker_id (system spans, etc.)
         let worker_id = match worker_id {
-            Some(id) if !id.is_empty() && id != "Empty" => id,
-            _ => return true, // Always export if no worker_id (system spans, etc.)
+            Some(id) => id,
+            None => return true,
         };
 
         let sampling_rate = self.get_sampling_rate(&worker_id);
 
-        // Hash-based decision using trace_id
-        let trace_id = span_data.span_context.trace_id();
-        let trace_id_bytes = trace_id.to_bytes();
+        // Deterministic hash-based decision using trace_id
+        let trace_id_bytes = span_data.span_context.trace_id().to_bytes();
         let hash = u64::from_be_bytes([
             trace_id_bytes[0],
             trace_id_bytes[1],
@@ -77,7 +106,6 @@ impl<T: SpanProcessor> AdaptiveSpanProcessor<T> {
         let mut state = self.state.write().unwrap();
         let now = Instant::now();
 
-        // Get or create worker stats
         let stats = state
             .worker_counts
             .entry(worker_id.to_string())
@@ -86,18 +114,16 @@ impl<T: SpanProcessor> AdaptiveSpanProcessor<T> {
                 last_update: now,
             });
 
-        // Apply exponential decay (60s half-life)
+        // Apply exponential decay for sliding window effect
         let elapsed = now.duration_since(stats.last_update).as_secs_f64();
-        let decay_rate = 0.693 / 60.0; // ln(2) / 60s
+        let decay_rate = 0.693_147_2 / DECAY_HALF_LIFE; // ln(2) / half_life
         stats.count *= (-decay_rate * elapsed).exp();
         stats.last_update = now;
-
-        // Increment count
         stats.count += 1.0;
 
-        // Asymptotic rate: min + (max - min) / (1 + count / threshold)
-        const THRESHOLD: f64 = 10.0; // 10 req/min
-        self.min_rate + (self.max_rate - self.min_rate) / (1.0 + stats.count / THRESHOLD)
+        // Asymptotic sampling rate
+        self.min_rate
+            + (self.max_rate - self.min_rate) / (1.0 + stats.count / TRAFFIC_THRESHOLD)
     }
 }
 
@@ -107,11 +133,9 @@ impl<T: SpanProcessor> SpanProcessor for AdaptiveSpanProcessor<T> {
     }
 
     fn on_end(&self, span: SpanData) {
-        // Apply adaptive sampling: only forward to inner processor if we should export
         if self.should_export(&span) {
             self.inner.on_end(span);
         }
-        // Otherwise drop the span silently
     }
 
     fn force_flush(&self) -> opentelemetry::trace::TraceResult<()> {
