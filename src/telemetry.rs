@@ -125,9 +125,17 @@ fn init_otel() -> Result<(), Box<dyn std::error::Error>> {
 
     let span_exporter = span_builder.build()?;
 
+    // Create adaptive sampler
+    // High-traffic workers get lower rates, low-traffic workers get higher rates
+    let sampler = crate::adaptive_sampler::AdaptiveSampler::new(
+        0.01,  // min_rate: 1% for high-traffic workers
+        1.0,   // max_rate: 100% for low-traffic workers
+    );
+
     // Create tracer provider
     let tracer_provider = SdkTracerProvider::builder()
         .with_resource(resource.clone())
+        .with_sampler(sampler)
         .with_batch_exporter(span_exporter)
         .build();
 

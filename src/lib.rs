@@ -1,3 +1,5 @@
+#[cfg(feature = "telemetry")]
+pub mod adaptive_sampler;
 pub mod event_fetch;
 pub mod event_scheduled;
 pub mod limiter;
