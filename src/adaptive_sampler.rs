@@ -19,12 +19,11 @@ pub struct AdaptiveSampler {
 
 struct SamplerState {
     worker_counts: HashMap<String, WorkerStats>,
-    last_reset: Instant,
-    reset_interval: Duration,
 }
 
 struct WorkerStats {
-    count: u64,
+    count: f64,
+    last_update: Instant,
     sampling_rate: f64,
 }
 
@@ -41,34 +40,36 @@ impl AdaptiveSampler {
         }
     }
 
-    fn get_sampling_rate(&self, worker_name: &str) -> f64 {
+    fn get_sampling_rate(&self, worker_id: &str) -> f64 {
         let mut state = self.state.write().unwrap();
-
-        // Reset counts periodically
-        if state.last_reset.elapsed() >= state.reset_interval {
-            state.worker_counts.clear();
-            state.last_reset = Instant::now();
-        }
+        let now = Instant::now();
 
         // Get or create worker stats
         let stats = state
             .worker_counts
-            .entry(worker_name.to_string())
+            .entry(worker_id.to_string())
             .or_insert(WorkerStats {
-                count: 0,
+                count: 0.0,
+                last_update: now,
                 sampling_rate: self.max_rate,
             });
 
-        stats.count += 1;
+        // Apply exponential decay to simulate sliding window
+        // Decay half-life: 60 seconds (count halves every minute)
+        let elapsed = now.duration_since(stats.last_update).as_secs_f64();
+        let decay_rate = 0.693 / 60.0; // ln(2) / 60s
+        stats.count *= (-decay_rate * elapsed).exp();
+        stats.last_update = now;
 
-        // Adaptive rate: high traffic = low rate, low traffic = high rate
-        // Formula: max_rate / log2(1 + count)
-        let rate = if stats.count <= 1 {
-            self.max_rate
-        } else {
-            let divisor = (1.0 + stats.count as f64).log2();
-            (self.max_rate / divisor).max(self.min_rate)
-        };
+        // Increment count
+        stats.count += 1.0;
+
+        // Asymptotic sampling rate: smoothly decreases from max to min
+        // Formula: min + (max - min) / (1 + count / threshold)
+        // At threshold req/min, rate is halfway between min and max
+        const THRESHOLD: f64 = 10.0; // 10 req/min
+
+        let rate = self.min_rate + (self.max_rate - self.min_rate) / (1.0 + stats.count / THRESHOLD);
 
         stats.sampling_rate = rate;
         rate
@@ -85,14 +86,14 @@ impl ShouldSample for AdaptiveSampler {
         attributes: &[opentelemetry::KeyValue],
         _links: &[Link],
     ) -> SamplingResult {
-        // Extract worker name from attributes
-        let worker_name = attributes
+        // Extract worker ID from attributes
+        let worker_id = attributes
             .iter()
-            .find(|kv| kv.key.as_str() == "worker.name")
+            .find(|kv| kv.key.as_str() == "worker.id")
             .map(|kv| kv.value.to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
-        let sampling_rate = self.get_sampling_rate(&worker_name);
+        let sampling_rate = self.get_sampling_rate(&worker_id);
 
         // Hash-based sampling decision
         let trace_id_bytes = trace_id.to_bytes();
