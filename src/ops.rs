@@ -592,12 +592,17 @@ impl OperationsHandler for RunnerOperations {
 
                 // Build the internal URL for the target worker
                 // Runner listens on port 8080
-                let path = if request.url.starts_with('/') {
+                let path_and_query = if let Ok(url) = url::Url::parse(&request.url) {
+                    match url.query() {
+                        Some(q) => format!("{}?{}", url.path(), q),
+                        None => url.path().to_string(),
+                    }
+                } else if request.url.starts_with('/') {
                     request.url.clone()
                 } else {
                     format!("/{}", request.url)
                 };
-                let internal_url = format!("http://127.0.0.1:8080{}", path);
+                let internal_url = format!("http://127.0.0.1:8080{}", path_and_query);
 
                 // Create the request with x-worker-id header to route to target
                 let mut headers = request.headers.clone();
