@@ -57,10 +57,12 @@ thread_local! {
             .unwrap_or(100);
 
         reqwest::Client::builder()
+            .user_agent(format!("openworkers-runner/{}", env!("CARGO_PKG_VERSION")))
             .pool_max_idle_per_host(pool_size)
             .pool_idle_timeout(Duration::from_secs(90))
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("Failed to create HTTP client")
     });
@@ -109,6 +111,12 @@ pub fn try_internal_worker_route(request: &HttpRequest) -> Option<HttpRequest> {
     })
 }
 
+/// Optional worker context injected as headers on outgoing fetch requests.
+pub struct FetchContext<'a> {
+    pub worker_id: Option<&'a str>,
+    pub user_id: Option<&'a str>,
+}
+
 /// Execute an HTTP request with streaming response.
 ///
 /// This is the core HTTP function used by both direct fetch and binding fetches.
@@ -117,6 +125,7 @@ pub async fn do_fetch(
     request: HttpRequest,
     stats: &OperationsStats,
     extra_headers: Option<&HashMap<String, String>>,
+    ctx: Option<&FetchContext<'_>>,
 ) -> Result<HttpResponse, String> {
     use std::sync::atomic::Ordering;
 
@@ -142,10 +151,21 @@ pub async fn do_fetch(
         req_builder = req_builder.header(key, value);
     }
 
-    // Add extra headers if provided
+    // Add extra headers if provided (e.g., AWS signatures)
     if let Some(headers) = extra_headers {
         for (key, value) in headers {
             req_builder = req_builder.header(key, value);
+        }
+    }
+
+    // Add worker context headers for observability
+    if let Some(ctx) = ctx {
+        if let Some(worker_id) = ctx.worker_id {
+            req_builder = req_builder.header("x-fetch-worker", worker_id);
+        }
+
+        if let Some(user_id) = ctx.user_id {
+            req_builder = req_builder.header("x-fetch-tenant-id", user_id);
         }
     }
 

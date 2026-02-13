@@ -42,7 +42,9 @@ use tracing::Instrument;
 use crate::limiter::BindingLimiters;
 #[cfg(feature = "database")]
 use crate::services::database::{self as db_service, QueryMode};
-use crate::services::fetch::{do_fetch, generate_request_id, try_internal_worker_route};
+use crate::services::fetch::{
+    FetchContext, do_fetch, generate_request_id, try_internal_worker_route,
+};
 use crate::services::kv as kv_service;
 use crate::services::storage::{build_s3_url, execute_s3_operation, sign_s3_request};
 use crate::store::{Binding, DatabaseConfig, KvConfig, StorageConfig, WorkerBindingConfig};
@@ -241,7 +243,11 @@ impl RunnerOperations {
                     &config.bucket,
                 )?;
 
-                do_fetch(auth_request, &self.stats, Some(&signed_headers)).await
+                let ctx = FetchContext {
+                    worker_id: self.worker_id.as_deref(),
+                    user_id: self.user_id.as_deref(),
+                };
+                do_fetch(auth_request, &self.stats, Some(&signed_headers), Some(&ctx)).await
             }
             .instrument(span),
         )
@@ -284,16 +290,21 @@ impl OperationsHandler for RunnerOperations {
                     self.worker_id
                 );
 
+                let ctx = FetchContext {
+                    worker_id: self.worker_id.as_deref(),
+                    user_id: self.user_id.as_deref(),
+                };
+
                 // Check if this is an internal worker URL that should be routed directly
                 if let Some(internal_request) = try_internal_worker_route(&request) {
                     tracing::debug!(
                         "[ops] fetch shortcut: {} -> internal routing via x-worker-name",
                         request.url
                     );
-                    return do_fetch(internal_request, &self.stats, None).await;
+                    return do_fetch(internal_request, &self.stats, None, Some(&ctx)).await;
                 }
 
-                do_fetch(request, &self.stats, None).await
+                do_fetch(request, &self.stats, None, Some(&ctx)).await
             }
             .instrument(span),
         )
@@ -617,7 +628,7 @@ impl OperationsHandler for RunnerOperations {
                 };
 
                 // Execute the request through the runner
-                do_fetch(internal_request, &OperationsStats::new(), None).await
+                do_fetch(internal_request, &OperationsStats::new(), None, None).await
             }
             .instrument(span),
         )

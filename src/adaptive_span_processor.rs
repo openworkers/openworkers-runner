@@ -26,12 +26,12 @@
 //! Traffic is measured with exponential decay (60s half-life) to create
 //! a sliding window effect.
 
-use opentelemetry::trace::TraceId;
-use opentelemetry_sdk::export::trace::SpanData;
-use opentelemetry_sdk::trace::{Context, SpanProcessor};
+use opentelemetry::Context;
+use opentelemetry_sdk::error::OTelSdkResult;
+use opentelemetry_sdk::trace::{SpanData, SpanProcessor};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Decay half-life for traffic measurement (seconds)
 const DECAY_HALF_LIFE: f64 = 60.0;
@@ -40,6 +40,7 @@ const DECAY_HALF_LIFE: f64 = 60.0;
 const TRAFFIC_THRESHOLD: f64 = 10.0;
 
 /// Span processor that applies adaptive sampling at export time
+#[derive(Debug)]
 pub struct AdaptiveSpanProcessor<T: SpanProcessor> {
     inner: T,
     state: Arc<RwLock<ProcessorState>>,
@@ -47,10 +48,12 @@ pub struct AdaptiveSpanProcessor<T: SpanProcessor> {
     max_rate: f64,
 }
 
+#[derive(Debug)]
 struct ProcessorState {
     worker_counts: HashMap<String, WorkerStats>,
 }
 
+#[derive(Debug)]
 struct WorkerStats {
     count: f64,
     last_update: Instant,
@@ -75,7 +78,7 @@ impl<T: SpanProcessor> AdaptiveSpanProcessor<T> {
             .iter()
             .find(|kv| kv.key.as_str() == "worker_id")
             .map(|kv| kv.value.to_string())
-            .filter(|id| !id.is_empty() && id != "Empty");
+            .filter(|id: &String| !id.is_empty() && id != "Empty");
 
         // Always export spans without worker_id (system spans, etc.)
         let worker_id = match worker_id {
@@ -122,8 +125,7 @@ impl<T: SpanProcessor> AdaptiveSpanProcessor<T> {
         stats.count += 1.0;
 
         // Asymptotic sampling rate
-        self.min_rate
-            + (self.max_rate - self.min_rate) / (1.0 + stats.count / TRAFFIC_THRESHOLD)
+        self.min_rate + (self.max_rate - self.min_rate) / (1.0 + stats.count / TRAFFIC_THRESHOLD)
     }
 }
 
@@ -138,11 +140,11 @@ impl<T: SpanProcessor> SpanProcessor for AdaptiveSpanProcessor<T> {
         }
     }
 
-    fn force_flush(&self) -> opentelemetry::trace::TraceResult<()> {
+    fn force_flush(&self) -> OTelSdkResult {
         self.inner.force_flush()
     }
 
-    fn shutdown(&self) -> opentelemetry::trace::TraceResult<()> {
-        self.inner.shutdown()
+    fn shutdown_with_timeout(&self, timeout: Duration) -> OTelSdkResult {
+        self.inner.shutdown_with_timeout(timeout)
     }
 }

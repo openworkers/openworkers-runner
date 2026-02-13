@@ -126,14 +126,15 @@ fn init_otel() -> Result<(), Box<dyn std::error::Error>> {
     let span_exporter = span_builder.build()?;
 
     // Create batch processor
-    let batch_processor = opentelemetry_sdk::trace::BatchSpanProcessor::builder(span_exporter, opentelemetry_sdk::runtime::Tokio).build();
+    let batch_processor =
+        opentelemetry_sdk::trace::BatchSpanProcessor::builder(span_exporter).build();
 
     // Wrap with adaptive processor for tail-based sampling
     // This filters spans at export time based on worker traffic
     let adaptive_processor = crate::adaptive_span_processor::AdaptiveSpanProcessor::new(
         batch_processor,
-        0.01,  // min_rate: 1% for high-traffic workers
-        1.0,   // max_rate: 100% for low-traffic workers
+        0.01, // min_rate: 1% for high-traffic workers
+        1.0,  // max_rate: 100% for low-traffic workers
     );
 
     // Create tracer provider
