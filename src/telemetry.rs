@@ -138,6 +138,7 @@ fn init_otel() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create tracer provider
+    // Note: Requires rt-tokio feature on opentelemetry_sdk for proper resource export
     let tracer_provider = SdkTracerProvider::builder()
         .with_resource(resource.clone())
         .with_span_processor(adaptive_processor)

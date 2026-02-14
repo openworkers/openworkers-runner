@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.13.3"
+version = "0.13.4"
 edition = "2024"
 license = "MIT"
 default-run = "openworkers-runner"
@@ -48,7 +48,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 opentelemetry = { version = "0.31", optional = true }
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "tls-roots"], optional = true }
 tonic = { version = "0.14", optional = true }
-opentelemetry_sdk = { version = "0.31", optional = true }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"], optional = true }
 tracing-opentelemetry = { version = "0.32", optional = true }
 opentelemetry-appender-tracing = { version = "0.31", features = ["experimental_use_tracing_span_context"], optional = true }
 sqlx = { version = "0.8.6", features = [ "runtime-tokio", "postgres", "uuid", "bigdecimal", "rust_decimal" ] }
