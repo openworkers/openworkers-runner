@@ -1,4 +1,6 @@
 #[cfg(feature = "telemetry")]
+pub mod adaptive_span_exporter;
+#[cfg(feature = "telemetry")]
 pub mod adaptive_span_processor;
 pub mod event_fetch;
 pub mod event_scheduled;
