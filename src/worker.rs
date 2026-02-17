@@ -142,13 +142,19 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
                 );
 
                 // Transpile and cache
-                let transpiled = crate::transform::parse_worker_code(&data.code, &data.code_type)
+                let language = match data.code_type {
+                    CodeType::Javascript => openworkers_transform::CodeLanguage::JavaScript,
+                    CodeType::Typescript => openworkers_transform::CodeLanguage::TypeScript,
+                    _ => unreachable!(),
+                };
+
+                let transpiled = openworkers_transform::parse_worker_code(&data.code, language)
                     .map_err(|e| {
-                    TerminationReason::InitializationError(format!(
-                        "Failed to parse worker code: {}",
-                        e
-                    ))
-                })?;
+                        TerminationReason::InitializationError(format!(
+                            "Failed to parse worker code: {}",
+                            e
+                        ))
+                    })?;
 
                 {
                     let mut cache = TRANSPILE_CACHE.lock().unwrap();
