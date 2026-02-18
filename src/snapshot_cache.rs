@@ -11,7 +11,7 @@ use lru::LruCache;
 use once_cell::sync::Lazy;
 
 /// Default max number of cached snapshots.
-const DEFAULT_MAX_ENTRIES: usize = 500;
+const DEFAULT_MAX_ENTRIES: usize = 5000;
 
 /// Cache key: (worker_id, version)
 type CacheKey = (String, i32);
