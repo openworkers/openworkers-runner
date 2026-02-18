@@ -5,26 +5,10 @@
 //! - wasm only: direct type alias to WasmWorker (zero overhead)
 //! - both: enum with runtime dispatch based on CodeType
 
-use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
-
-use lru::LruCache;
-use once_cell::sync::Lazy;
+use std::sync::Arc;
 
 use crate::ops::RunnerOperations;
 use crate::store::{CodeType, WorkerWithBindings, bindings_to_infos};
-
-// =============================================================================
-// Transpiled code cache
-// =============================================================================
-
-/// Cache key: (worker_id, version)
-type CacheKey = (String, i32);
-
-/// LRU cache for transpiled JavaScript code
-/// Capacity: 1000 workers (transpiled code is relatively small)
-static TRANSPILE_CACHE: Lazy<Mutex<LruCache<CacheKey, String>>> =
-    Lazy::new(|| Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap())));
 
 #[cfg(all(feature = "v8", feature = "wasm"))]
 use openworkers_core::Event;
@@ -113,35 +97,33 @@ pub async fn create_worker(
 // Script preparation (shared across all configurations)
 // =============================================================================
 
-/// Parse worker code based on code type (with caching for JS/TS)
+/// Parse worker code based on code type.
+///
+/// For JS/TS workers: checks the code cache (fast path) and returns cached
+/// bytecode. On cache miss, transpiles the source and returns JS — a code
+/// cache entry is created in the background after first successful execution.
 fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason> {
     match data.code_type {
         CodeType::Javascript | CodeType::Typescript => {
             #[cfg(feature = "v8")]
             {
-                let cache_key = (data.id.clone(), data.version);
-
-                // Try to get from cache first
-                {
-                    let mut cache = TRANSPILE_CACHE.lock().unwrap();
-
-                    if let Some(cached_code) = cache.get(&cache_key) {
-                        tracing::debug!(
-                            "transpile cache HIT: worker={}, version={}",
-                            crate::utils::short_id(&data.id),
-                            data.version
-                        );
-                        return Ok(WorkerCode::js(cached_code.clone()));
-                    }
+                // Fast path: check code cache
+                if let Some(snapshot) = crate::snapshot_cache::get(&data.id, data.version) {
+                    tracing::debug!(
+                        "code cache HIT: worker={}, version={}",
+                        crate::utils::short_id(&data.id),
+                        data.version
+                    );
+                    return Ok(WorkerCode::snapshot(snapshot));
                 }
 
                 tracing::debug!(
-                    "transpile cache MISS: worker={}, version={}",
+                    "code cache MISS: worker={}, version={}",
                     crate::utils::short_id(&data.id),
                     data.version
                 );
 
-                // Transpile and cache
+                // Slow path: transpile code (code cache created after first execution)
                 let language = match data.code_type {
                     CodeType::Javascript => openworkers_transform::CodeLanguage::JavaScript,
                     CodeType::Typescript => openworkers_transform::CodeLanguage::TypeScript,
@@ -155,11 +137,6 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
                             e
                         ))
                     })?;
-
-                {
-                    let mut cache = TRANSPILE_CACHE.lock().unwrap();
-                    cache.put(cache_key, transpiled.clone());
-                }
 
                 Ok(WorkerCode::js(transpiled))
             }

@@ -11,6 +11,8 @@ pub mod nats;
 pub mod ops;
 pub mod runtime;
 pub mod services;
+#[cfg(feature = "v8")]
+pub mod snapshot_cache;
 pub mod store;
 pub mod task_executor;
 pub mod telemetry;

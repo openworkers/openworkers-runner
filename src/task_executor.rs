@@ -169,6 +169,11 @@ pub async fn execute_task_await_v8_pooled(
     let components = prepare_task_components(&config)
         .ok_or_else(|| TerminationReason::Other("Failed to prepare script".to_string()))?;
 
+    // Capture JS code for background code cache creation (before script is moved)
+    let js_code_for_snapshot = components.script.code.as_js().map(|s| s.to_string());
+    let worker_id_for_snapshot = config.worker_data.id.clone();
+    let version_for_snapshot = config.worker_data.version;
+
     // Use user_id (tenant) for isolate pool isolation instead of worker_id
     // This prevents a single tenant from monopolizing resources via multiple workers
     let owner_id = config.worker_data.user_id.clone();
@@ -222,6 +227,37 @@ pub async fn execute_task_await_v8_pooled(
 
                 // CRITICAL: Flush logs before returning
                 components.log_handler.flush();
+
+                // After successful JS execution, create code cache in background
+                if result.is_ok()
+                    && let Some(js_code) = js_code_for_snapshot
+                {
+                    let worker_id = worker_id_for_snapshot;
+                    let version = version_for_snapshot;
+
+                    tokio::task::spawn_blocking(move || {
+                        match openworkers_runtime_v8::create_code_cache(&js_code) {
+                            Ok(cache) => {
+                                let packed =
+                                    openworkers_runtime_v8::pack_code_cache(&js_code, &cache);
+                                crate::snapshot_cache::put(&worker_id, version, &packed);
+                                tracing::debug!(
+                                    "Created code cache: worker={}, version={}, size={}",
+                                    crate::utils::short_id(&worker_id),
+                                    version,
+                                    packed.len()
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to create code cache for worker={}: {}",
+                                    crate::utils::short_id(&worker_id),
+                                    e
+                                );
+                            }
+                        }
+                    });
+                }
 
                 result
             }
