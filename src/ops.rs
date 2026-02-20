@@ -119,10 +119,12 @@ pub type DbPool = sqlx::Pool<sqlx::Postgres>;
 /// Per-request state that changes between requests for context reuse.
 ///
 /// When warm isolates are enabled, the same `RunnerOperations` handle persists
-/// across requests. Only `log_tx` and `span` change per-request.
+/// across requests. Each request gets its own limiters (fresh counters) to
+/// avoid cross-request interference during interleaved execution.
 pub struct RequestState {
     pub log_tx: Option<LogTx>,
     pub span: tracing::Span,
+    pub limiters: Arc<BindingLimiters>,
 }
 
 /// Runner's implementation of OperationsHandler
@@ -144,8 +146,6 @@ pub struct RunnerOperations {
     pub bindings: BindingConfigs,
     /// Database pool for KV operations
     pub db_pool: Option<DbPool>,
-    /// Binding limiters (rate limiting for fetch, KV, database, storage)
-    pub limiters: BindingLimiters,
 }
 
 impl RunnerOperations {
@@ -157,17 +157,11 @@ impl RunnerOperations {
             request_state: Mutex::new(RequestState {
                 log_tx: None,
                 span: tracing::Span::none(),
+                limiters: Arc::new(BindingLimiters::default()),
             }),
             bindings: BindingConfigs::new(),
             db_pool: None,
-            limiters: BindingLimiters::default(),
         }
-    }
-
-    /// Create with custom limiters based on RuntimeLimits
-    pub fn with_limiters(mut self, limiters: BindingLimiters) -> Self {
-        self.limiters = limiters;
-        self
     }
 
     /// Attach tracing span for context propagation
@@ -201,18 +195,25 @@ impl RunnerOperations {
         self
     }
 
-    /// Swap per-request state (log handler + tracing span) for warm context reuse.
+    /// Swap per-request state for warm context reuse.
     ///
     /// Called when an existing ops handle is reused for a new request.
+    /// Creates fresh limiters so each request has its own counters.
     pub fn update_request(&self, log_tx: LogTx, span: tracing::Span) {
         let mut state = self.request_state.lock().unwrap();
         state.log_tx = Some(log_tx);
         state.span = span;
+        state.limiters = Arc::new(BindingLimiters::default());
     }
 
     /// Get a clone of the current span
     fn span(&self) -> tracing::Span {
         self.request_state.lock().unwrap().span.clone()
+    }
+
+    /// Get the current request's limiters (cheap Arc clone)
+    fn limiters(&self) -> Arc<BindingLimiters> {
+        self.request_state.lock().unwrap().limiters.clone()
     }
 
     /// Execute a binding fetch with the given config (shared by assets and storage).
@@ -228,12 +229,9 @@ impl RunnerOperations {
         Box::pin(
             async move {
                 // Acquire fetch limiter permit
-                let _guard = self
-                    .limiters
-                    .fetch
-                    .acquire()
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let limiters = self.limiters();
+
+                let _guard = limiters.fetch.acquire().await.map_err(|e| e.to_string())?;
 
                 self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
 
@@ -304,12 +302,9 @@ impl OperationsHandler for RunnerOperations {
         Box::pin(
             async move {
                 // Acquire fetch limiter permit (blocks if at concurrent limit, errors if total exceeded)
-                let _guard = self
-                    .limiters
-                    .fetch
-                    .acquire()
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let limiters = self.limiters();
+
+                let _guard = limiters.fetch.acquire().await.map_err(|e| e.to_string())?;
 
                 self.stats.fetch_count.fetch_add(1, Ordering::Relaxed);
 
@@ -401,7 +396,9 @@ impl OperationsHandler for RunnerOperations {
         Box::pin(
             async move {
                 // Acquire storage limiter permit
-                if let Err(e) = self.limiters.storage.acquire().await {
+                let limiters = self.limiters();
+
+                if let Err(e) = limiters.storage.acquire().await {
                     return StorageResult::Error(e.to_string());
                 }
 
@@ -472,7 +469,9 @@ impl OperationsHandler for RunnerOperations {
         Box::pin(
             async move {
                 // Acquire KV limiter permit
-                if let Err(e) = self.limiters.kv.acquire().await {
+                let limiters = self.limiters();
+
+                if let Err(e) = limiters.kv.acquire().await {
                     return KvResult::Error(e.to_string());
                 }
 
@@ -525,14 +524,16 @@ impl OperationsHandler for RunnerOperations {
         Box::pin(
             async move {
                 // Acquire database limiter permit - hold guard until query completes
-                let _guard = match self.limiters.database.acquire().await {
+                let limiters = self.limiters();
+
+                let _guard = match limiters.database.acquire().await {
                     Ok(guard) => guard,
                     Err(e) => return DatabaseResult::Error(e.to_string()),
                 };
 
                 tracing::debug!(
                     "[ops] database limiter acquired, available permits: {}",
-                    self.limiters.database.available_permits()
+                    limiters.database.available_permits()
                 );
 
                 match op {
@@ -696,6 +697,7 @@ impl OperationsHandler for RunnerOperations {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::FutureExt;
 
     #[test]
     fn test_runner_operations_builder() {
@@ -731,5 +733,47 @@ mod tests {
         assert_eq!(ops.stats.fetch_count.load(Ordering::Relaxed), 0);
         assert_eq!(ops.stats.fetch_bytes_in.load(Ordering::Relaxed), 0);
         assert_eq!(ops.stats.fetch_bytes_out.load(Ordering::Relaxed), 0);
+    }
+
+    /// Verify that update_request gives each request fresh limiters.
+    ///
+    /// Simulates warm reuse: request A increments a limiter, then
+    /// update_request is called for request B. B must have its own
+    /// fresh counters, and A's counters must be unaffected.
+    #[test]
+    fn test_update_request_creates_fresh_limiters() {
+        let ops = RunnerOperations::new();
+        let (tx_a, _rx_a) = std::sync::mpsc::channel::<LogEvent>();
+        let (tx_b, _rx_b) = std::sync::mpsc::channel::<LogEvent>();
+
+        // Request A grabs its limiters and simulates some usage
+        let limiters_a = ops.limiters();
+        limiters_a.fetch.reset(); // ensure clean
+        assert_eq!(limiters_a.fetch.count(), 0);
+
+        // Simulate 5 fetch calls by request A
+        for _ in 0..5 {
+            limiters_a.fetch.acquire().now_or_never().unwrap().unwrap();
+        }
+
+        assert_eq!(limiters_a.fetch.count(), 5);
+
+        // Warm reuse: new request B arrives
+        ops.update_request(tx_b, tracing::Span::none());
+        let limiters_b = ops.limiters();
+
+        // B must have fresh counters
+        assert_eq!(
+            limiters_b.fetch.count(),
+            0,
+            "request B should have fresh limiters"
+        );
+
+        // A's counters must be untouched (different Arc)
+        assert_eq!(
+            limiters_a.fetch.count(),
+            5,
+            "request A's limiters should be unaffected"
+        );
     }
 }
