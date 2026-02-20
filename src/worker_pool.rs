@@ -1,5 +1,6 @@
 use once_cell::sync::Lazy;
 use std::future::Future;
+use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -29,24 +30,24 @@ fn get_pool_size() -> usize {
 /// A boxed future that can be sent to worker threads
 type BoxedTask = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()>>> + Send>;
 
-/// Sequential Worker Pool for V8 Isolation Safety
+/// Worker Pool with Cooperative Interleaving
 ///
-/// This pool ensures that only ONE V8 isolate runs per thread at any time.
-/// V8 isolates must be dropped in LIFO order, which async interleaving breaks.
-/// By processing tasks sequentially per thread, we guarantee isolation safety.
+/// Each thread runs a persistent LocalSet on a single-threaded tokio runtime.
+/// Tasks are spawn_local'd onto the LocalSet, so when one task awaits I/O,
+/// the runtime polls other tasks on the same thread — cooperative scheduling.
 ///
 /// Architecture:
 /// - N threads (one per CPU core)
 /// - Each thread has its own channel + LocalSet + single-thread runtime
-/// - Tasks are distributed round-robin across threads
-/// - Each thread processes ONE task at a time (no interleaving)
+/// - Tasks are distributed via round-robin or consistent-hash routing
+/// - Tasks interleave cooperatively during I/O waits (spawn_local)
 ///
 /// This gives us:
 /// - Parallelism = N (number of threads)
-/// - Zero V8 conflicts (one isolate per thread at a time)
+/// - Interleaved execution within each thread (no head-of-line blocking)
 /// - Thread reuse (no creation/destruction overhead)
 pub struct SequentialWorkerPool {
-    senders: Vec<flume::Sender<BoxedTask>>,
+    senders: Vec<tokio::sync::mpsc::UnboundedSender<BoxedTask>>,
     next_thread: AtomicUsize,
 }
 
@@ -55,38 +56,43 @@ impl SequentialWorkerPool {
         let mut senders = Vec::with_capacity(pool_size);
 
         for thread_idx in 0..pool_size {
-            let (tx, rx) = flume::unbounded::<BoxedTask>();
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BoxedTask>();
             senders.push(tx);
 
             // Spawn a dedicated OS thread for this worker slot
             std::thread::Builder::new()
                 .name(format!("v8-worker-{}", thread_idx))
                 .spawn(move || {
-                    // Create a multi-threaded tokio runtime for this thread
-                    // We use worker_threads(2) to prevent potential starvation/deadlock
-                    // if one thread is blocked and IO driver needs to run
-                    let rt = tokio::runtime::Builder::new_multi_thread()
-                        .worker_threads(2)
+                    // Single-threaded tokio runtime: the event loop, timers, and I/O
+                    // all run on this thread. This enables interleaved execution:
+                    // when one task yields at .await, the runtime polls other tasks.
+                    let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
                         .expect("Failed to create tokio runtime for worker thread");
 
-                    // Process tasks sequentially - ONE AT A TIME
-                    // IMPORTANT: Create a NEW LocalSet for EACH task to prevent
-                    // spawn_local tasks from one worker contaminating the next worker
+                    // Persistent LocalSet enables interleaved execution:
+                    // while one task awaits I/O, the LocalSet polls other tasks.
+                    // Each task holds its own V8 locker on its own isolate,
+                    // so there's no V8 contention — just cooperative scheduling.
                     rt.block_on(async {
-                        while let Ok(task_fn) = rx.recv_async().await {
-                            // Create a fresh LocalSet for this worker
-                            // This ensures spawn_local tasks are isolated per worker
-                            let local = tokio::task::LocalSet::new();
+                        let local = tokio::task::LocalSet::new();
 
-                            let future = task_fn();
+                        local
+                            .run_until(async {
+                                while let Some(task_fn) = rx.recv().await {
+                                    let future = task_fn();
+                                    tokio::task::spawn_local(future);
 
-                            // Run the worker in its own LocalSet
-                            local.run_until(future).await;
-
-                            // LocalSet is dropped here, cleaning up spawn_local tasks
-                        }
+                                    // Drain all buffered tasks before yielding to the
+                                    // LocalSet, so bursts are dispatched in one batch.
+                                    while let Ok(task_fn) = rx.try_recv() {
+                                        let future = task_fn();
+                                        tokio::task::spawn_local(future);
+                                    }
+                                }
+                            })
+                            .await;
                     });
 
                     tracing::debug!("Worker thread {} shutting down", thread_idx);
@@ -105,7 +111,25 @@ impl SequentialWorkerPool {
         }
     }
 
-    /// Spawn a task on the pool, returning when it's queued (not completed)
+    // ── Internal dispatch ───────────────────────────────────────────────
+
+    /// Send a boxed task to a specific thread.
+    fn send_to(&self, thread_idx: usize, task: BoxedTask) {
+        if let Err(e) = self.senders[thread_idx].send(task) {
+            tracing::error!("Failed to send task to worker thread {}: {}", thread_idx, e);
+        }
+    }
+
+    /// Map a routing key to a thread index via consistent hashing.
+    fn thread_for_key(&self, key: &str) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+        hasher.finish() as usize % self.senders.len()
+    }
+
+    // ── Public API ─────────────────────────────────────────────────────
+
+    /// Spawn a task on the pool (round-robin), returning when it's queued (not completed).
     ///
     /// The task will be executed on a dedicated thread with its own LocalSet,
     /// ensuring V8 isolation safety. Tasks on the same thread run sequentially.
@@ -114,18 +138,11 @@ impl SequentialWorkerPool {
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = ()> + 'static,
     {
-        // Round-robin thread selection
         let thread_idx = self.next_thread.fetch_add(1, Ordering::Relaxed) % self.senders.len();
-
-        let boxed_task: BoxedTask = Box::new(move || Box::pin(task()));
-
-        // Send to the selected thread's queue
-        if let Err(e) = self.senders[thread_idx].send(boxed_task) {
-            tracing::error!("Failed to send task to worker thread {}: {}", thread_idx, e);
-        }
+        self.send_to(thread_idx, Box::new(move || Box::pin(task())));
     }
 
-    /// Spawn a task and wait for it to complete
+    /// Spawn a task (round-robin) and wait for it to complete.
     pub async fn spawn_await<F, Fut, T>(&self, task: F) -> Result<T, oneshot::error::RecvError>
     where
         F: FnOnce() -> Fut + Send + 'static,
@@ -141,12 +158,46 @@ impl SequentialWorkerPool {
 
         rx.await
     }
+
+    /// Spawn a task on a thread determined by the routing key (consistent hash).
+    ///
+    /// Same key always goes to the same thread, maximizing warm cache hits
+    /// for thread-local caches (e.g., warm isolate contexts in the pinned pool).
+    pub fn spawn_keyed<F, Fut>(&self, key: &str, task: F)
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let thread_idx = self.thread_for_key(key);
+        self.send_to(thread_idx, Box::new(move || Box::pin(task())));
+    }
+
+    /// Spawn a task (keyed routing) and wait for it to complete.
+    pub async fn spawn_await_keyed<F, Fut, T>(
+        &self,
+        key: &str,
+        task: F,
+    ) -> Result<T, oneshot::error::RecvError>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = T> + 'static,
+        T: Send + 'static,
+    {
+        let (tx, rx) = oneshot::channel();
+
+        self.spawn_keyed(key, move || async move {
+            let result = task().await;
+            let _ = tx.send(result);
+        });
+
+        rx.await
+    }
 }
 
-/// Global sequential worker pool for executing JavaScript workers
+/// Global worker pool for executing JavaScript workers
 ///
-/// This pool ensures V8 isolation safety by running only ONE worker
-/// per thread at any time. Tasks are distributed round-robin.
+/// Tasks interleave cooperatively during I/O waits (spawn_local on LocalSet).
+/// Routing: round-robin (spawn) or consistent-hash (spawn_keyed).
 pub static WORKER_POOL: Lazy<SequentialWorkerPool> = Lazy::new(|| {
     let pool_size = get_pool_size();
     SequentialWorkerPool::new(pool_size)
@@ -251,5 +302,106 @@ impl Drop for TaskPermit {
     fn drop(&mut self) {
         // Automatically notify drain monitor when task completes
         notify_task_completed();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// Prove that tasks on the same thread can interleave during I/O waits.
+    ///
+    /// With sequential execution: total ≈ 5 × 50ms = 250ms
+    /// With interleaved execution: total ≈ 50ms (all sleeps overlap)
+    ///
+    /// Lessons learned (pitfalls that caused false sequential behavior):
+    ///
+    /// 1. **spawn_await is async**: the channel send() happens on first poll,
+    ///    NOT when the function is called. Using sequential `handle.await` in
+    ///    a loop sends task N only after task N-1 completes → must use join_all.
+    ///
+    /// 2. **Channel choice matters**: flume's recv_async() doesn't cooperate
+    ///    well with tokio's current_thread runtime inside a LocalSet — it
+    ///    delivers one item per event loop tick instead of draining the buffer.
+    ///    tokio::sync::mpsc resolves buffered items synchronously.
+    ///
+    /// 3. **try_recv() drain**: after recv().await wakes up, we drain remaining
+    ///    buffered tasks with try_recv() so bursts are dispatched in one batch
+    ///    before yielding to the LocalSet.
+    #[tokio::test]
+    async fn test_interleaved_execution_on_single_thread() {
+        let pool = SequentialWorkerPool::new(1);
+
+        let num_tasks = 5u64;
+        let io_delay_ms = 50u64;
+
+        let start = Instant::now();
+
+        let mut handles = Vec::new();
+
+        for i in 0..num_tasks {
+            let handle = pool.spawn_await(move || async move {
+                eprintln!("[{:?}] task {} start", start.elapsed(), i);
+                tokio::time::sleep(Duration::from_millis(io_delay_ms)).await;
+                eprintln!("[{:?}] task {} done", start.elapsed(), i);
+            });
+            handles.push(handle);
+        }
+
+        // join_all polls all futures concurrently — see pitfall #1 above.
+        let results = futures::future::join_all(handles).await;
+
+        for r in results {
+            r.unwrap();
+        }
+
+        let elapsed = start.elapsed();
+        let sequential_time = Duration::from_millis(io_delay_ms * num_tasks);
+
+        // With interleaving, all sleeps overlap → total ≈ 1× delay, not 5×
+        assert!(
+            elapsed < sequential_time / 2,
+            "Expected interleaved execution (< {:?}), got {:?}",
+            sequential_time / 2,
+            elapsed
+        );
+    }
+
+    /// Baseline: prove that spawn_local + LocalSet IS concurrent.
+    ///
+    /// This test isolates the LocalSet behavior from the worker pool dispatch.
+    /// If this test passes but the pool test fails, the issue is in the channel
+    /// or dispatch mechanism, not in LocalSet/spawn_local itself.
+    #[tokio::test]
+    async fn test_spawn_local_is_concurrent() {
+        let start = Instant::now();
+        let local = tokio::task::LocalSet::new();
+
+        local
+            .run_until(async {
+                let mut handles = Vec::new();
+
+                for i in 0..5u64 {
+                    handles.push(tokio::task::spawn_local(async move {
+                        eprintln!("[{:?}] local {} start", start.elapsed(), i);
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        eprintln!("[{:?}] local {} done", start.elapsed(), i);
+                    }));
+                }
+
+                for h in handles {
+                    h.await.unwrap();
+                }
+            })
+            .await;
+
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "spawn_local should be concurrent, got {:?}",
+            elapsed
+        );
     }
 }

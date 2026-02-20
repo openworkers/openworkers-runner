@@ -1455,15 +1455,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
 
 [[package]]
-name = "fastrand"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
-dependencies = [
- "getrandom 0.2.17",
-]
-
-[[package]]
 name = "fd-lock"
 version = "4.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1492,18 +1483,6 @@ version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da0e4dd2a88388a1f4ccc7c9ce104604dab68d9f408dc34cd45823d5a9069095"
 dependencies = [
- "futures-core",
- "futures-sink",
- "spin",
-]
-
-[[package]]
-name = "flume"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
-dependencies = [
- "fastrand",
  "futures-core",
  "futures-sink",
  "spin",
@@ -2886,7 +2865,6 @@ dependencies = [
 [[package]]
 name = "openworkers-core"
 version = "0.13.0"
-source = "git+https://github.com/openworkers/openworkers-core?tag=v0.13.0#5686ecd7f573f50309d13100e908a143fa3b837c"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -2921,7 +2899,6 @@ dependencies = [
  "criterion",
  "dotenvy",
  "env_logger",
- "flume 0.12.0",
  "futures",
  "hex",
  "http-body-util",
@@ -2960,7 +2937,6 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8"
 version = "0.13.3"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.3#5a07baf05b77b0989b84a9ee1694210723fd6234"
 dependencies = [
  "bytes",
  "futures",
@@ -2985,7 +2961,6 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.3#5a07baf05b77b0989b84a9ee1694210723fd6234"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4618,7 +4593,7 @@ checksum = "c2d12fe70b2c1b4401038055f90f151b78208de1f9f89a7dbfd41587a10c3eea"
 dependencies = [
  "atoi",
  "chrono",
- "flume 0.11.1",
+ "flume",
  "futures-channel",
  "futures-core",
  "futures-executor",

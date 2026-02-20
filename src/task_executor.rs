@@ -4,7 +4,7 @@ use tokio::sync::OwnedSemaphorePermit;
 use tracing::Instrument;
 
 use crate::log::WorkerLogHandler;
-use crate::ops::{DbPool, RunnerOperations};
+use crate::ops::{DbPool, LogTx, RunnerOperations};
 use crate::store::{CodeType, WorkerWithBindings};
 use crate::worker::{Worker, create_worker, prepare_script};
 use crate::worker_pool::{TaskPermit, WORKER_POOL};
@@ -81,6 +81,10 @@ struct TaskComponents {
     ops: Arc<RunnerOperations>,
     code_type: CodeType,
     log_handler: WorkerLogHandler,
+    /// Raw log sender for warm hit callback (to update cached ops)
+    log_tx: LogTx,
+    /// Tracing span for warm hit callback
+    span: tracing::Span,
 }
 
 /// Prepare task components: parse script, setup logging, and create operations handle.
@@ -101,7 +105,7 @@ fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponent
     let ops = Arc::new(
         RunnerOperations::new()
             .with_worker_id(config.worker_data.id.clone())
-            .with_log_tx(log_tx)
+            .with_log_tx(log_tx.clone())
             .with_bindings(config.worker_data.bindings.clone())
             .with_db_pool(config.db_pool.clone())
             .with_span(config.span.clone()),
@@ -112,6 +116,8 @@ fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponent
         ops,
         code_type: config.worker_data.code_type.clone(),
         log_handler,
+        log_tx,
+        span: config.span.clone(),
     })
 }
 
@@ -184,8 +190,11 @@ pub async fn execute_task_await_v8_pooled(
     let execute_mode = V8ExecuteMode::get();
     let span = config.span.clone();
 
+    // Route to a consistent thread based on worker_id for warm cache affinity
+    let routing_key = worker_id_for_snapshot.clone();
+
     WORKER_POOL
-        .spawn_await(move || {
+        .spawn_await_keyed(&routing_key, move || {
             async move {
                 // Wrap permit to automatically notify drain monitor on drop
                 let _permit = TaskPermit::new(permit);
@@ -193,11 +202,33 @@ pub async fn execute_task_await_v8_pooled(
                 let result = match execute_mode {
                     V8ExecuteMode::Pinned => {
                         // Thread-pinned pool (default, best performance)
+                        // Pass worker_id + version for warm context caching.
+                        // The warm hit callback updates the cached ops' per-request state
+                        // so the existing event loop sends logs to the new handler.
+                        let warm_log_tx = components.log_tx.clone();
+                        let warm_span = components.span.clone();
+                        let on_warm_hit: openworkers_runtime_v8::WarmHitCallback =
+                            Box::new(move |cached_ops| {
+                                // Downcast to RunnerOperations to call update_request.
+                                // This updates the cached ops' per-request state (log_tx, span)
+                                // so the existing event loop sends logs to the new handler.
+                                if let Some(runner_ops) =
+                                    cached_ops.as_any().downcast_ref::<RunnerOperations>()
+                                {
+                                    runner_ops.update_request(warm_log_tx, warm_span);
+                                }
+                            });
+
                         openworkers_runtime_v8::execute_pinned(
-                            &owner_id,
-                            components.script,
-                            components.ops,
-                            task,
+                            openworkers_runtime_v8::PinnedExecuteRequest {
+                                owner_id,
+                                worker_id: worker_id_for_snapshot.clone(),
+                                version: version_for_snapshot,
+                                script: components.script,
+                                ops: components.ops,
+                                task,
+                                on_warm_hit: Some(on_warm_hit),
+                            },
                         )
                         .await
                     }

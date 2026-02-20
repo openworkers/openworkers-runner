@@ -110,9 +110,10 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
                 // Fast path: check code cache
                 if let Some(snapshot) = crate::snapshot_cache::get(&data.id, data.version) {
                     tracing::debug!(
-                        "code cache HIT: worker={}, version={}",
+                        "code cache HIT: worker={}, version={}, size={}",
                         crate::utils::short_id(&data.id),
-                        data.version
+                        data.version,
+                        snapshot.len()
                     );
                     return Ok(WorkerCode::snapshot(snapshot));
                 }

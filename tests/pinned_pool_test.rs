@@ -6,7 +6,7 @@
 
 use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, RuntimeLimits, Script};
 use openworkers_runner::ops::RunnerOperations;
-use openworkers_runtime_v8::{execute_pinned, init_pinned_pool};
+use openworkers_runtime_v8::{PinnedExecuteRequest, execute_pinned, init_pinned_pool};
 use std::collections::HashMap;
 use std::sync::{Arc, Once};
 
@@ -49,7 +49,16 @@ async fn test_pinned_simple_response() {
         let (task, rx) = Event::fetch(request);
         let ops = Arc::new(RunnerOperations::new());
 
-        let result = execute_pinned("test-owner", script, ops, task).await;
+        let result = execute_pinned(PinnedExecuteRequest {
+            owner_id: "test-owner".to_string(),
+            worker_id: "test-worker".to_string(),
+            version: 1,
+            script,
+            ops,
+            task,
+            on_warm_hit: None,
+        })
+        .await;
         assert!(
             result.is_ok(),
             "execute_pinned should succeed: {:?}",
@@ -93,7 +102,16 @@ async fn test_pinned_html_response() {
         let (task, rx) = Event::fetch(request);
         let ops = Arc::new(RunnerOperations::new());
 
-        let result = execute_pinned("test-owner", script, ops, task).await;
+        let result = execute_pinned(PinnedExecuteRequest {
+            owner_id: "test-owner".to_string(),
+            worker_id: "test-worker".to_string(),
+            version: 1,
+            script,
+            ops,
+            task,
+            on_warm_hit: None,
+        })
+        .await;
         assert!(
             result.is_ok(),
             "execute_pinned should succeed: {:?}",
@@ -135,7 +153,16 @@ async fn test_pinned_json_response() {
         let (task, rx) = Event::fetch(request);
         let ops = Arc::new(RunnerOperations::new());
 
-        let result = execute_pinned("test-owner", script, ops, task).await;
+        let result = execute_pinned(PinnedExecuteRequest {
+            owner_id: "test-owner".to_string(),
+            worker_id: "test-worker".to_string(),
+            version: 1,
+            script,
+            ops,
+            task,
+            on_warm_hit: None,
+        })
+        .await;
         assert!(
             result.is_ok(),
             "execute_pinned should succeed: {:?}",
@@ -183,7 +210,16 @@ async fn test_pinned_global_default_fetch() {
         let (task, rx) = Event::fetch(request);
         let ops = Arc::new(RunnerOperations::new());
 
-        let result = execute_pinned("test-owner", script, ops, task).await;
+        let result = execute_pinned(PinnedExecuteRequest {
+            owner_id: "test-owner".to_string(),
+            worker_id: "test-worker".to_string(),
+            version: 1,
+            script,
+            ops,
+            task,
+            on_warm_hit: None,
+        })
+        .await;
         assert!(
             result.is_ok(),
             "execute_pinned should succeed: {:?}",
@@ -234,7 +270,16 @@ async fn test_pinned_global_default_async_fetch() {
         let (task, rx) = Event::fetch(request);
         let ops = Arc::new(RunnerOperations::new());
 
-        let result = execute_pinned("test-owner", script, ops, task).await;
+        let result = execute_pinned(PinnedExecuteRequest {
+            owner_id: "test-owner".to_string(),
+            worker_id: "test-worker".to_string(),
+            version: 1,
+            script,
+            ops,
+            task,
+            on_warm_hit: None,
+        })
+        .await;
         assert!(
             result.is_ok(),
             "execute_pinned should succeed: {:?}",
@@ -307,7 +352,15 @@ async fn test_buffered_response_body_not_empty_production_scenario() {
     let result = {
         let local = tokio::task::LocalSet::new();
         local
-            .run_until(execute_pinned("test-owner", script, ops, task))
+            .run_until(execute_pinned(PinnedExecuteRequest {
+                owner_id: "test-owner".to_string(),
+                worker_id: "test-worker".to_string(),
+                version: 1,
+                script,
+                ops,
+                task,
+                on_warm_hit: None,
+            }))
             .await
         // LocalSet DROPPED here! Any spawn_local tasks are aborted!
     };
@@ -371,7 +424,15 @@ async fn test_json_response_body_not_empty_production_scenario() {
     let result = {
         let local = tokio::task::LocalSet::new();
         local
-            .run_until(execute_pinned("test-owner", script, ops, task))
+            .run_until(execute_pinned(PinnedExecuteRequest {
+                owner_id: "test-owner".to_string(),
+                worker_id: "test-worker".to_string(),
+                version: 1,
+                script,
+                ops,
+                task,
+                on_warm_hit: None,
+            }))
             .await
     };
 
@@ -442,7 +503,16 @@ async fn test_streaming_response_with_localset_alive() {
         let (task, rx) = Event::fetch(request);
         let ops = Arc::new(RunnerOperations::new());
 
-        let result = execute_pinned("test-owner", script, ops, task).await;
+        let result = execute_pinned(PinnedExecuteRequest {
+            owner_id: "test-owner".to_string(),
+            worker_id: "test-worker".to_string(),
+            version: 1,
+            script,
+            ops,
+            task,
+            on_warm_hit: None,
+        })
+        .await;
         assert!(
             result.is_ok(),
             "execute_pinned should succeed: {:?}",

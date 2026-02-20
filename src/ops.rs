@@ -35,6 +35,7 @@ use openworkers_core::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tracing::Instrument;
@@ -115,9 +116,21 @@ impl BindingConfigs {
 /// Database pool type alias
 pub type DbPool = sqlx::Pool<sqlx::Postgres>;
 
+/// Per-request state that changes between requests for context reuse.
+///
+/// When warm isolates are enabled, the same `RunnerOperations` handle persists
+/// across requests. Only `log_tx` and `span` change per-request.
+pub struct RequestState {
+    pub log_tx: Option<LogTx>,
+    pub span: tracing::Span,
+}
+
 /// Runner's implementation of OperationsHandler
 ///
 /// Implements fetch via reqwest, bindings via config lookup, and logs via channel.
+///
+/// For warm isolates: `request_state` is swappable via interior mutability so that
+/// the same ops handle (captured in the event loop) can serve multiple requests.
 pub struct RunnerOperations {
     /// Stats for this worker
     pub stats: Arc<OperationsStats>,
@@ -125,16 +138,14 @@ pub struct RunnerOperations {
     pub user_id: Option<String>,
     /// Worker ID for logging/quotas
     pub worker_id: Option<String>,
-    /// Log sender (optional - if None, uses default stderr)
-    pub log_tx: Option<LogTx>,
+    /// Per-request state (log_tx + span), swappable between requests
+    request_state: Mutex<RequestState>,
     /// Binding configs for this worker
     pub bindings: BindingConfigs,
     /// Database pool for KV operations
     pub db_pool: Option<DbPool>,
     /// Binding limiters (rate limiting for fetch, KV, database, storage)
     pub limiters: BindingLimiters,
-    /// Tracing span for async operations (propagates trace context)
-    pub span: tracing::Span,
 }
 
 impl RunnerOperations {
@@ -143,11 +154,13 @@ impl RunnerOperations {
             stats: Arc::new(OperationsStats::new()),
             user_id: None,
             worker_id: None,
-            log_tx: None,
+            request_state: Mutex::new(RequestState {
+                log_tx: None,
+                span: tracing::Span::none(),
+            }),
             bindings: BindingConfigs::new(),
             db_pool: None,
             limiters: BindingLimiters::default(),
-            span: tracing::Span::none(),
         }
     }
 
@@ -158,8 +171,8 @@ impl RunnerOperations {
     }
 
     /// Attach tracing span for context propagation
-    pub fn with_span(mut self, span: tracing::Span) -> Self {
-        self.span = span;
+    pub fn with_span(self, span: tracing::Span) -> Self {
+        self.request_state.lock().unwrap().span = span;
         self
     }
 
@@ -173,8 +186,8 @@ impl RunnerOperations {
         self
     }
 
-    pub fn with_log_tx(mut self, log_tx: LogTx) -> Self {
-        self.log_tx = Some(log_tx);
+    pub fn with_log_tx(self, log_tx: LogTx) -> Self {
+        self.request_state.lock().unwrap().log_tx = Some(log_tx);
         self
     }
 
@@ -188,6 +201,20 @@ impl RunnerOperations {
         self
     }
 
+    /// Swap per-request state (log handler + tracing span) for warm context reuse.
+    ///
+    /// Called when an existing ops handle is reused for a new request.
+    pub fn update_request(&self, log_tx: LogTx, span: tracing::Span) {
+        let mut state = self.request_state.lock().unwrap();
+        state.log_tx = Some(log_tx);
+        state.span = span;
+    }
+
+    /// Get a clone of the current span
+    fn span(&self) -> tracing::Span {
+        self.request_state.lock().unwrap().span.clone()
+    }
+
     /// Execute a binding fetch with the given config (shared by assets and storage).
     fn do_binding_fetch(
         &self,
@@ -196,7 +223,7 @@ impl RunnerOperations {
         request: HttpRequest,
     ) -> OpFuture<'_, Result<HttpResponse, String>> {
         let binding_name = binding.to_string();
-        let span = self.span.clone();
+        let span = self.span();
 
         Box::pin(
             async move {
@@ -261,6 +288,10 @@ impl Default for RunnerOperations {
 }
 
 impl OperationsHandler for RunnerOperations {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     /// Handle direct fetch: `fetch("https://example.com")`
     ///
     /// This is a pass-through fetch with no auth modification.
@@ -269,7 +300,7 @@ impl OperationsHandler for RunnerOperations {
     /// Special case: URLs matching `*.workers.rocks` or `*.workers.dev.localhost`
     /// are routed internally to avoid DNS lookup and external network hop.
     fn handle_fetch(&self, request: HttpRequest) -> OpFuture<'_, Result<HttpResponse, String>> {
-        let span = self.span.clone();
+        let span = self.span();
         Box::pin(
             async move {
                 // Acquire fetch limiter permit (blocks if at concurrent limit, errors if total exceeded)
@@ -366,7 +397,7 @@ impl OperationsHandler for RunnerOperations {
             }
         };
 
-        let span = self.span.clone();
+        let span = self.span();
         Box::pin(
             async move {
                 // Acquire storage limiter permit
@@ -436,7 +467,7 @@ impl OperationsHandler for RunnerOperations {
         };
 
         let namespace_id = config.id.clone();
-        let span = self.span.clone();
+        let span = self.span();
 
         Box::pin(
             async move {
@@ -489,7 +520,7 @@ impl OperationsHandler for RunnerOperations {
 
         // Get shared pool for schema mode
         let shared_pool = self.db_pool.clone();
-        let span = self.span.clone();
+        let span = self.span();
 
         Box::pin(
             async move {
@@ -590,7 +621,7 @@ impl OperationsHandler for RunnerOperations {
             }
         };
 
-        let span = self.span.clone();
+        let span = self.span();
 
         Box::pin(
             async move {
@@ -641,11 +672,15 @@ impl OperationsHandler for RunnerOperations {
         self.stats.log_count.fetch_add(1, Ordering::Relaxed);
 
         // Send to log channel if available (for log collection/storage)
-        if let Some(ref tx) = self.log_tx {
-            let _ = tx.send(LogEvent {
-                level,
-                message: message.clone(),
-            });
+        {
+            let state = self.request_state.lock().unwrap();
+
+            if let Some(ref tx) = state.log_tx {
+                let _ = tx.send(LogEvent {
+                    level,
+                    message: message.clone(),
+                });
+            }
         }
 
         // Also log via the log crate for debugging
@@ -668,6 +703,14 @@ mod tests {
         assert!(ops.bindings.assets.is_empty());
         assert!(ops.bindings.storage.is_empty());
         assert!(ops.bindings.kv.is_empty());
+    }
+
+    #[test]
+    fn test_runner_operations_update_request() {
+        let ops = RunnerOperations::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        ops.update_request(tx, tracing::Span::none());
+        assert!(ops.request_state.lock().unwrap().log_tx.is_some());
     }
 
     #[test]

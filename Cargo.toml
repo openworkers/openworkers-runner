@@ -35,7 +35,6 @@ bytes = "1.11.0"
 log = "0.4.29"
 tokio = "1.49.0"
 tokio-util = { version = "0.7", features = ["rt"] }
-flume = "0.12.0"
 once_cell = "1.19"
 # filetime = "0.2"  # was used by disk-based snapshot cache
 env_logger = "0.11.6"
@@ -56,14 +55,14 @@ sqlx = { version = "0.8.6", features = [ "runtime-tokio", "postgres", "uuid", "b
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls", "json", "stream"] }
 
 # Core types
-openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.13.0", features = ["hyper"] }
+openworkers-core = { path = "../openworkers-core", features = ["hyper"] }
 
 # Transform (TS strip + export default → globalThis.default)
 # openworkers-transform = { path = "../openworkers-transform" }
 openworkers-transform = { git = "https://github.com/openworkers/openworkers-transform", tag = "v0.1.0" }
 
 # Runtime backend (v8 only for now, others require older version of core)
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.13.3", optional = true, features = ["ptrcomp"] }
+openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", optional = true, features = ["ptrcomp"] }
 
 # WASM runtime (optional)
 # openworkers-runtime-wasm = { path = "../openworkers-runtime-wasm", optional = true }
