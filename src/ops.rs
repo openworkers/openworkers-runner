@@ -743,7 +743,7 @@ mod tests {
     #[test]
     fn test_update_request_creates_fresh_limiters() {
         let ops = RunnerOperations::new();
-        let (tx_a, _rx_a) = std::sync::mpsc::channel::<LogEvent>();
+        let (_tx_a, _rx_a) = std::sync::mpsc::channel::<LogEvent>();
         let (tx_b, _rx_b) = std::sync::mpsc::channel::<LogEvent>();
 
         // Request A grabs its limiters and simulates some usage

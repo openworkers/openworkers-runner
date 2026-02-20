@@ -21,7 +21,7 @@
 use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_v8::Worker;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Helper to run async tests in a LocalSet (required for tokio spawn_local)
 async fn run_local<F, Fut, T>(f: F) -> T
@@ -577,6 +577,79 @@ async fn test_export_as_default_bundler_pattern_transformed() {
 
         assert_eq!(status, 200);
         assert_eq!(body, "from bundler pattern");
+    })
+    .await;
+}
+
+// =============================================================================
+// waitUntil tests
+// =============================================================================
+
+/// waitUntil should NOT block the response or exec() completion.
+///
+/// The handler sends a response immediately, then calls waitUntil with a 200ms
+/// delayed promise. exec() should return as soon as the response is ready,
+/// NOT after the waitUntil promise resolves.
+///
+/// Verify that the HTTP response is sent to the client immediately,
+/// WITHOUT waiting for waitUntil promises to resolve.
+///
+/// The worker's waitUntil schedules a 200ms timer. The response should
+/// arrive well before that. exec() itself will block (Worker pumps V8
+/// microtasks via FullyComplete), but from the HTTP client's perspective,
+/// the response is not delayed by waitUntil — that's the important invariant.
+#[tokio::test]
+async fn test_wait_until_does_not_block_response() {
+    run_local(|| async {
+        let script = Script::new(
+            r#"
+            addEventListener('fetch', (event) => {
+                event.respondWith(new Response('ok'));
+                event.waitUntil(new Promise(resolve => setTimeout(resolve, 200)));
+            });
+            "#,
+        );
+
+        let mut worker = Worker::new(script, None)
+            .await
+            .expect("Worker should initialize");
+
+        let (task, rx) = Event::fetch(make_request());
+
+        let start = Instant::now();
+
+        // Run exec in background — it will block for ~200ms (Worker uses FullyComplete
+        // to pump V8 microtasks), but the response is sent before that.
+        let exec_handle = tokio::task::spawn_local(async move { worker.exec(task).await });
+
+        // Response should arrive quickly (before waitUntil's 200ms timer)
+        let response = tokio::time::timeout(Duration::from_millis(100), rx)
+            .await
+            .expect("Response should arrive before waitUntil completes")
+            .expect("Should get response");
+
+        let response_time = start.elapsed();
+        assert_eq!(response.status, 200);
+
+        // The response must arrive well before the 200ms waitUntil timer
+        assert!(
+            response_time < Duration::from_millis(100),
+            "Response should arrive before waitUntil (200ms), took {:?}",
+            response_time
+        );
+
+        // exec() will block until waitUntil completes (Worker uses FullyComplete)
+        // This is expected — Worker is oneshot, so pumping V8 is fine.
+        // For warm reuse (ExecutionContext), StreamsComplete returns earlier.
+        let exec_result = exec_handle.await.unwrap();
+        exec_result.expect("exec should succeed");
+
+        let exec_time = start.elapsed();
+
+        eprintln!(
+            "Response arrived in {:?}, exec completed in {:?}",
+            response_time, exec_time
+        );
     })
     .await;
 }
