@@ -2864,7 +2864,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-core"
-version = "0.13.0"
+version = "0.13.1"
+source = "git+https://github.com/openworkers/openworkers-core?tag=v0.13.1#cc945845911c7200233b64edf7c6a3105b51d889"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -2888,7 +2889,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.13.6"
+version = "0.13.7"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2911,7 +2912,7 @@ dependencies = [
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
- "openworkers-core 0.13.0",
+ "openworkers-core 0.13.1",
  "openworkers-runtime-v8",
  "openworkers-runtime-wasm",
  "openworkers-transform",
@@ -2936,13 +2937,14 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.13.3"
+version = "0.13.4"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.4#04e9a636b48054d0f30e238fa72bc04fb32b1fff"
 dependencies = [
  "bytes",
  "futures",
  "libc",
  "lru",
- "openworkers-core 0.13.0",
+ "openworkers-core 0.13.1",
  "openworkers-glue-v8",
  "openworkers-runtime-v8-gc-derive",
  "openworkers-serde-v8",
@@ -2961,6 +2963,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.4#04e9a636b48054d0f30e238fa72bc04fb32b1fff"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -585,6 +585,106 @@ async fn test_export_as_default_bundler_pattern_transformed() {
 // waitUntil tests
 // =============================================================================
 
+/// Multiple waitUntil promises should all complete before exec() returns.
+///
+/// Three waitUntil calls with increasing delays (50ms, 100ms, 150ms).
+/// The response should arrive immediately; exec() blocks until all complete.
+#[tokio::test]
+async fn test_wait_until_multiple_promises() {
+    run_local(|| async {
+        let script = Script::new(
+            r#"
+            addEventListener('fetch', (event) => {
+                event.respondWith(new Response('ok'));
+                event.waitUntil(new Promise(resolve => setTimeout(resolve, 50)));
+                event.waitUntil(new Promise(resolve => setTimeout(resolve, 100)));
+                event.waitUntil(new Promise(resolve => setTimeout(resolve, 150)));
+            });
+            "#,
+        );
+
+        let mut worker = Worker::new(script, None)
+            .await
+            .expect("Worker should initialize");
+
+        let start = Instant::now();
+        let (status, body) = fetch_with_timeout(&mut worker, 5)
+            .await
+            .expect("Should get response");
+
+        assert_eq!(status, 200);
+        assert_eq!(body, "ok");
+
+        // exec() should have waited for the longest waitUntil (~150ms)
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "exec() should wait for all waitUntil promises, took {:?}",
+            elapsed
+        );
+    })
+    .await;
+}
+
+/// waitUntil with a rejected promise should NOT prevent the response or crash exec().
+///
+/// The rejection is caught by __triggerFetch's catch block, but since respondWith
+/// already set __lastResponse, the catch does NOT overwrite the 200 response.
+#[tokio::test]
+async fn test_wait_until_rejected_promise() {
+    run_local(|| async {
+        let script = Script::new(
+            r#"
+            addEventListener('fetch', (event) => {
+                event.respondWith(new Response('ok'));
+                event.waitUntil(Promise.reject(new Error('background failure')));
+            });
+            "#,
+        );
+
+        let mut worker = Worker::new(script, None)
+            .await
+            .expect("Worker should initialize");
+
+        let (status, body) = fetch_with_timeout(&mut worker, 5)
+            .await
+            .expect("Should get response");
+
+        assert_eq!(status, 200);
+        assert_eq!(body, "ok");
+    })
+    .await;
+}
+
+/// Mix of resolved and rejected waitUntil promises — all should be tolerated.
+#[tokio::test]
+async fn test_wait_until_mix_resolved_and_rejected() {
+    run_local(|| async {
+        let script = Script::new(
+            r#"
+            addEventListener('fetch', (event) => {
+                event.respondWith(new Response('ok'));
+                event.waitUntil(new Promise(resolve => setTimeout(resolve, 50)));
+                event.waitUntil(Promise.reject(new Error('oops')));
+                event.waitUntil(new Promise(resolve => setTimeout(resolve, 100)));
+            });
+            "#,
+        );
+
+        let mut worker = Worker::new(script, None)
+            .await
+            .expect("Worker should initialize");
+
+        let (status, body) = fetch_with_timeout(&mut worker, 5)
+            .await
+            .expect("Should get response");
+
+        assert_eq!(status, 200);
+        assert_eq!(body, "ok");
+    })
+    .await;
+}
+
 /// waitUntil should NOT block the response or exec() completion.
 ///
 /// The handler sends a response immediately, then calls waitUntil with a 200ms
