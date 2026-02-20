@@ -2889,7 +2889,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.13.7"
+version = "0.13.8"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2937,8 +2937,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.13.4"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.4#04e9a636b48054d0f30e238fa72bc04fb32b1fff"
+version = "0.13.5"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.5#c411351f739cb704a8faeb37bcdf31f013805687"
 dependencies = [
  "bytes",
  "futures",
@@ -2963,7 +2963,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.4#04e9a636b48054d0f30e238fa72bc04fb32b1fff"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.5#c411351f739cb704a8faeb37bcdf31f013805687"
 dependencies = [
  "proc-macro2",
  "quote",

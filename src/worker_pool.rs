@@ -73,8 +73,11 @@ impl SequentialWorkerPool {
 
                     // Persistent LocalSet enables interleaved execution:
                     // while one task awaits I/O, the LocalSet polls other tasks.
-                    // Each task holds its own V8 locker on its own isolate,
-                    // so there's no V8 contention — just cooperative scheduling.
+                    // Each task holds its own V8 locker on its own isolate.
+                    // NOTE: V8 Lockers call Isolate::Enter() which sets the
+                    // thread-local "current isolate". With cooperative scheduling,
+                    // multiple Lockers coexist and IsolateGuard (enter/exit per
+                    // V8 work block) ensures GetCurrent() returns the correct isolate.
                     rt.block_on(async {
                         let local = tokio::task::LocalSet::new();
 

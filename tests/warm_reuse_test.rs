@@ -330,3 +330,65 @@ async fn test_warm_reuse_after_rejected_waituntil() {
     })
     .await;
 }
+
+// =============================================================================
+// Concurrent interleaving test (V8 Locker + spawn_local)
+// =============================================================================
+
+/// Two concurrent execute_pinned calls with async yields on the same thread.
+///
+/// This reproduces the V8 isolate interleaving bug:
+/// 1. Task A creates Locker(X), enters isolate X → GetCurrent() = X
+/// 2. Task A's worker does setTimeout(50ms) → event loop returns Pending
+/// 3. LocalSet polls Task B → Locker(Y) enters isolate Y → GetCurrent() = Y
+/// 4. Task B's worker also yields (setTimeout)
+/// 5. Task A resumes, creates HandleScope from X's raw pointer
+/// 6. ContextScope::new checks: X's pointer != GetCurrent() (Y) → PANIC
+///
+/// The panic: "PinnedRef and Context do not belong to the same Isolate"
+///
+/// This happens because v8::Locker calls Isolate::Enter() which sets the
+/// thread-local "current isolate". With cooperative scheduling (spawn_local),
+/// multiple Lockers coexist on the same thread with non-LIFO ordering.
+#[tokio::test]
+async fn test_concurrent_pinned_interleaving() {
+    init_pool();
+
+    run_local(|| async {
+        let script = Script::new(
+            r#"
+            addEventListener('fetch', (event) => {
+                // Force async yield: respond after a delay.
+                // During this delay, the event loop returns Pending,
+                // allowing the LocalSet to poll another task.
+                setTimeout(() => {
+                    event.respondWith(new Response('ok'));
+                }, 50);
+            });
+            "#,
+        );
+
+        // Spawn two concurrent tasks on the same LocalSet (same OS thread).
+        // They get DIFFERENT isolates because they have different worker_ids.
+        let handle_a = tokio::task::spawn_local({
+            let script = script.clone();
+            async move { pinned_fetch("interleave-a", 1, script).await }
+        });
+
+        let handle_b = tokio::task::spawn_local({
+            let script = script.clone();
+            async move { pinned_fetch("interleave-b", 1, script).await }
+        });
+
+        let (result_a, result_b) = tokio::join!(handle_a, handle_b);
+
+        let (status_a, body_a) = result_a.expect("Task A should not panic");
+        let (status_b, body_b) = result_b.expect("Task B should not panic");
+
+        assert_eq!(status_a, 200);
+        assert_eq!(body_a, "ok");
+        assert_eq!(status_b, 200);
+        assert_eq!(body_b, "ok");
+    })
+    .await;
+}
