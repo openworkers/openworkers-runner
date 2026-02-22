@@ -22,15 +22,16 @@ async fn handle_scheduled_task(
     span: tracing::Span,
     task_id: String,
     data: ScheduledData,
-    db: sqlx::Pool<sqlx::Postgres>,
+    db_internal: sqlx::Pool<sqlx::Postgres>,
+    db_worker: sqlx::Pool<sqlx::Postgres>,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
 ) {
     // Start metrics timer
     #[cfg_attr(not(feature = "telemetry"), allow(unused_mut))]
     let mut metrics_timer = crate::metrics::MetricsTimer::new();
 
-    // Acquire connection per-task to avoid holding it across iterations
-    let mut conn = match db.acquire().await {
+    // Acquire connection from internal pool (worker lookup is an internal query)
+    let mut conn = match db_internal.acquire().await {
         Ok(c) => c,
         Err(err) => {
             tracing::error!("Failed to acquire database connection: {}", err);
@@ -68,14 +69,15 @@ async fn handle_scheduled_task(
         ]);
     }
 
-    // Connection is dropped here, returned to pool
+    // Connection is dropped here, returned to internal pool
     drop(conn);
 
+    // Worker execution uses the worker pool for binding operations
     run_scheduled(
         task_id,
         data,
         worker_data,
-        db,
+        db_worker,
         global_log_tx,
         span,
         metrics_timer,
@@ -177,7 +179,8 @@ fn run_scheduled(
 }
 
 pub fn handle_scheduled(
-    db: sqlx::Pool<sqlx::Postgres>,
+    db_internal: sqlx::Pool<sqlx::Postgres>,
+    db_worker: sqlx::Pool<sqlx::Postgres>,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
 ) {
     std::thread::spawn(move || {
@@ -252,7 +255,8 @@ pub fn handle_scheduled(
                     span.clone(),
                     task_id,
                     data,
-                    db.clone(),
+                    db_internal.clone(),
+                    db_worker.clone(),
                     global_log_tx.clone(),
                 )
                 .instrument(span)

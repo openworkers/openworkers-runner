@@ -1,8 +1,9 @@
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use std::future::Future;
-use std::hash::{Hash, Hasher};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::{Notify, Semaphore, oneshot};
@@ -39,7 +40,7 @@ type BoxedTask = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()>>> + Send>;
 /// Architecture:
 /// - N threads (one per CPU core)
 /// - Each thread has its own channel + LocalSet + single-thread runtime
-/// - Tasks are distributed via round-robin or consistent-hash routing
+/// - Tasks are distributed via round-robin for even load distribution
 /// - Tasks interleave cooperatively during I/O waits (spawn_local)
 ///
 /// This gives us:
@@ -123,19 +124,13 @@ impl SequentialWorkerPool {
         }
     }
 
-    /// Map a routing key to a thread index via consistent hashing.
-    fn thread_for_key(&self, key: &str) -> usize {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        key.hash(&mut hasher);
-        hasher.finish() as usize % self.senders.len()
-    }
-
     // ── Public API ─────────────────────────────────────────────────────
 
     /// Spawn a task on the pool (round-robin), returning when it's queued (not completed).
     ///
     /// The task will be executed on a dedicated thread with its own LocalSet,
-    /// ensuring V8 isolation safety. Tasks on the same thread run sequentially.
+    /// ensuring V8 isolation safety. Tasks on the same thread interleave
+    /// cooperatively during I/O waits.
     pub fn spawn<F, Fut>(&self, task: F)
     where
         F: FnOnce() -> Fut + Send + 'static,
@@ -161,46 +156,12 @@ impl SequentialWorkerPool {
 
         rx.await
     }
-
-    /// Spawn a task on a thread determined by the routing key (consistent hash).
-    ///
-    /// Same key always goes to the same thread, maximizing warm cache hits
-    /// for thread-local caches (e.g., warm isolate contexts in the pinned pool).
-    pub fn spawn_keyed<F, Fut>(&self, key: &str, task: F)
-    where
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + 'static,
-    {
-        let thread_idx = self.thread_for_key(key);
-        self.send_to(thread_idx, Box::new(move || Box::pin(task())));
-    }
-
-    /// Spawn a task (keyed routing) and wait for it to complete.
-    pub async fn spawn_await_keyed<F, Fut, T>(
-        &self,
-        key: &str,
-        task: F,
-    ) -> Result<T, oneshot::error::RecvError>
-    where
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: Future<Output = T> + 'static,
-        T: Send + 'static,
-    {
-        let (tx, rx) = oneshot::channel();
-
-        self.spawn_keyed(key, move || async move {
-            let result = task().await;
-            let _ = tx.send(result);
-        });
-
-        rx.await
-    }
 }
 
 /// Global worker pool for executing JavaScript workers
 ///
 /// Tasks interleave cooperatively during I/O waits (spawn_local on LocalSet).
-/// Routing: round-robin (spawn) or consistent-hash (spawn_keyed).
+/// Routing: round-robin across all threads for even load distribution.
 pub static WORKER_POOL: Lazy<SequentialWorkerPool> = Lazy::new(|| {
     let pool_size = get_pool_size();
     SequentialWorkerPool::new(pool_size)
@@ -284,6 +245,34 @@ pub static TASK_COMPLETION_NOTIFY: Lazy<Arc<Notify>> = Lazy::new(|| Arc::new(Not
 /// Should be called when releasing the semaphore permit.
 pub fn notify_task_completed() {
     TASK_COMPLETION_NOTIFY.notify_waiters();
+}
+
+/// Per-worker concurrency limiters
+///
+/// Maps worker IDs to their semaphores, ensuring a single hot worker
+/// cannot monopolize the global worker pool or DB connections.
+static WORKER_LIMITERS: Lazy<Mutex<HashMap<String, Arc<Semaphore>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Max concurrent requests per worker (from MAX_CONCURRENT_PER_WORKER env)
+static MAX_CONCURRENT_PER_WORKER: Lazy<usize> = Lazy::new(|| {
+    std::env::var("MAX_CONCURRENT_PER_WORKER")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10)
+});
+
+/// Get or create a semaphore for a specific worker
+pub fn get_worker_semaphore(worker_id: &str) -> Arc<Semaphore> {
+    let mut map = WORKER_LIMITERS.lock().unwrap();
+    map.entry(worker_id.to_string())
+        .or_insert_with(|| Arc::new(Semaphore::new(*MAX_CONCURRENT_PER_WORKER)))
+        .clone()
+}
+
+/// Get the configured max concurrent requests per worker (for logging)
+pub fn get_max_concurrent_per_worker() -> usize {
+    *MAX_CONCURRENT_PER_WORKER
 }
 
 /// Wrapper around OwnedSemaphorePermit that automatically notifies on drop
@@ -406,5 +395,46 @@ mod tests {
             "spawn_local should be concurrent, got {:?}",
             elapsed
         );
+    }
+
+    #[test]
+    fn test_get_worker_semaphore_creates_and_reuses() {
+        let sem1 = get_worker_semaphore("test-worker-1");
+        let sem2 = get_worker_semaphore("test-worker-1");
+        let sem3 = get_worker_semaphore("test-worker-2");
+
+        // Same worker ID returns same semaphore (Arc pointer equality)
+        assert!(Arc::ptr_eq(&sem1, &sem2));
+
+        // Different worker ID returns different semaphore
+        assert!(!Arc::ptr_eq(&sem1, &sem3));
+    }
+
+    #[tokio::test]
+    async fn test_worker_semaphore_limits_concurrency() {
+        // The default MAX_CONCURRENT_PER_WORKER is 10 (from env or default)
+        let limit = get_max_concurrent_per_worker();
+        let sem = get_worker_semaphore("test-limiter-worker");
+
+        // Acquire all permits
+        let mut permits = Vec::new();
+        for _ in 0..limit {
+            let permit = sem.clone().acquire_owned().await.unwrap();
+            permits.push(permit);
+        }
+
+        // Next acquire should not succeed immediately
+        let result =
+            tokio::time::timeout(Duration::from_millis(10), sem.clone().acquire_owned()).await;
+
+        assert!(result.is_err(), "Should timeout when all permits are taken");
+
+        // Drop one permit → next acquire should succeed
+        permits.pop();
+
+        let result =
+            tokio::time::timeout(Duration::from_millis(100), sem.clone().acquire_owned()).await;
+
+        assert!(result.is_ok(), "Should succeed after a permit is released");
     }
 }

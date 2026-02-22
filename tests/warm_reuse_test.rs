@@ -10,9 +10,14 @@
 
 #![cfg(feature = "v8")]
 
-use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, RuntimeLimits, Script};
+use openworkers_core::{
+    BindingInfo, DatabaseOp, DatabaseResult, Event, HttpMethod, HttpRequest, HttpResponse,
+    OpFuture, OperationsHandler, RequestBody, ResponseBody, RuntimeLimits, Script,
+};
 use openworkers_runner::ops::RunnerOperations;
-use openworkers_runtime_v8::{PinnedExecuteRequest, execute_pinned, init_pinned_pool};
+use openworkers_runtime_v8::{
+    PinnedExecuteRequest, PinnedPoolConfig, execute_pinned, init_pinned_pool,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Once};
 use std::time::Duration;
@@ -21,7 +26,13 @@ static INIT: Once = Once::new();
 
 fn init_pool() {
     INIT.call_once(|| {
-        init_pinned_pool(10, RuntimeLimits::default());
+        init_pinned_pool(PinnedPoolConfig {
+            max_per_thread: 10,
+            max_per_owner: None,
+            max_concurrent_per_isolate: 20,
+            max_cached_contexts: 10,
+            limits: RuntimeLimits::default(),
+        });
     });
 }
 
@@ -389,6 +400,256 @@ async fn test_concurrent_pinned_interleaving() {
         assert_eq!(body_a, "ok");
         assert_eq!(status_b, 200);
         assert_eq!(body_b, "ok");
+    })
+    .await;
+}
+
+// =============================================================================
+// Concurrent interleaving STRESS test — reproduces production segfault
+// =============================================================================
+
+/// Mock ops handler that responds to fetch() with a configurable delay.
+///
+/// The delay simulates real I/O (DB query, external HTTP) and ensures that
+/// `tokio::spawn` + `tokio::time::sleep` in the scheduler creates a genuine
+/// async yield. The callback arrives on `callback_tx` after the delay, forcing
+/// the event loop's `poll_fn` to return Pending and interleave with other tasks.
+struct DelayedFetchOps {
+    delay_ms: u64,
+}
+
+impl OperationsHandler for DelayedFetchOps {
+    fn handle_fetch(&self, _request: HttpRequest) -> OpFuture<'_, Result<HttpResponse, String>> {
+        let delay = self.delay_ms;
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            Ok(HttpResponse {
+                status: 200,
+                headers: vec![("content-type".to_string(), "text/plain".to_string())],
+                body: ResponseBody::Bytes(bytes::Bytes::from_static(b"mock-ok")),
+            })
+        })
+    }
+}
+
+/// Mock ops handler that responds to env.DB.query() with a configurable delay.
+///
+/// Returns DatabaseResult::Rows with a JSON array. The delay simulates a real
+/// PostgreSQL round-trip. This goes through the BindingDatabase path:
+///   JS env.DB.query() → __nativeBindingDatabase → SchedulerMessage::BindingDatabase
+///   → tokio::spawn → handle_binding_database → CallbackMessage::DatabaseResult
+///   → populate_database_result (v8::json::parse) → dispatch_binding_callbacks
+///
+/// This is the EXACT path that segfaults in production.
+struct DelayedDbOps {
+    delay_ms: u64,
+}
+
+impl OperationsHandler for DelayedDbOps {
+    fn handle_binding_database(
+        &self,
+        _binding: &str,
+        _op: DatabaseOp,
+    ) -> OpFuture<'_, DatabaseResult> {
+        let delay = self.delay_ms;
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+            DatabaseResult::Rows(r#"[{"id":1,"value":"mock"}]"#.to_string())
+        })
+    }
+}
+
+/// Helper: execute a script with custom ops via execute_pinned, return (status, body).
+async fn pinned_fetch_with_ops(
+    worker_id: &str,
+    version: i32,
+    script: Script,
+    ops: Arc<dyn OperationsHandler>,
+) -> (u16, String) {
+    let (task, rx) = Event::fetch(make_request());
+
+    let result = execute_pinned(PinnedExecuteRequest {
+        owner_id: "test-warm".to_string(),
+        worker_id: worker_id.to_string(),
+        version,
+        script,
+        ops,
+        task,
+        on_warm_hit: None,
+    })
+    .await;
+
+    result.expect("execute_pinned should succeed");
+
+    let response = tokio::time::timeout(Duration::from_secs(10), rx)
+        .await
+        .expect("Should receive response in time")
+        .expect("Channel should not be closed");
+
+    let body = response.body.collect().await.expect("Should collect body");
+    let body_str = String::from_utf8_lossy(&body).to_string();
+
+    (response.status, body_str)
+}
+
+/// Stress test: concurrent requests using fetch() with mocked I/O delay.
+///
+/// Production segfaults inside `v8__Isolate__Enter()` after ~28 requests with
+/// parallelism >= 2. The root cause is suspected to be V8 entry_stack corruption
+/// from non-LIFO Enter/Exit ordering with cooperative scheduling.
+///
+/// Previous attempts with setTimeout failed to reproduce because timer callbacks
+/// are handled synchronously within the runtime — the event loop completes in
+/// one poll cycle per timer, so tasks never truly interleave their IsolateScope
+/// enter/exit blocks.
+///
+/// This test uses fetch() which goes through the EXTERNAL callback path:
+///   1. JS calls fetch("http://mock") → scheduler dispatches via tokio::spawn
+///   2. DelayedFetchOps::handle_fetch() sleeps 20ms (simulates I/O)
+///   3. Response arrives as CallbackMessage::FetchStreamingSuccess on callback_tx
+///   4. Event loop's poll_fn receives it → process_single_callback (IsolateScope)
+///      → pump_and_checkpoint (IsolateScope) → check_exit (IsolateScope)
+///
+/// During step 2, the event loop returns Pending. The LocalSet switches to the
+/// other concurrent task, which also starts a fetch and goes Pending. Now both
+/// tasks have active Lockers on the same thread, and their IsolateScope
+/// enter/exits truly interleave as callbacks arrive at staggered times.
+#[tokio::test]
+async fn test_concurrent_interleaving_stress() {
+    init_pool();
+
+    run_local(|| async {
+        // Worker that calls fetch() — goes through the external callback path
+        // (tokio::spawn → ops.handle_fetch → callback_tx → process_single_callback)
+        let script = Script::new(
+            r#"
+            addEventListener('fetch', (event) => {
+                fetch('http://mock/api').then(response => {
+                    return response.text();
+                }).then(text => {
+                    event.respondWith(new Response(text));
+                }).catch(err => {
+                    event.respondWith(new Response('error: ' + err, { status: 500 }));
+                });
+            });
+            "#,
+        );
+
+        // 20ms delay simulates real I/O — long enough for real interleaving
+        let ops: Arc<dyn OperationsHandler> = Arc::new(DelayedFetchOps { delay_ms: 20 });
+
+        let num_workers = 4;
+        let num_rounds = 50;
+
+        for round in 0..num_rounds {
+            let mut handles = Vec::new();
+
+            for worker_idx in 0..num_workers {
+                let script = script.clone();
+                let worker_id = format!("stress-{}", worker_idx);
+                let ops = ops.clone();
+
+                handles.push(tokio::task::spawn_local(async move {
+                    pinned_fetch_with_ops(&worker_id, 1, script, ops).await
+                }));
+            }
+
+            for (idx, handle) in handles.into_iter().enumerate() {
+                let (status, body) = handle
+                    .await
+                    .unwrap_or_else(|e| panic!("round {round} worker {idx} panicked: {e}"));
+                assert_eq!(
+                    status, 200,
+                    "round {round} worker {idx}: expected 200, got {status} body={body}"
+                );
+                assert_eq!(
+                    body, "mock-ok",
+                    "round {round} worker {idx}: expected 'mock-ok', got '{body}'"
+                );
+            }
+        }
+    })
+    .await;
+}
+
+// =============================================================================
+// Database binding stress test — reproduces production segfault path
+// =============================================================================
+
+/// Stress test: concurrent requests using env.DB.query() with mocked delay.
+///
+/// This targets the EXACT callback path that segfaults in production:
+///   JS: env.DB.query("SELECT ...") → __nativeBindingDatabase
+///     → SchedulerMessage::BindingDatabase → tokio::spawn
+///     → handle_binding_database (20ms delay) → CallbackMessage::DatabaseResult
+///     → populate_database_result (v8::json::parse on rows JSON)
+///     → dispatch_binding_callbacks → Promise resolves → .then(r => r.rows)
+///
+/// Production crash signature:
+///   - 2+ concurrent DB requests on same thread (spawn_local on shared LocalSet)
+///   - Segfault in v8__Isolate__Enter() inside Locker::new after ~10-28 requests
+///   - Only happens with database workers, not simple API workers
+///
+/// The DB path exercises more V8 internals per callback than fetch:
+///   - v8::json::parse() inside process_single_callback
+///   - Object property setting (success, rows, error)
+///   - dispatch_binding_callbacks with V8 function calls
+#[tokio::test]
+async fn test_concurrent_db_interleaving_stress() {
+    init_pool();
+
+    run_local(|| async {
+        // Worker that calls env.DB.query() — goes through the database binding path
+        let script = Script::with_bindings(
+            r#"
+            addEventListener('fetch', (event) => {
+                env.DB.query("SELECT 1 as id, 'hello' as value").then(rows => {
+                    event.respondWith(new Response(JSON.stringify(rows)));
+                }).catch(err => {
+                    event.respondWith(new Response('error: ' + err, { status: 500 }));
+                });
+            });
+            "#,
+            None,
+            vec![BindingInfo::database("DB")],
+        );
+
+        // 20ms delay simulates real PostgreSQL round-trip
+        let ops: Arc<dyn OperationsHandler> = Arc::new(DelayedDbOps { delay_ms: 20 });
+
+        let num_workers = 4;
+        let num_rounds = 50;
+
+        for round in 0..num_rounds {
+            let mut handles = Vec::new();
+
+            for worker_idx in 0..num_workers {
+                let script = script.clone();
+                let worker_id = format!("db-stress-{}", worker_idx);
+                let ops = ops.clone();
+
+                handles.push(tokio::task::spawn_local(async move {
+                    pinned_fetch_with_ops(&worker_id, 1, script, ops).await
+                }));
+            }
+
+            for (idx, handle) in handles.into_iter().enumerate() {
+                let (status, body) = handle
+                    .await
+                    .unwrap_or_else(|e| panic!("round {round} worker {idx} panicked: {e}"));
+
+                assert_eq!(
+                    status, 200,
+                    "round {round} worker {idx}: expected 200, got {status} body={body}"
+                );
+
+                // Verify the DB result was properly parsed
+                assert!(
+                    body.contains("mock"),
+                    "round {round} worker {idx}: expected DB rows, got '{body}'"
+                );
+            }
+        }
     })
     .await;
 }

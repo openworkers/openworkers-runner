@@ -17,7 +17,8 @@ use openworkers_runner::store::WorkerIdentifier;
 use sqlx::postgres::PgPoolOptions;
 
 struct AppState {
-    db: sqlx::Pool<sqlx::Postgres>,
+    db_internal: sqlx::Pool<sqlx::Postgres>, // Runner's own queries (resolve, bindings lookup)
+    db_worker: sqlx::Pool<sqlx::Postgres>,   // Worker binding operations (KV, Database)
     log_tx: std::sync::mpsc::Sender<openworkers_runner::log::LogMessage>,
     shutdown_tx: tokio::sync::mpsc::Sender<()>,
     wall_clock_timeout_ms: u64,
@@ -131,14 +132,15 @@ async fn handle_request(
         headers.get("x-worker-name").and_then(|h| h.to_str().ok())
     );
 
-    // Acquire database connection
-    let mut conn: sqlx::pool::PoolConnection<sqlx::Postgres> = match state.db.acquire().await {
-        Ok(db) => db,
-        Err(err) => {
-            error!("Failed to acquire database connection: {}", err);
-            return Ok(error_response(500, "Failed to acquire database connection"));
-        }
-    };
+    // Acquire database connection from internal pool (for worker resolution queries)
+    let mut conn: sqlx::pool::PoolConnection<sqlx::Postgres> =
+        match state.db_internal.acquire().await {
+            Ok(db) => db,
+            Err(err) => {
+                error!("Failed to acquire database connection: {}", err);
+                return Ok(error_response(500, "Failed to acquire database connection"));
+            }
+        };
 
     // Extract x-request-id header
     let request_id = match headers.get("x-request-id") {
@@ -440,6 +442,25 @@ async fn handle_worker_request(
         ]);
     }
 
+    // Per-worker concurrency limit — applied before the global semaphore so a hot
+    // worker gets 429 immediately without consuming global capacity
+    let worker_sem = openworkers_runner::worker_pool::get_worker_semaphore(&worker.id);
+    let _worker_permit = match tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        worker_sem.acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => return Ok(error_response(500, "Internal server error")),
+        Err(_) => {
+            return Ok(error_response(
+                429,
+                "Too many concurrent requests for this worker",
+            ));
+        }
+    };
+
     let start = tokio::time::Instant::now();
 
     // Collect request body (consumes req)
@@ -513,7 +534,7 @@ async fn handle_worker_request(
         termination_tx,
         state.log_tx.clone(),
         permit,
-        state.db.clone(),
+        state.db_worker.clone(),
         state.wall_clock_timeout_ms,
         span.clone(),
     );
@@ -652,52 +673,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map(|v| !matches!(v.as_str(), "false" | "0"))
         .unwrap_or(true);
 
-    // Retry database connection with exponential backoff
-    let mut retry_count = 0;
-    let max_retries = 5;
-    let pool = loop {
-        match PgPoolOptions::new()
-            .max_connections(20)
-            .acquire_timeout(Duration::from_secs(5))
-            .test_before_acquire(test_before_acquire)
-            .connect(&db_url)
-            .await
-        {
-            Ok(pool) => match sqlx::query("SELECT 1").fetch_one(&pool).await {
-                Ok(_) => {
-                    debug!("connected to Postgres");
-                    break pool;
-                }
+    let internal_pool_size: u32 = std::env::var("DB_POOL_INTERNAL_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+
+    let worker_pool_size: u32 = std::env::var("DB_POOL_WORKER_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(15);
+
+    /// Create a PG pool with retry/backoff logic
+    async fn create_pool(
+        db_url: &str,
+        max_connections: u32,
+        test_before_acquire: bool,
+        label: &str,
+    ) -> sqlx::Pool<sqlx::Postgres> {
+        let mut retry_count: u32 = 0;
+        let max_retries = 5;
+
+        loop {
+            match PgPoolOptions::new()
+                .max_connections(max_connections)
+                .acquire_timeout(Duration::from_secs(5))
+                .test_before_acquire(test_before_acquire)
+                .connect(db_url)
+                .await
+            {
+                Ok(pool) => match sqlx::query("SELECT 1").fetch_one(&pool).await {
+                    Ok(_) => {
+                        debug!("connected to Postgres ({})", label);
+                        return pool;
+                    }
+                    Err(e) => {
+                        retry_count += 1;
+                        error!("Database connection test failed ({}): {}", label, e);
+                        if retry_count >= max_retries {
+                            panic!(
+                                "Failed to connect to database ({}) after {} retries",
+                                label, max_retries
+                            );
+                        }
+                        let wait_time = Duration::from_secs(2u64.pow(retry_count.min(5)));
+                        warn!(
+                            "Database test query {} ({}) failed: {}. Retrying in {:?}...",
+                            retry_count, label, e, wait_time
+                        );
+                        tokio::time::sleep(wait_time).await;
+                    }
+                },
                 Err(e) => {
-                    error!("Database connection test failed: {}", e);
-                    if retry_count >= max_retries {
+                    retry_count += 1;
+                    if retry_count > max_retries {
                         panic!(
-                            "Failed to connect to database after {} retries",
-                            max_retries
+                            "Failed to connect to database ({}) after {} retries: {}",
+                            label, max_retries, e
                         );
                     }
-                }
-            },
-            Err(e) => {
-                retry_count += 1;
-                if retry_count > max_retries {
-                    panic!(
-                        "Failed to connect to database after {} retries: {}",
-                        max_retries, e
+                    let wait_time = Duration::from_secs(2u64.pow(retry_count.min(5)));
+                    warn!(
+                        "Database connection attempt {} ({}) failed: {}. Retrying in {:?}...",
+                        retry_count, label, e, wait_time
                     );
+                    tokio::time::sleep(wait_time).await;
                 }
-                let wait_time = Duration::from_secs(2u64.pow(retry_count.min(5)));
-                warn!(
-                    "Database connection attempt {} failed: {}. Retrying in {:?}...",
-                    retry_count, e, wait_time
-                );
-                tokio::time::sleep(wait_time).await;
             }
         }
-    };
+    }
+
+    let db_internal =
+        create_pool(&db_url, internal_pool_size, test_before_acquire, "internal").await;
+    let db_worker = create_pool(&db_url, worker_pool_size, test_before_acquire, "worker").await;
+
+    info!(
+        "DB pools: internal={} worker={}",
+        internal_pool_size, worker_pool_size
+    );
+    info!(
+        "Per-worker concurrency limit: {}",
+        openworkers_runner::worker_pool::get_max_concurrent_per_worker()
+    );
 
     // Connect to NATS with retries
-    let mut retry_count = 0;
+    let max_retries = 5;
+    let mut retry_count: u32 = 0;
     loop {
         match openworkers_runner::nats::nats_connect()
             .await
@@ -745,16 +805,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
         match v8_execute_mode {
             openworkers_runner::V8ExecuteMode::Pinned => {
-                openworkers_runtime_v8::init_pinned_pool(pool_max_size, pool_limits);
-                debug!(
-                    "Initialized pinned isolate pool with {} isolates max",
-                    pool_max_size
+                openworkers_runtime_v8::init_pinned_pool(
+                    openworkers_runtime_v8::PinnedPoolConfig {
+                        max_per_thread: pool_max_size,
+                        max_per_owner: None,
+                        max_concurrent_per_isolate: 20,
+                        max_cached_contexts: 10,
+                        limits: pool_limits,
+                    },
                 );
-            }
-            openworkers_runner::V8ExecuteMode::Pooled => {
-                openworkers_runtime_v8::init_pool(pool_max_size, pool_limits);
                 debug!(
-                    "Initialized global isolate pool with {} isolates max",
+                    "Initialized pinned isolate pool with {} isolates max per thread",
                     pool_max_size
                 );
             }
@@ -764,7 +825,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    openworkers_runner::event_scheduled::handle_scheduled(pool.clone(), log_tx.clone());
+    openworkers_runner::event_scheduled::handle_scheduled(
+        db_internal.clone(),
+        db_worker.clone(),
+        log_tx.clone(),
+    );
 
     // Shutdown signal channel
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -772,7 +837,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let shutdown_tx_drain = shutdown_tx.clone();
 
     let state = std::sync::Arc::new(AppState {
-        db: pool,
+        db_internal,
+        db_worker,
         log_tx,
         shutdown_tx,
         wall_clock_timeout_ms,

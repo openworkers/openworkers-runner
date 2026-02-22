@@ -17,8 +17,6 @@ pub enum V8ExecuteMode {
     /// Thread-pinned pool with per-owner isolation (default, best performance)
     #[default]
     Pinned,
-    /// Global pool with mutex-based access
-    Pooled,
     /// Fresh isolate per request (no caching, useful for debugging)
     Oneshot,
 }
@@ -36,7 +34,6 @@ impl V8ExecuteMode {
                 .as_deref()
             {
                 Some("PINNED") => Self::Pinned,
-                Some("POOLED") => Self::Pooled,
                 Some("ONESHOT") => Self::Oneshot,
                 _ => Self::default(),
             }
@@ -153,11 +150,9 @@ async fn run_task_with_timeout_worker(
 /// - Round-robin distribution across threads (via WORKER_POOL)
 /// - Per-owner isolation (isolates tagged with owner_id)
 /// - LRU eviction of idle isolates
-/// - Queue with backpressure when at capacity
 ///
 /// Execution mode is controlled by V8_EXECUTE env var:
 /// - PINNED (default): Thread-pinned pool, best performance
-/// - POOLED: Global pool with mutex
 /// - ONESHOT: Fresh isolate per request (no caching)
 ///
 /// Execution steps:
@@ -190,11 +185,9 @@ pub async fn execute_task_await_v8_pooled(
     let execute_mode = V8ExecuteMode::get();
     let span = config.span.clone();
 
-    // Route to a consistent thread based on worker_id for warm cache affinity
-    let routing_key = worker_id_for_snapshot.clone();
-
+    // Round-robin dispatch across V8 threads for better parallelism under load
     WORKER_POOL
-        .spawn_await_keyed(&routing_key, move || {
+        .spawn_await(move || {
             async move {
                 // Wrap permit to automatically notify drain monitor on drop
                 let _permit = TaskPermit::new(permit);
@@ -232,17 +225,21 @@ pub async fn execute_task_await_v8_pooled(
                         )
                         .await
                     }
-                    V8ExecuteMode::Pooled => {
-                        // Global pool with mutex
-                        openworkers_runtime_v8::execute_pooled(
-                            &owner_id,
-                            components.script,
-                            components.ops,
-                            task,
-                        )
-                        .await
-                    }
                     V8ExecuteMode::Oneshot => {
+                        // Serialize OwnedIsolate creation per thread.
+                        // V8 requires LIFO ordering for Isolate::Enter/Exit. OwnedIsolate
+                        // auto-enters on creation and auto-exits on drop, so concurrent
+                        // isolates on the same thread crash if dropped out of order.
+                        thread_local! {
+                            static ONESHOT_GUARD: Arc<tokio::sync::Semaphore> =
+                                Arc::new(tokio::sync::Semaphore::new(1));
+                        }
+
+                        let guard = ONESHOT_GUARD.with(Arc::clone);
+                        let _permit = guard.acquire().await.map_err(|_| {
+                            TerminationReason::Other("Oneshot semaphore closed".into())
+                        })?;
+
                         // Fresh isolate per request (no caching)
                         let mut worker =
                             create_worker(components.script, limits, components.ops, &code_type)

@@ -6,7 +6,9 @@
 
 use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, RuntimeLimits, Script};
 use openworkers_runner::ops::RunnerOperations;
-use openworkers_runtime_v8::{PinnedExecuteRequest, execute_pinned, init_pinned_pool};
+use openworkers_runtime_v8::{
+    PinnedExecuteRequest, PinnedPoolConfig, execute_pinned, init_pinned_pool,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Once};
 
@@ -14,7 +16,13 @@ static INIT: Once = Once::new();
 
 fn init_pool() {
     INIT.call_once(|| {
-        init_pinned_pool(10, RuntimeLimits::default());
+        init_pinned_pool(PinnedPoolConfig {
+            max_per_thread: 10,
+            max_per_owner: None,
+            max_concurrent_per_isolate: 20,
+            max_cached_contexts: 10,
+            limits: RuntimeLimits::default(),
+        });
     });
 }
 
