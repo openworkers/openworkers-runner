@@ -2901,7 +2901,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.13.9"
+version = "0.13.10"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2949,8 +2949,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.13.6"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.6#46206901f87e73c2a6ee4e0069cd3b9cea6d4f50"
+version = "0.13.7"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.7#e0c182fe024150aaaddb7a7325face5303f0759f"
 dependencies = [
  "bytes",
  "futures",
@@ -2974,7 +2974,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.6#46206901f87e73c2a6ee4e0069cd3b9cea6d4f50"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.7#e0c182fe024150aaaddb7a7325face5303f0759f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3023,9 +3023,9 @@ dependencies = [
 
 [[package]]
 name = "openworkers-v8"
-version = "145.0.2"
+version = "145.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da248c96ea2d9f2c29206de495a365bdeb223eb571edf0690dfbf11d8a767e67"
+checksum = "cea6dea21b986c41cb0a2eea781cd7df65ddf5afe7b62a86712c304a578bf968"
 dependencies = [
  "bindgen",
  "bitflags",

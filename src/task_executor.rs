@@ -221,6 +221,7 @@ pub async fn execute_task_await_v8_pooled(
                                 ops: components.ops,
                                 task,
                                 on_warm_hit: Some(on_warm_hit),
+                                env_updated_at: config.worker_data.env_updated_at,
                             },
                         )
                         .await

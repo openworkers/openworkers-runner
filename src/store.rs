@@ -167,6 +167,9 @@ pub struct WorkerWithBindings {
     pub env: HashMap<String, String>,
     /// All bindings (vars, secrets, and resource bindings)
     pub bindings: Vec<Binding>,
+    /// Timestamp of most recent environment change (Unix epoch seconds).
+    /// Used by the warm cache to detect stale bindings.
+    pub env_updated_at: Option<i64>,
 }
 
 impl From<WorkerData> for WorkerWithBindings {
@@ -191,6 +194,7 @@ impl From<WorkerData> for WorkerWithBindings {
             version: data.version,
             env,
             bindings,
+            env_updated_at: None,
         }
     }
 }
@@ -256,6 +260,7 @@ struct BindingRow {
     key: String,
     value: Option<String>,
     binding_type: BindingType,
+    updated_at_epoch: Option<i64>,
 }
 
 /// Get worker with full binding configs
@@ -318,7 +323,8 @@ pub async fn get_worker_with_bindings(
         SELECT
             V.key,
             V.value,
-            V.type as binding_type
+            V.type as binding_type,
+            EXTRACT(EPOCH FROM V.updated_at)::bigint as updated_at_epoch
         FROM workers AS W
         LEFT JOIN projects AS P ON W.project_id = P.id
         JOIN environment_values AS V ON V.environment_id = COALESCE(P.environment_id, W.environment_id) AND V.user_id = W.user_id
@@ -340,8 +346,14 @@ pub async fn get_worker_with_bindings(
     // Convert rows to Binding enum, fetching configs as needed
     let mut bindings = Vec::new();
     let mut env = HashMap::new();
+    let mut env_updated_at: Option<i64> = None;
 
     for row in binding_rows {
+        // Track the most recent update timestamp across all binding rows
+        if let Some(epoch) = row.updated_at_epoch {
+            env_updated_at = Some(env_updated_at.map_or(epoch, |prev: i64| prev.max(epoch)));
+        }
+
         match row.binding_type {
             BindingType::Var => {
                 if let Some(value) = row.value {
@@ -421,11 +433,12 @@ pub async fn get_worker_with_bindings(
     }
 
     tracing::debug!(
-        "worker found: id: {}, version: {}, bindings: {}, type: {}",
+        "worker found: id: {}, version: {}, bindings: {}, type: {}, env_updated_at: {:?}",
         short_id(&basic.id),
         basic.version,
         bindings.len(),
-        basic.code_type
+        basic.code_type,
+        env_updated_at,
     );
 
     Some(WorkerWithBindings {
@@ -437,6 +450,7 @@ pub async fn get_worker_with_bindings(
         version: basic.version,
         env,
         bindings,
+        env_updated_at,
     })
 }
 
