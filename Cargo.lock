@@ -2949,7 +2949,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.13.8"
+version = "0.13.9"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.9#f9776e1000066d7b40a0486eaf8fa620bdf63be5"
 dependencies = [
  "bytes",
  "futures",
@@ -2973,6 +2974,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.9#f9776e1000066d7b40a0486eaf8fa620bdf63be5"
 dependencies = [
  "proc-macro2",
  "quote",

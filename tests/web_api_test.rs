@@ -416,6 +416,93 @@ async fn test_url_search_params_as_fetch_body() {
 }
 
 // ============================================================================
+// URLSearchParams + fetch integration
+// ============================================================================
+
+#[tokio::test]
+async fn test_fetch_url_search_params_body_serialization() {
+    run_local(|| async {
+        let result = eval_js(
+            r#"addEventListener('fetch', async (event) => {
+                // Monkey-patch __nativeFetchStreaming to capture what fetch() sends
+                const captured = {};
+                const origFetch = __nativeFetchStreaming;
+                globalThis.__nativeFetchStreaming = function(opts, resolve, reject) {
+                    captured.body = opts.body;
+                    captured.headers = opts.headers;
+                    // Call resolve with a fake response
+                    resolve({ status: 200, statusText: 'OK', headers: {}, streamId: null });
+                };
+
+                const params = new URLSearchParams({
+                    grant_type: 'authorization_code',
+                    client_id: 'my-client',
+                    code: 'abc123'
+                });
+
+                await fetch('https://example.com/token', {
+                    method: 'POST',
+                    body: params
+                });
+
+                // Restore
+                globalThis.__nativeFetchStreaming = origFetch;
+
+                // Verify the body was serialized to Uint8Array
+                const bodyStr = new TextDecoder().decode(captured.body);
+                const ct = captured.headers['Content-Type'] || '';
+
+                event.respondWith(new Response(JSON.stringify({ body: bodyStr, ct })));
+            });"#,
+        )
+        .await;
+
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(
+            parsed["body"],
+            "grant_type=authorization_code&client_id=my-client&code=abc123"
+        );
+        assert!(
+            parsed["ct"]
+                .as_str()
+                .unwrap()
+                .starts_with("application/x-www-form-urlencoded")
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_fetch_url_search_params_does_not_override_explicit_content_type() {
+    run_local(|| async {
+        let result = eval_js(
+            r#"addEventListener('fetch', async (event) => {
+                const captured = {};
+                const origFetch = __nativeFetchStreaming;
+                globalThis.__nativeFetchStreaming = function(opts, resolve, reject) {
+                    captured.headers = opts.headers;
+                    resolve({ status: 200, statusText: 'OK', headers: {}, streamId: null });
+                };
+
+                await fetch('https://example.com/token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain' },
+                    body: new URLSearchParams({ key: 'value' })
+                });
+
+                globalThis.__nativeFetchStreaming = origFetch;
+                event.respondWith(new Response(captured.headers['Content-Type']));
+            });"#,
+        )
+        .await;
+
+        // Explicit Content-Type should be preserved
+        assert_eq!(result, "text/plain");
+    })
+    .await;
+}
+
+// ============================================================================
 // btoa / atob (binary strings, NOT UTF-8)
 // ============================================================================
 
