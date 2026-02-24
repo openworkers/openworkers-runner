@@ -279,6 +279,143 @@ async fn test_url_search_params_encoding() {
 }
 
 // ============================================================================
+// URLSearchParams constructor variants
+// ============================================================================
+
+#[tokio::test]
+async fn test_url_search_params_from_object() {
+    run_local(|| async {
+        let result = eval_js(
+            r#"addEventListener('fetch', (event) => {
+                const params = new URLSearchParams({
+                    grant_type: 'authorization_code',
+                    client_id: 'my-client',
+                    client_secret: 'my-secret',
+                    code: 'abc123'
+                });
+                event.respondWith(new Response(params.toString()));
+            });"#,
+        )
+        .await;
+
+        assert_eq!(
+            result,
+            "grant_type=authorization_code&client_id=my-client&client_secret=my-secret&code=abc123"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_url_search_params_from_object_encodes_special_chars() {
+    run_local(|| async {
+        let result = eval_js(
+            r#"addEventListener('fetch', (event) => {
+                const params = new URLSearchParams({
+                    redirect_uri: 'https://example.com/callback?foo=bar',
+                    scope: 'read write'
+                });
+                event.respondWith(new Response(params.toString()));
+            });"#,
+        )
+        .await;
+
+        assert_eq!(
+            result,
+            "redirect_uri=https%3A%2F%2Fexample.com%2Fcallback%3Ffoo%3Dbar&scope=read%20write"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_url_search_params_from_array_of_pairs() {
+    run_local(|| async {
+        let result = eval_js(
+            r#"addEventListener('fetch', (event) => {
+                const params = new URLSearchParams([['a', '1'], ['b', '2'], ['a', '3']]);
+                const all = params.getAll('a');
+                event.respondWith(new Response(params.toString() + '|' + all.join(',')));
+            });"#,
+        )
+        .await;
+
+        assert_eq!(result, "a=1&b=2&a=3|1,3");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_url_search_params_from_another_instance() {
+    run_local(|| async {
+        let result = eval_js(
+            r#"addEventListener('fetch', (event) => {
+                const original = new URLSearchParams('x=1&y=2');
+                const copy = new URLSearchParams(original);
+                copy.set('y', '99');
+                // original should be unaffected
+                event.respondWith(new Response(original.toString() + '|' + copy.toString()));
+            });"#,
+        )
+        .await;
+
+        assert_eq!(result, "x=1&y=2|x=1&y=99");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_url_search_params_size() {
+    run_local(|| async {
+        let result = eval_js(
+            r#"addEventListener('fetch', (event) => {
+                const empty = new URLSearchParams();
+                const three = new URLSearchParams('a=1&b=2&c=3');
+                event.respondWith(new Response(empty.size + ',' + three.size));
+            });"#,
+        )
+        .await;
+
+        assert_eq!(result, "0,3");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn test_url_search_params_as_fetch_body() {
+    run_local(|| async {
+        let result = eval_js(
+            r#"addEventListener('fetch', (event) => {
+                // Simulate what the PlanetScale OAuth code does:
+                // new URLSearchParams({...}) passed as body to fetch
+                const params = new URLSearchParams({
+                    grant_type: 'authorization_code',
+                    client_id: 'abc',
+                    code: 'xyz'
+                });
+
+                // fetch() calls body.toString() — verify it produces valid form data
+                const body = params.toString();
+                const reparsed = new URLSearchParams(body);
+
+                const ok = reparsed.get('grant_type') === 'authorization_code'
+                    && reparsed.get('client_id') === 'abc'
+                    && reparsed.get('code') === 'xyz';
+
+                event.respondWith(new Response(ok ? body : 'FAIL: ' + body));
+            });"#,
+        )
+        .await;
+
+        assert_eq!(
+            result,
+            "grant_type=authorization_code&client_id=abc&code=xyz"
+        );
+    })
+    .await;
+}
+
+// ============================================================================
 // btoa / atob (binary strings, NOT UTF-8)
 // ============================================================================
 
