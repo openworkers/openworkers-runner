@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.13.11"
+version = "0.13.12"
 edition = "2024"
 license = "MIT"
 default-run = "openworkers-runner"
@@ -62,7 +62,7 @@ openworkers-core = { git = "https://github.com/openworkers/openworkers-core", ta
 openworkers-transform = { git = "https://github.com/openworkers/openworkers-transform", tag = "v0.1.0" }
 
 # Runtime backend (v8 only for now, others require older version of core)
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.13.9", optional = true, features = ["ptrcomp"] }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.13.10", optional = true, features = ["ptrcomp"] }
 
 # WASM runtime (optional)
 # openworkers-runtime-wasm = { path = "../openworkers-runtime-wasm", optional = true }
