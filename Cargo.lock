@@ -2901,7 +2901,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.13.12"
+version = "0.13.13"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2949,8 +2949,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.13.10"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.10#497b665d8d5707e54ba1c9865d0fe8ddf68b327c"
+version = "0.13.11"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.11#ddabfe204de55f792b6bf3406f1f1b4b94e5ac45"
 dependencies = [
  "bytes",
  "futures",
@@ -2967,6 +2967,7 @@ dependencies = [
  "signal-hook-tokio",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
@@ -2974,7 +2975,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.10#497b665d8d5707e54ba1c9865d0fe8ddf68b327c"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.11#ddabfe204de55f792b6bf3406f1f1b4b94e5ac45"
 dependencies = [
  "proc-macro2",
  "quote",

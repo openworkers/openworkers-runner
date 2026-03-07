@@ -21,7 +21,7 @@ COPY --from=planner /build/recipe.json recipe.json
 RUN --mount=type=cache,target=$CARGO_HOME/git \
     --mount=type=cache,target=$CARGO_HOME/registry \
     --mount=type=cache,target=/build/target \
-    FEATURES="$RUNTIME,database"; \
+    FEATURES="$RUNTIME,database,multiplexing"; \
     if [ "$TELEMETRY" = "true" ]; then FEATURES="$FEATURES,telemetry"; fi; \
     cargo chef cook --release --features=$FEATURES --recipe-path recipe.json
 
@@ -33,7 +33,7 @@ RUN touch $RUNTIME_SNAPSHOT_PATH
 RUN --mount=type=cache,target=$CARGO_HOME/git \
     --mount=type=cache,target=$CARGO_HOME/registry \
     --mount=type=cache,target=/build/target \
-    FEATURES="$RUNTIME,database"; \
+    FEATURES="$RUNTIME,database,multiplexing"; \
     if [ "$TELEMETRY" = "true" ]; then FEATURES="$FEATURES,telemetry"; fi; \
     cargo run --release --features=$FEATURES --bin snapshot && \
     # Build the runner and copy executable out of the cache so it can be used in the next stage

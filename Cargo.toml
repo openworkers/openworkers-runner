@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.13.12"
+version = "0.13.13"
 edition = "2024"
 license = "MIT"
 default-run = "openworkers-runner"
@@ -10,6 +10,7 @@ default-run = "openworkers-runner"
 [features]
 default = ["database"]
 v8 = ["dep:openworkers-runtime-v8"]
+multiplexing = ["openworkers-runtime-v8/multiplexing"]
 wasm = ["dep:openworkers-runtime-wasm", "openworkers-core/wasm"]
 database = ["dep:postgate"]
 telemetry = [
@@ -62,7 +63,7 @@ openworkers-core = { git = "https://github.com/openworkers/openworkers-core", ta
 openworkers-transform = { git = "https://github.com/openworkers/openworkers-transform", tag = "v0.1.0" }
 
 # Runtime backend (v8 only for now, others require older version of core)
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.13.10", optional = true, features = ["ptrcomp"] }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.13.11", optional = true, features = ["ptrcomp"] }
 
 # WASM runtime (optional)
 # openworkers-runtime-wasm = { path = "../openworkers-runtime-wasm", optional = true }

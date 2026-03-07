@@ -53,7 +53,7 @@ COPY --from=planner /build/recipe.json recipe.json
 RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME-$TELEMETRY,sharing=locked,target=$CARGO_HOME/git \
     --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME-$TELEMETRY,sharing=locked,target=$CARGO_HOME/registry \
     --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME-$TELEMETRY,sharing=locked,target=/build/target \
-    FEATURES="$RUNTIME,database"; \
+    FEATURES="$RUNTIME,database,multiplexing"; \
     if [ "$TELEMETRY" = "true" ]; then FEATURES="$FEATURES,telemetry"; fi; \
     echo "Building for $TARGETPLATFORM with features $FEATURES"; \
     case "$TARGETPLATFORM" in \
@@ -72,7 +72,7 @@ COPY . /build
 RUN --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME-$TELEMETRY,sharing=locked,target=$CARGO_HOME/git \
     --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME-$TELEMETRY,sharing=locked,target=$CARGO_HOME/registry \
     --mount=type=cache,id=cargo-$TARGETPLATFORM-$RUNTIME-$TELEMETRY,sharing=locked,target=/build/target \
-    FEATURES="$RUNTIME,database"; \
+    FEATURES="$RUNTIME,database,multiplexing"; \
     if [ "$TELEMETRY" = "true" ]; then FEATURES="$FEATURES,telemetry"; fi; \
     case "$TARGETPLATFORM" in \
         "linux/arm64") \
