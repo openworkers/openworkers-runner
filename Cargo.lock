@@ -2890,9 +2890,9 @@ dependencies = [
 
 [[package]]
 name = "openworkers-glue-v8"
-version = "145.0.0"
+version = "146.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "794513494c86717205b41f1c3b8e86699299fb242be432d8bd4e22aa0a4960e5"
+checksum = "5ca3701a5a06bf981c97cb655533d93d6fd53ebe8c9c3cd63fae72f5744241a1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2901,7 +2901,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.13.13"
+version = "0.13.14"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -2949,10 +2949,11 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.13.11"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.11#ddabfe204de55f792b6bf3406f1f1b4b94e5ac45"
+version = "0.13.14"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.14#1e2924fa6d14463549fc206a6c35e636c8a99a87"
 dependencies = [
  "bytes",
+ "encoding_rs",
  "futures",
  "libc",
  "openworkers-core 0.13.1",
@@ -2975,7 +2976,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.11#ddabfe204de55f792b6bf3406f1f1b4b94e5ac45"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.13.14#1e2924fa6d14463549fc206a6c35e636c8a99a87"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2996,9 +2997,9 @@ dependencies = [
 
 [[package]]
 name = "openworkers-serde-v8"
-version = "145.0.0"
+version = "146.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "628c45ab34a33e11f7906166854a3e22966765f2b4b28c067274839bb2f68c4b"
+checksum = "c499038c84e20822881c4c0ba852043a65cb5e6e41a312b6bb8c31890b34d4ad"
 dependencies = [
  "bytes",
  "num-bigint",
@@ -3024,9 +3025,9 @@ dependencies = [
 
 [[package]]
 name = "openworkers-v8"
-version = "145.0.3"
+version = "146.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cea6dea21b986c41cb0a2eea781cd7df65ddf5afe7b62a86712c304a578bf968"
+checksum = "f1f8f2dee8ad7402a384a0f637cdf99beed8ea06027739d3b32818fe6c58d642"
 dependencies = [
  "bindgen",
  "bitflags",
@@ -6355,7 +6356,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
