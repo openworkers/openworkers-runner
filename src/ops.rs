@@ -31,7 +31,8 @@
 use openworkers_core::{DatabaseOp, DatabaseResult};
 use openworkers_core::{
     HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, OpFuture,
-    OperationsHandler, RequestBody, StorageOp, StorageResult,
+    OperationsHandler, RequestBody, StorageOp, StorageResult, WebSocketConnection,
+    WebSocketIncoming, WebSocketOutgoing,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -666,7 +667,140 @@ impl OperationsHandler for RunnerOperations {
         )
     }
 
-    /// Handle log: `console.log("message")`
+    /// Handle outgoing WebSocket connection.
+    ///
+    /// Opens a WebSocket to the given URL, returns bidirectional channels.
+    /// The actual connection is managed by a spawned tokio task.
+    fn handle_websocket_connect(
+        &self,
+        url: &str,
+        headers: HashMap<String, String>,
+    ) -> OpFuture<'_, Result<WebSocketConnection, String>> {
+        let url = url.to_string();
+
+        Box::pin(async move {
+            use futures::{SinkExt, StreamExt};
+            use tokio_tungstenite::tungstenite;
+            use tungstenite::client::IntoClientRequest;
+
+            // Parse URL, converting http(s) to ws(s) if needed
+            let ws_url = if url.starts_with("http://") {
+                url.replacen("http://", "ws://", 1)
+            } else if url.starts_with("https://") {
+                url.replacen("https://", "wss://", 1)
+            } else {
+                url.clone()
+            };
+
+            tracing::debug!("[ops] websocket connect {}", ws_url);
+
+            // Use IntoClientRequest to build the handshake with proper WS headers
+            let mut request: tungstenite::http::Request<()> = ws_url
+                .as_str()
+                .into_client_request()
+                .map_err(|e| format!("WebSocket request build error: {}", e))?;
+
+            // Add custom headers (skip protocol headers handled by tungstenite)
+            for (key, value) in &headers {
+                let k = key.to_lowercase();
+
+                if matches!(
+                    k.as_str(),
+                    "upgrade"
+                        | "connection"
+                        | "sec-websocket-key"
+                        | "sec-websocket-version"
+                        | "host"
+                ) {
+                    continue;
+                }
+
+                if let (Ok(name), Ok(val)) = (
+                    tungstenite::http::header::HeaderName::from_bytes(key.as_bytes()),
+                    tungstenite::http::header::HeaderValue::from_str(value),
+                ) {
+                    request.headers_mut().insert(name, val);
+                }
+            }
+
+            let (ws_stream, _response) =
+                tokio_tungstenite::connect_async(request)
+                    .await
+                    .map_err(|e| {
+                        tracing::debug!("[ops] websocket connect failed: {}", e);
+                        format!("WebSocket connect error: {}", e)
+                    })?;
+
+            tracing::debug!("[ops] websocket connected successfully");
+
+            let (mut ws_write, mut ws_read) = ws_stream.split();
+
+            // Channels for bidirectional message passing
+            let (send_tx, mut send_rx) =
+                tokio::sync::mpsc::unbounded_channel::<WebSocketOutgoing>();
+            let (recv_tx, recv_rx) = tokio::sync::mpsc::unbounded_channel::<WebSocketIncoming>();
+
+            // Task: forward outgoing messages (JS -> WS)
+            tokio::spawn(async move {
+                while let Some(msg) = send_rx.recv().await {
+                    let ws_msg = match msg {
+                        WebSocketOutgoing::Text(s) => tungstenite::Message::Text(s.into()),
+                        WebSocketOutgoing::Binary(b) => {
+                            tungstenite::Message::Binary(bytes::Bytes::from(b))
+                        }
+                        WebSocketOutgoing::Close { code, reason } => {
+                            let frame = tungstenite::protocol::CloseFrame {
+                                code: tungstenite::protocol::frame::coding::CloseCode::from(code),
+                                reason: reason.into(),
+                            };
+                            tungstenite::Message::Close(Some(frame))
+                        }
+                    };
+
+                    if ws_write.send(ws_msg).await.is_err() {
+                        break;
+                    }
+                }
+
+                let _ = ws_write.close().await;
+            });
+
+            // Task: forward incoming messages (WS -> JS)
+            tokio::spawn(async move {
+                while let Some(result) = ws_read.next().await {
+                    let incoming = match result {
+                        Ok(tungstenite::Message::Text(s)) => WebSocketIncoming::Text(s.to_string()),
+                        Ok(tungstenite::Message::Binary(b)) => {
+                            WebSocketIncoming::Binary(b.to_vec())
+                        }
+                        Ok(tungstenite::Message::Close(frame)) => {
+                            let (code, reason) = frame
+                                .map(|f| (u16::from(f.code), f.reason.to_string()))
+                                .unwrap_or((1000, String::new()));
+                            let _ = recv_tx.send(WebSocketIncoming::Closed { code, reason });
+                            break;
+                        }
+                        Ok(tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_)) => {
+                            continue; // tungstenite handles pong automatically
+                        }
+                        Ok(tungstenite::Message::Frame(_)) => continue,
+                        Err(e) => {
+                            let _ =
+                                recv_tx.send(WebSocketIncoming::Error(format!("WS error: {}", e)));
+                            break;
+                        }
+                    };
+
+                    if recv_tx.send(incoming).is_err() {
+                        break; // Receiver dropped
+                    }
+                }
+            });
+
+            Ok(WebSocketConnection { send_tx, recv_rx })
+        })
+    }
+
     ///
     /// Sends log to the log channel (for collection) and also logs locally.
     fn handle_log(&self, level: LogLevel, message: String) {
