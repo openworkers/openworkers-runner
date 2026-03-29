@@ -462,14 +462,11 @@ async fn handle_worker_request(
 
     let start = tokio::time::Instant::now();
 
-    let is_chunked = headers
-        .get("transfer-encoding")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("chunked"));
+    let is_streaming = headers.contains_key("x-request-body-stream");
 
     let mut pump_handle: Option<tokio::task::JoinHandle<()>> = None;
 
-    let mut request = if is_chunked {
+    let mut request = if is_streaming {
         // Streaming path: pipe body chunks to the worker via mpsc channel.
         // Guards: 30s idle timeout per chunk, 10MB max total body size.
         const CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
