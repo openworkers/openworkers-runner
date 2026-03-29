@@ -1,5 +1,4 @@
 use bytes::Bytes;
-use http_body_util::BodyExt;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -463,17 +462,34 @@ async fn handle_worker_request(
 
     let start = tokio::time::Instant::now();
 
-    // Collect request body (consumes req)
-    let body_bytes = match req.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
-            error!("Failed to read request body: {}", e);
-            return Ok(error_response(400, "Failed to read request body"));
-        }
-    };
+    // Convert to our HttpRequest with streaming body (zero-copy)
+    let (mut request, body_tx) =
+        HttpRequest::from_hyper_parts_streaming(&method, &uri, &headers, "http", 16);
 
-    // Convert to our HttpRequest using the extracted parts
-    let mut request = HttpRequest::from_hyper_parts(&method, &uri, &headers, body_bytes, "http");
+    // Spawn task to pump body chunks from hyper into the request stream
+    tokio::spawn(async move {
+        use http_body_util::BodyExt;
+
+        let mut body = req.into_body();
+
+        while let Some(result) = body.frame().await {
+            match result {
+                Ok(frame) => {
+                    if let Some(data) = frame.data_ref()
+                        && body_tx.send(Ok(data.clone())).await.is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = body_tx
+                        .send(Err::<bytes::Bytes, String>(e.to_string()))
+                        .await;
+                    break;
+                }
+            }
+        }
+    });
 
     // Add worker headers if not present
     if !request.headers.contains_key("x-worker-id") {
