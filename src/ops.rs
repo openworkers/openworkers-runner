@@ -683,6 +683,9 @@ impl OperationsHandler for RunnerOperations {
             use tokio_tungstenite::tungstenite;
             use tungstenite::client::IntoClientRequest;
 
+            // Ensure rustls CryptoProvider is installed (no-op if already set)
+            let _ = rustls::crypto::ring::default_provider().install_default();
+
             // Parse URL, converting http(s) to ws(s) if needed
             let ws_url = if url.starts_with("http://") {
                 url.replacen("http://", "ws://", 1)
