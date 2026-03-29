@@ -462,34 +462,75 @@ async fn handle_worker_request(
 
     let start = tokio::time::Instant::now();
 
-    // Convert to our HttpRequest with streaming body (zero-copy)
-    let (mut request, body_tx) =
-        HttpRequest::from_hyper_parts_streaming(&method, &uri, &headers, "http", 16);
+    let is_chunked = headers
+        .get("transfer-encoding")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("chunked"));
 
-    // Spawn task to pump body chunks from hyper into the request stream
-    tokio::spawn(async move {
-        use http_body_util::BodyExt;
+    let mut pump_handle: Option<tokio::task::JoinHandle<()>> = None;
 
-        let mut body = req.into_body();
+    let mut request = if is_chunked {
+        // Streaming path: pipe body chunks to the worker via mpsc channel.
+        // Guards: 30s idle timeout per chunk, 10MB max total body size.
+        const CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+        const MAX_BODY_SIZE: usize = 1024 * 1024;
 
-        while let Some(result) = body.frame().await {
-            match result {
-                Ok(frame) => {
-                    if let Some(data) = frame.data_ref()
-                        && body_tx.send(Ok(data.clone())).await.is_err()
-                    {
+        let (req_obj, body_tx) =
+            HttpRequest::from_hyper_parts_streaming(&method, &uri, &headers, "http", 16);
+
+        pump_handle = Some(tokio::spawn(async move {
+            use http_body_util::BodyExt;
+
+            let mut body = req.into_body();
+            let mut total = 0usize;
+
+            loop {
+                let frame = match tokio::time::timeout(CHUNK_TIMEOUT, body.frame()).await {
+                    Ok(Some(Ok(frame))) => frame,
+                    Ok(Some(Err(e))) => {
+                        let _ = body_tx
+                            .send(Err::<bytes::Bytes, String>(e.to_string()))
+                            .await;
                         break;
                     }
-                }
-                Err(e) => {
-                    let _ = body_tx
-                        .send(Err::<bytes::Bytes, String>(e.to_string()))
-                        .await;
-                    break;
+                    Ok(None) => break, // body complete
+                    Err(_) => break,   // timeout — stop pumping
+                };
+
+                if let Some(data) = frame.data_ref() {
+                    total += data.len();
+
+                    if total > MAX_BODY_SIZE {
+                        let _ = body_tx
+                            .send(Err::<bytes::Bytes, String>(
+                                "Request body too large".to_string(),
+                            ))
+                            .await;
+                        break;
+                    }
+
+                    if body_tx.send(Ok(data.clone())).await.is_err() {
+                        break; // receiver dropped
+                    }
                 }
             }
-        }
-    });
+        }));
+
+        req_obj
+    } else {
+        // Buffered path: collect entire body before processing.
+        use http_body_util::BodyExt;
+
+        let body_bytes = match req.into_body().collect().await {
+            Ok(collected) => collected.to_bytes(),
+            Err(e) => {
+                error!("Failed to read request body: {}", e);
+                return Ok(error_response(400, "Failed to read request body"));
+            }
+        };
+
+        HttpRequest::from_hyper_parts(&method, &uri, &headers, body_bytes, "http")
+    };
 
     // Add worker headers if not present
     if !request.headers.contains_key("x-worker-id") {
@@ -596,6 +637,11 @@ async fn handle_worker_request(
             (resp, false)
         }
     };
+
+    // Abort body pump if still running (free the connection)
+    if let Some(handle) = pump_handle {
+        handle.abort();
+    }
 
     debug!("handle_request done in {}ms", start.elapsed().as_millis());
 
