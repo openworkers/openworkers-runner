@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.14.3"
+version = "0.14.4"
 edition = "2024"
 license = "MIT"
 default-run = "openworkers-runner"
@@ -73,7 +73,7 @@ openworkers-runtime-wasm = {  git = "https://github.com/openworkers/openworkers-
 
 # Database bindings (optional)
 # postgate = { path = "../postgate", default-features = false, optional = true }
-postgate = { git = "https://github.com/openworkers/postgate", tag = "v0.1.1", default-features = false, optional = true }
+postgate = { git = "https://github.com/openworkers/postgate", tag = "v0.1.6", default-features = false, optional = true }
 
 # Disabled runtimes (require openworkers-core 0.5, we're on 0.9)
 # openworkers-runtime-deno = { git = "https://github.com/openworkers/openworkers-runtime-deno", tag = "v0.5.1", optional = true }
