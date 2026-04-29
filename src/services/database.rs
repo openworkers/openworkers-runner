@@ -149,8 +149,8 @@ pub async fn execute_json_query(
     let wrapped = wrap_query_as_json(sql, mode);
     let mut query = sqlx::query(&wrapped);
 
-    for param in params {
-        query = bind_sql_param(query, param);
+    for (i, param) in params.iter().enumerate() {
+        query = bind_sql_param(query, param, sql, i + 1);
     }
 
     let row = query
@@ -177,8 +177,8 @@ pub async fn execute_json_query_tx(
     let wrapped = wrap_query_as_json(sql, mode);
     let mut query = sqlx::query(&wrapped);
 
-    for param in params {
-        query = bind_sql_param(query, param);
+    for (i, param) in params.iter().enumerate() {
+        query = bind_sql_param(query, param, sql, i + 1);
     }
 
     let row = query
@@ -201,8 +201,8 @@ pub async fn execute_mutation(
 ) -> Result<String, String> {
     let mut query = sqlx::query(sql);
 
-    for param in params {
-        query = bind_sql_param(query, param);
+    for (i, param) in params.iter().enumerate() {
+        query = bind_sql_param(query, param, sql, i + 1);
     }
 
     let result = query
@@ -221,8 +221,8 @@ pub async fn execute_mutation_tx(
 ) -> Result<String, String> {
     let mut query = sqlx::query(sql);
 
-    for param in params {
-        query = bind_sql_param(query, param);
+    for (i, param) in params.iter().enumerate() {
+        query = bind_sql_param(query, param, sql, i + 1);
     }
 
     let result = query
@@ -237,9 +237,11 @@ pub async fn execute_mutation_tx(
 pub fn bind_sql_param<'q>(
     query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
     param: &'q SqlParam,
+    sql: &str,
+    param_idx: usize,
 ) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
     match param {
-        SqlParam::Primitive(p) => bind_sql_primitive(query, p),
+        SqlParam::Primitive(p) => bind_sql_primitive(query, p, sql, param_idx),
         SqlParam::Array(arr) => {
             // Determine array type from first non-null element
             let first_type = arr.iter().find_map(|p| match p {
@@ -306,12 +308,32 @@ pub fn bind_sql_param<'q>(
 pub fn bind_sql_primitive<'q>(
     query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
     param: &'q SqlPrimitive,
+    sql: &str,
+    param_idx: usize,
 ) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
     match param {
         SqlPrimitive::Null => query.bind(None::<String>),
         SqlPrimitive::Bool(b) => query.bind(*b),
-        SqlPrimitive::Int(i) => query.bind(*i),
-        SqlPrimitive::Float(f) => query.bind(*f),
+        // When the SQL has an explicit cast for this param (e.g. $N::int), bind the
+        // number as text and let Postgres parse via the cast. Binding as i64/f64 sends
+        // 8-byte big-endian binary on the wire, which combined with sqlx's prepared-
+        // statement type cache can intermittently be re-decoded as UTF-8 by Postgres,
+        // producing "invalid byte sequence for encoding UTF8: 0x00" on numeric portal
+        // parameters. Routing through the cast keeps the wire pure ASCII.
+        SqlPrimitive::Int(i) => {
+            if postgate::has_explicit_cast(sql, param_idx) {
+                query.bind(i.to_string())
+            } else {
+                query.bind(*i)
+            }
+        }
+        SqlPrimitive::Float(f) => {
+            if postgate::has_explicit_cast(sql, param_idx) {
+                query.bind(f.to_string())
+            } else {
+                query.bind(*f)
+            }
+        }
         SqlPrimitive::String(s) => query.bind(s.as_str()),
     }
 }
