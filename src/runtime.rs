@@ -38,6 +38,8 @@ compile_error!("no runtime backend selected: build with --features v8|jsc|quickj
 ))]
 compile_error!("runtime backends are mutually exclusive: select exactly one");
 
+use openworkers_core::BindingType;
+
 #[cfg(feature = "boa")]
 pub use openworkers_runtime_boa::Worker;
 #[cfg(feature = "jsc")]
@@ -64,9 +66,37 @@ pub const NAME: &str = "boa";
 #[cfg(feature = "wasm")]
 pub const NAME: &str = "wasm";
 
-/// Whether the backend reads `Script::bindings` and exposes them on `env`.
-/// The others ignore the field, leaving `env.ASSETS` undefined in the guest.
-pub const SUPPORTS_BINDINGS: bool = cfg!(feature = "v8");
+/// Binding types the backend serves: v8 builds an `env` object per binding,
+/// wasm links the `openworkers:bindings` WIT package, which has no assets or
+/// worker interface, and the rest ignore `Script::bindings`.
+#[cfg(feature = "v8")]
+pub const SUPPORTED_BINDINGS: &[BindingType] = &[
+    BindingType::Assets,
+    BindingType::Storage,
+    BindingType::Kv,
+    BindingType::Database,
+    BindingType::Worker,
+];
+#[cfg(feature = "wasm")]
+pub const SUPPORTED_BINDINGS: &[BindingType] =
+    &[BindingType::Kv, BindingType::Database, BindingType::Storage];
+#[cfg(any(feature = "jsc", feature = "quickjs", feature = "boa"))]
+pub const SUPPORTED_BINDINGS: &[BindingType] = &[];
+
+pub fn supports_binding(binding_type: BindingType) -> bool {
+    SUPPORTED_BINDINGS.contains(&binding_type)
+}
+
+/// Binding type as it is named in logs and errors
+pub fn binding_type_name(binding_type: BindingType) -> &'static str {
+    match binding_type {
+        BindingType::Assets => "assets",
+        BindingType::Storage => "storage",
+        BindingType::Kv => "kv",
+        BindingType::Database => "database",
+        BindingType::Worker => "worker",
+    }
+}
 
 /// Whether the backend reads `Script::env` and exposes the variables to the guest.
 pub const SUPPORTS_ENV: bool = cfg!(any(feature = "v8", feature = "jsc", feature = "wasm"));
@@ -76,6 +106,12 @@ pub const RUNS_JAVASCRIPT: bool = cfg!(feature = "_js");
 
 /// One line naming the backend and what a worker can rely on.
 pub fn capabilities() -> String {
+    let bindings: Vec<&str> = SUPPORTED_BINDINGS
+        .iter()
+        .copied()
+        .map(binding_type_name)
+        .collect();
+
     format!(
         "runtime backend: {NAME} (guest={}, env={}, bindings={})",
         if RUNS_JAVASCRIPT {
@@ -84,6 +120,10 @@ pub fn capabilities() -> String {
             "wasm component"
         },
         SUPPORTS_ENV,
-        SUPPORTS_BINDINGS,
+        if bindings.is_empty() {
+            "none".to_string()
+        } else {
+            bindings.join("/")
+        },
     )
 }

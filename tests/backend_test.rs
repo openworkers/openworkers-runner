@@ -1,6 +1,7 @@
 //! Backend-agnostic checks: whichever backend the build selected must honour the
 //! runner's script contract, or refuse the worker outright.
 
+use openworkers_core::BindingType;
 use openworkers_runner::runtime;
 use openworkers_runner::store::{Binding, CodeType, StorageConfig, WorkerWithBindings};
 use openworkers_runner::worker::prepare_script;
@@ -52,17 +53,20 @@ fn a_worker_without_bindings_is_accepted() {
     assert!(script.bindings.is_empty());
 }
 
-/// A backend that drops bindings must say so, not hand the guest an undefined `env`.
+/// A backend that drops a binding type must say so, not hand the guest an
+/// undefined `env`.
 #[test]
-fn bindings_are_refused_unless_the_backend_implements_them() {
+fn bindings_are_refused_unless_the_backend_implements_their_type() {
     let result = prepare_script(&worker("", native_code_type(), vec![assets_binding()]));
 
-    if runtime::SUPPORTS_BINDINGS {
-        let script = result.expect("v8 wires bindings");
+    if runtime::supports_binding(BindingType::Assets) {
+        let script = result.expect("the backend wires assets bindings");
         assert_eq!(script.bindings.len(), 1);
     } else {
-        let err = result.expect_err("the backend would silently drop ASSETS");
-        assert!(format!("{err:?}").contains("ASSETS"));
+        let err = format!("{:?}", result.expect_err("the backend would drop ASSETS"));
+
+        assert!(err.contains("assets"), "the type is not named: {err}");
+        assert!(err.contains("ASSETS"), "the binding is not named: {err}");
     }
 }
 

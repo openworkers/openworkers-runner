@@ -19,16 +19,21 @@ cargo build --release --features wasm
 ```
 
 Every backend serves `fetch` and, through `Event::Task` with a schedule source,
-`scheduled`. Only v8 implements bindings; on the others the runner refuses a
-worker that declares one rather than handing the guest an undefined `env.ASSETS`.
+`scheduled`. Bindings are supported per type: the runner refuses a worker that
+declares a binding its backend cannot serve, naming the types, rather than
+handing the guest an undefined `env.ASSETS`.
 
 | Backend | Feature   | Guest             | Snapshot / code cache | env | Bindings | Known limitations |
 | ------- | --------- | ----------------- | --------------------- | --- | -------- | ----------------- |
-| V8      | `v8`      | JavaScript        | yes                   | yes | yes      | none; the only backend with an isolate pool, warm reuse and websockets |
-| JSC     | `jsc`     | JavaScript        | no                    | yes | no       | links the system JavaScriptCore; no websockets; a fresh context per request |
-| QuickJS | `quickjs` | JavaScript        | no                    | no  | no       | no `env`, no websockets; a fresh runtime per request |
-| Boa     | `boa`     | JavaScript        | no                    | no  | no       | no `env`, no websockets; a fresh context per request |
-| WASM    | `wasm`    | `wasi:http/proxy` | no                    | yes | no       | components only, JavaScript workers are refused; env arrives as WASI vars, not `env` |
+| V8      | `v8`      | JavaScript        | yes                   | yes | all      | none; the only backend with an isolate pool, warm reuse and websockets |
+| JSC     | `jsc`     | JavaScript        | no                    | yes | none     | links the system JavaScriptCore; no websockets; a fresh context per request |
+| QuickJS | `quickjs` | JavaScript        | no                    | no  | none     | no `env`, no websockets; a fresh runtime per request |
+| Boa     | `boa`     | JavaScript        | no                    | no  | none     | no `env`, no websockets; a fresh context per request |
+| WASM    | `wasm`    | `wasi:http/proxy` | no                    | yes | kv, database, storage | components only, JavaScript workers are refused; env arrives as WASI vars, not `env`; no assets or worker bindings |
+
+The wasm guest reaches its bindings through the `openworkers:bindings` WIT
+package rather than an `env` object: every call names its binding, and the
+runner resolves that name against the worker's bindings.
 
 Nova is not selectable: it wires no operations handler, so a guest has no
 `fetch`, and `nova_vm` pulls a `temporal_rs` that does not build against the ICU

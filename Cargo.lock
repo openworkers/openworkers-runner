@@ -3466,6 +3466,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tracing",
+ "url",
  "uuid",
  "v8",
 ]
@@ -3487,6 +3488,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "openworkers-core",
+ "serde_json",
  "tokio",
  "wasmtime",
  "wasmtime-wasi",

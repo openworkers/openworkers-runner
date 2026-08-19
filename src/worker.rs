@@ -3,19 +3,18 @@
 //! Backends are mutually exclusive, so `Worker` is a plain alias and every call
 //! site is free of runtime dispatch.
 
-use std::sync::Arc;
-
-use crate::ops::RunnerOperations;
 use crate::store::{CodeType, WorkerWithBindings, bindings_to_infos};
 
-use openworkers_core::{BindingInfo, RuntimeLimits, Script, TerminationReason, WorkerCode};
+use openworkers_core::{
+    BindingInfo, OperationsHandle, RuntimeLimits, Script, TerminationReason, WorkerCode,
+};
 
 pub use crate::runtime::Worker;
 
 pub async fn create_worker(
     script: Script,
     limits: RuntimeLimits,
-    ops: Arc<RunnerOperations>,
+    ops: OperationsHandle,
 ) -> Result<Worker, TerminationReason> {
     Worker::new_with_ops(script, Some(limits), ops).await
 }
@@ -97,18 +96,35 @@ fn unsupported(code_type: &str) -> TerminationReason {
     ))
 }
 
-/// Refuse a worker whose bindings the backend would drop, or the guest reads
-/// `env.ASSETS` as undefined and serves a broken page instead of an error.
+/// Refuse a worker declaring a binding the backend cannot serve, or the guest
+/// reads `env.ASSETS` as undefined and serves a broken page instead of an error.
 fn check_bindings(bindings: &[BindingInfo]) -> Result<(), TerminationReason> {
-    if crate::runtime::SUPPORTS_BINDINGS || bindings.is_empty() {
+    let unsupported: Vec<&BindingInfo> = bindings
+        .iter()
+        .filter(|b| !crate::runtime::supports_binding(b.binding_type))
+        .collect();
+
+    if unsupported.is_empty() {
         return Ok(());
     }
 
-    let names: Vec<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
+    // One entry per type, or three KV bindings would name kv three times
+    let mut types: Vec<&str> = Vec::new();
+
+    for binding in &unsupported {
+        let name = crate::runtime::binding_type_name(binding.binding_type);
+
+        if !types.contains(&name) {
+            types.push(name);
+        }
+    }
+
+    let names: Vec<&str> = unsupported.iter().map(|b| b.name.as_str()).collect();
 
     Err(TerminationReason::InitializationError(format!(
-        "the {} backend does not implement bindings, so {} would be undefined",
+        "the {} backend does not implement {} bindings, declared as {}",
         crate::runtime::NAME,
+        types.join("/"),
         names.join(", ")
     )))
 }

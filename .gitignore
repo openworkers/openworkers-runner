@@ -1,4 +1,5 @@
 /target
+tests/fixtures/*/target
 
 .DS_Store
 

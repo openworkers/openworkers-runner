@@ -1,0 +1,19 @@
+# Fixture for tests/wasm_bindings_test.rs, built by the test itself.
+# Its own workspace, so it is never pulled into the runner's build.
+[workspace]
+
+[package]
+name = "bindings-worker"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.60"
+
+[profile.release]
+opt-level = "s"
+lto = true

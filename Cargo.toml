@@ -135,6 +135,11 @@ name = "backend_test"
 name = "wasm_tests"
 required-features = ["wasm"]
 
+# Builds tests/fixtures/bindings-worker, so it needs the wasm32-wasip2 target
+[[test]]
+name = "wasm_bindings_test"
+required-features = ["wasm"]
+
 # The rest drive openworkers-runtime-v8 directly
 [[test]]
 name = "fetch_streaming_test"
