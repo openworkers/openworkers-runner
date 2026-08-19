@@ -1,7 +1,5 @@
 //! Worker benchmarks for V8 runtime
 
-#![cfg(feature = "v8")]
-
 use criterion::{Criterion, criterion_group, criterion_main};
 use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_v8::Worker;

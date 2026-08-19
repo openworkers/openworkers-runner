@@ -3,8 +3,6 @@
 //! Tests for URL, URLSearchParams, and other Web API polyfills.
 //! These should pass on all runtimes.
 
-#![cfg(not(feature = "wasm"))]
-
 use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_v8::Worker;
 use std::collections::HashMap;
@@ -273,7 +271,8 @@ async fn test_url_search_params_encoding() {
         )
         .await;
 
-        assert_eq!(result, "q=hello%20world&special=a%26b%3Dc");
+        // The urlencoded serializer writes a space as '+', not %20
+        assert_eq!(result, "q=hello+world&special=a%26b%3Dc");
     })
     .await;
 }
@@ -322,7 +321,7 @@ async fn test_url_search_params_from_object_encodes_special_chars() {
 
         assert_eq!(
             result,
-            "redirect_uri=https%3A%2F%2Fexample.com%2Fcallback%3Ffoo%3Dbar&scope=read%20write"
+            "redirect_uri=https%3A%2F%2Fexample.com%2Fcallback%3Ffoo%3Dbar&scope=read+write"
         );
     })
     .await;

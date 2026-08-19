@@ -1,17 +1,22 @@
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+#[cfg(feature = "v8")]
+use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 use tracing::Instrument;
 
 use crate::log::WorkerLogHandler;
-use crate::ops::{DbPool, LogTx, RunnerOperations};
-use crate::store::{CodeType, WorkerWithBindings};
+#[cfg(feature = "v8")]
+use crate::ops::LogTx;
+use crate::ops::{DbPool, RunnerOperations};
+use crate::store::WorkerWithBindings;
 use crate::worker::{Worker, create_worker, prepare_script};
 use crate::worker_pool::{TaskPermit, WORKER_POOL};
 
 use openworkers_core::{Event, RuntimeLimits, Script, TerminationReason};
 
 /// V8 execution mode - controls how isolates are managed
+#[cfg(feature = "v8")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum V8ExecuteMode {
     /// Thread-pinned pool with per-owner isolation (default, best performance)
@@ -22,8 +27,10 @@ pub enum V8ExecuteMode {
 }
 
 /// Cached execution mode (read once from environment)
+#[cfg(feature = "v8")]
 static V8_EXECUTE_MODE: OnceLock<V8ExecuteMode> = OnceLock::new();
 
+#[cfg(feature = "v8")]
 impl V8ExecuteMode {
     /// Get the execution mode (cached, read from V8_EXECUTE env var on first call)
     pub fn get() -> Self {
@@ -76,11 +83,12 @@ impl TaskExecutionConfig {
 struct TaskComponents {
     script: Script,
     ops: Arc<RunnerOperations>,
-    code_type: CodeType,
     log_handler: WorkerLogHandler,
     /// Raw log sender for warm hit callback (to update cached ops)
+    #[cfg(feature = "v8")]
     log_tx: LogTx,
     /// Tracing span for warm hit callback
+    #[cfg(feature = "v8")]
     span: tracing::Span,
 }
 
@@ -111,9 +119,10 @@ fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponent
     Some(TaskComponents {
         script,
         ops,
-        code_type: config.worker_data.code_type.clone(),
         log_handler,
+        #[cfg(feature = "v8")]
         log_tx,
+        #[cfg(feature = "v8")]
         span: config.span.clone(),
     })
 }
@@ -181,7 +190,6 @@ pub async fn execute_task_await_v8_pooled(
     let task = config.task;
     let permit = config.permit;
     let limits = config.limits;
-    let code_type = components.code_type.clone();
     let execute_mode = V8ExecuteMode::get();
     let span = config.span.clone();
 
@@ -242,13 +250,12 @@ pub async fn execute_task_await_v8_pooled(
                         })?;
 
                         // Fresh isolate per request (no caching)
-                        let mut worker =
-                            create_worker(components.script, limits, components.ops, &code_type)
-                                .await
-                                .map_err(|err| {
-                                    tracing::error!("Failed to create worker: {err:?}");
-                                    err
-                                })?;
+                        let mut worker = create_worker(components.script, limits, components.ops)
+                            .await
+                            .map_err(|err| {
+                                tracing::error!("Failed to create worker: {err:?}");
+                                err
+                            })?;
 
                         worker.exec(task).await
                     }
@@ -314,15 +321,14 @@ pub async fn execute_task_await_v8_pooled(
 /// 5. Flush logs
 /// 6. Auto-release permit and notify drain monitor
 pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), TerminationReason> {
-    // For V8-only builds, prefer the pooled version
-    #[cfg(all(feature = "v8", not(feature = "wasm")))]
+    // Only v8 has an isolate pool to reuse
+    #[cfg(feature = "v8")]
     {
         #[allow(clippy::needless_return)]
         return execute_task_await_v8_pooled(config).await;
     }
 
-    // Fallback for WASM or dual-runtime builds
-    #[cfg(not(all(feature = "v8", not(feature = "wasm"))))]
+    #[cfg(not(feature = "v8"))]
     {
         let components = prepare_task_components(&config)
             .ok_or_else(|| TerminationReason::Other("Failed to prepare script".to_string()))?;
@@ -339,17 +345,12 @@ pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), Termi
                     // Wrap permit to automatically notify drain monitor on drop
                     let _permit = TaskPermit::new(permit);
 
-                    let mut worker = crate::worker::create_worker(
-                        components.script,
-                        limits,
-                        components.ops,
-                        &components.code_type,
-                    )
-                    .await
-                    .map_err(|err| {
-                        tracing::error!("Failed to create worker: {err:?}");
-                        err
-                    })?;
+                    let mut worker = create_worker(components.script, limits, components.ops)
+                        .await
+                        .map_err(|err| {
+                            tracing::error!("Failed to create worker: {err:?}");
+                            err
+                        })?;
 
                     let result =
                         run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
@@ -392,14 +393,7 @@ pub fn execute_task(config: TaskExecutionConfig) {
         // Wrap permit to automatically notify drain monitor on drop
         let _permit = TaskPermit::new(permit);
 
-        let mut worker = match create_worker(
-            components.script,
-            limits,
-            components.ops,
-            &components.code_type,
-        )
-        .await
-        {
+        let mut worker = match create_worker(components.script, limits, components.ops).await {
             Ok(w) => w,
             Err(err) => {
                 tracing::error!("Failed to create worker: {err:?}");

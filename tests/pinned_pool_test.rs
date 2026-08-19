@@ -2,8 +2,6 @@
 //!
 //! These tests verify that execute_pinned works correctly with buffered responses.
 
-#![cfg(feature = "v8")]
-
 use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, RuntimeLimits, Script};
 use openworkers_runner::ops::RunnerOperations;
 use openworkers_runtime_v8::{

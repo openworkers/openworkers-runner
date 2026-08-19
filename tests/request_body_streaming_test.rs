@@ -4,8 +4,6 @@
 //! This is a critical feature that allows workers to process large uploads
 //! without buffering the entire body in memory.
 
-#![cfg(not(feature = "wasm"))]
-
 use bytes::Bytes;
 use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, ResponseBody, Script};
 use openworkers_runtime_v8::Worker;

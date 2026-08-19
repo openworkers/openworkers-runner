@@ -676,40 +676,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     openworkers_runner::telemetry::init();
 
     debug!("start main (hyper)");
-
-    // Parse isolate pool configuration from environment
-    let pool_max_size = std::env::var("ISOLATE_POOL_SIZE")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1000); // Default: 1000 isolates
-
-    let heap_initial_mb = std::env::var("ISOLATE_HEAP_INITIAL_MB")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(10); // Default: 10MB
-
-    let heap_max_mb = std::env::var("ISOLATE_HEAP_MAX_MB")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(50); // Default: 50MB
+    info!("{}", openworkers_runner::runtime::capabilities());
 
     let wall_clock_timeout_ms = std::env::var("WALL_CLOCK_TIMEOUT_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(64_000); // Default: 64 seconds
-
-    let cpu_time_limit_ms = std::env::var("CPU_TIME_LIMIT_MS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(100); // Default: 100ms
-
-    let v8_execute_mode = openworkers_runner::V8ExecuteMode::get();
-
-    debug!(
-        "Isolate pool config: max_size={}, heap_initial={}MB, heap_max={}MB, wall_clock_timeout={}ms, cpu_time_limit={}ms",
-        pool_max_size, heap_initial_mb, heap_max_mb, wall_clock_timeout_ms, cpu_time_limit_ms
-    );
-    debug!("V8 execution mode: {:?}", v8_execute_mode);
 
     let db_url = match std::env::var("DATABASE_URL") {
         Ok(url) => url,
@@ -854,6 +826,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         use openworkers_core::RuntimeLimits;
 
+        let pool_max_size = std::env::var("ISOLATE_POOL_SIZE")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(1000); // Default: 1000 isolates
+
+        let heap_initial_mb = std::env::var("ISOLATE_HEAP_INITIAL_MB")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(10); // Default: 10MB
+
+        let heap_max_mb = std::env::var("ISOLATE_HEAP_MAX_MB")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(50); // Default: 50MB
+
+        let cpu_time_limit_ms = std::env::var("CPU_TIME_LIMIT_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(100); // Default: 100ms
+
         let pool_limits = RuntimeLimits {
             heap_initial_mb,
             heap_max_mb,
@@ -862,7 +854,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ..Default::default()
         };
 
-        match v8_execute_mode {
+        debug!(
+            "Isolate pool config: max_size={}, heap_initial={}MB, heap_max={}MB, wall_clock_timeout={}ms, cpu_time_limit={}ms",
+            pool_max_size, heap_initial_mb, heap_max_mb, wall_clock_timeout_ms, cpu_time_limit_ms
+        );
+
+        match openworkers_runner::V8ExecuteMode::get() {
             openworkers_runner::V8ExecuteMode::Pinned => {
                 openworkers_runtime_v8::init_pinned_pool(
                     openworkers_runtime_v8::PinnedPoolConfig {

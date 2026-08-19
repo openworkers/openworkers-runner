@@ -1,53 +1,89 @@
-//! Runtime selection based on feature flags
+//! The runtime backend selected at build time.
 //!
-//! This module re-exports the selected runtime based on the enabled feature.
-//! Only one runtime feature should be enabled at a time.
+//! Exactly one backend feature is enabled per build. This module re-exports its
+//! `Worker` and states what it supports, so the rest of the crate never repeats
+//! the cfg chain.
 //!
-//! Usage:
-//!   cargo build --features deno     (default)
-//!   cargo build --features quickjs
-//!   cargo build --features v8
-//!   cargo build --features boa
+//!   cargo build --features v8       (recommended)
 //!   cargo build --features jsc
+//!   cargo build --features quickjs
+//!   cargo build --features boa
+//!   cargo build --features wasm
 
-#[cfg(feature = "deno")]
-pub use openworkers_runtime_deno::*;
-
-#[cfg(feature = "quickjs")]
-pub use openworkers_runtime_quickjs::*;
-
-#[cfg(feature = "v8")]
-pub use openworkers_runtime_v8::*;
-
-#[cfg(feature = "boa")]
-pub use openworkers_runtime_boa::*;
-
-#[cfg(feature = "jsc")]
-pub use openworkers_runtime_jsc::*;
-
-// Snapshot stub for WASM runtime (WASM doesn't need/support snapshots)
-#[cfg(feature = "wasm")]
-pub mod snapshot {
-    /// Snapshot output structure (stub for compatibility)
-    pub struct SnapshotOutput {
-        pub output: Vec<u8>,
-    }
-
-    /// Create a runtime snapshot (stub - WASM doesn't need/support snapshots)
-    pub fn create_runtime_snapshot() -> Result<SnapshotOutput, String> {
-        Err("WASM runtime does not support snapshots".to_string())
-    }
-}
-
-// Compile-time check: ensure at least one runtime is selected
 #[cfg(not(any(
-    feature = "deno",
-    feature = "quickjs",
     feature = "v8",
-    feature = "boa",
     feature = "jsc",
+    feature = "quickjs",
+    feature = "boa",
     feature = "wasm"
 )))]
-compile_error!(
-    "At least one runtime feature must be enabled: deno, quickjs, v8, boa, jsc, or wasm"
-);
+compile_error!("no runtime backend selected: build with --features v8|jsc|quickjs|boa|wasm");
+
+#[cfg(any(
+    all(
+        feature = "v8",
+        any(
+            feature = "jsc",
+            feature = "quickjs",
+            feature = "boa",
+            feature = "wasm"
+        )
+    ),
+    all(
+        feature = "jsc",
+        any(feature = "quickjs", feature = "boa", feature = "wasm")
+    ),
+    all(feature = "quickjs", any(feature = "boa", feature = "wasm")),
+    all(feature = "boa", feature = "wasm"),
+))]
+compile_error!("runtime backends are mutually exclusive: select exactly one");
+
+#[cfg(feature = "boa")]
+pub use openworkers_runtime_boa::Worker;
+#[cfg(feature = "jsc")]
+pub use openworkers_runtime_jsc::Worker;
+#[cfg(feature = "quickjs")]
+pub use openworkers_runtime_quickjs::Worker;
+#[cfg(feature = "v8")]
+pub use openworkers_runtime_v8::Worker;
+#[cfg(feature = "wasm")]
+pub use openworkers_runtime_wasm::WasmWorker as Worker;
+
+#[cfg(feature = "v8")]
+pub use openworkers_runtime_v8::snapshot;
+
+/// Selected backend, for logs and error messages.
+#[cfg(feature = "v8")]
+pub const NAME: &str = "v8";
+#[cfg(feature = "jsc")]
+pub const NAME: &str = "jsc";
+#[cfg(feature = "quickjs")]
+pub const NAME: &str = "quickjs";
+#[cfg(feature = "boa")]
+pub const NAME: &str = "boa";
+#[cfg(feature = "wasm")]
+pub const NAME: &str = "wasm";
+
+/// Whether the backend reads `Script::bindings` and exposes them on `env`.
+/// The others ignore the field, leaving `env.ASSETS` undefined in the guest.
+pub const SUPPORTS_BINDINGS: bool = cfg!(feature = "v8");
+
+/// Whether the backend reads `Script::env` and exposes the variables to the guest.
+pub const SUPPORTS_ENV: bool = cfg!(any(feature = "v8", feature = "jsc", feature = "wasm"));
+
+/// Whether the guest is JavaScript; the wasm backend runs components instead.
+pub const RUNS_JAVASCRIPT: bool = cfg!(feature = "_js");
+
+/// One line naming the backend and what a worker can rely on.
+pub fn capabilities() -> String {
+    format!(
+        "runtime backend: {NAME} (guest={}, env={}, bindings={})",
+        if RUNS_JAVASCRIPT {
+            "javascript"
+        } else {
+            "wasm component"
+        },
+        SUPPORTS_ENV,
+        SUPPORTS_BINDINGS,
+    )
+}

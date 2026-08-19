@@ -35,7 +35,8 @@ RUN --mount=type=cache,target=$CARGO_HOME/git \
     --mount=type=cache,target=/build/target \
     FEATURES="$RUNTIME,database,multiplexing"; \
     if [ "$TELEMETRY" = "true" ]; then FEATURES="$FEATURES,telemetry"; fi; \
-    cargo run --release --features=$FEATURES --bin snapshot && \
+    # Only v8 has snapshots, and the empty file touched above stands in elsewhere
+    if [ "$RUNTIME" = "v8" ]; then cargo run --release --features=$FEATURES --bin snapshot; fi && \
     # Build the runner and copy executable out of the cache so it can be used in the next stage
     cargo build --release --features=$FEATURES && cp /build/target/release/openworkers-runner /build/output
 

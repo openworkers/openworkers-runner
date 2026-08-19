@@ -16,8 +16,6 @@
 //! `export default { ... }` is transformed to `globalThis.default = { ... }`.
 //! These tests use the post-transformation format.
 
-#![cfg(not(feature = "wasm"))]
-
 use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_v8::Worker;
 use std::collections::HashMap;

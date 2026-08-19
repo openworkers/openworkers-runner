@@ -1,4 +1,3 @@
-#![cfg(feature = "v8")]
 //! WebSocket outgoing (client) tests
 //!
 //! These tests verify that workers can open outgoing WebSocket connections

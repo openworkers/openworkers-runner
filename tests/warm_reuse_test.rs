@@ -8,8 +8,6 @@
 //! IMPORTANT: On warm hit, only the fetch handler runs — module-level code does NOT
 //! re-execute. Counters and state tracking must be inside the handler.
 
-#![cfg(feature = "v8")]
-
 use openworkers_core::{
     BindingInfo, DatabaseOp, DatabaseResult, Event, HttpMethod, HttpRequest, HttpResponse,
     OpFuture, OperationsHandler, RequestBody, ResponseBody, RuntimeLimits, Script,

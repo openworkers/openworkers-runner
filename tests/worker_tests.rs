@@ -1,7 +1,5 @@
 //! Worker tests for JavaScript runtimes
 
-#![cfg(not(feature = "wasm"))]
-
 use openworkers_core::{Event, HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runtime_v8::Worker;
 use std::collections::HashMap;

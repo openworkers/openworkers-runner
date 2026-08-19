@@ -1,7 +1,7 @@
 //! Snapshot creation tool
 //!
-//! Creates a V8 snapshot for faster worker startup (deno/v8 runtimes).
-//! Other runtimes have stub implementations that return an error.
+//! Creates a V8 snapshot for faster worker startup. No other backend has
+//! snapshots, so this binary requires the v8 feature.
 
 use openworkers_runner::runtime::snapshot::create_runtime_snapshot;
 

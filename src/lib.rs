@@ -24,6 +24,7 @@ pub mod worker_pool;
 pub use openworkers_core::TerminationReason;
 
 // Re-export V8ExecuteMode for configuration
+#[cfg(feature = "v8")]
 pub use task_executor::V8ExecuteMode;
 
 // Re-export Operations for convenience
