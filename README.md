@@ -80,13 +80,14 @@ NATS_SERVERS='nats://localhost:4222'
 
 #### V8 Runtime
 
-| Variable                 | Default   | Description                                      |
-| ------------------------ | --------- | ------------------------------------------------ |
-| `V8_EXECUTE`             | `PINNED`  | Execution mode: `PINNED`, `POOLED`, or `ONESHOT` |
-| `SNAPSHOT_CACHE_MAX`     | `5000`    | Max entries in the in-memory code cache LRU      |
-| `WORKER_POOL_SIZE`       | CPU cores | Number of V8 worker threads                      |
-| `MAX_QUEUED_WORKERS`     | pool × 10 | Max queued tasks before backpressure             |
-| `WORKER_WAIT_TIMEOUT_MS` | `10000`   | Timeout (ms) waiting for a worker slot           |
+| Variable                   | Default     | Description                                        |
+| -------------------------- | ----------- | -------------------------------------------------- |
+| `V8_EXECUTE`               | `PINNED`    | Execution mode: `PINNED`, `POOLED`, or `ONESHOT`   |
+| `SNAPSHOT_CACHE_MAX`       | `5000`      | Max entries in the in-memory code cache LRU        |
+| `SNAPSHOT_CACHE_MAX_BYTES` | `536870912` | Max total bytes in that LRU, whichever binds first |
+| `WORKER_POOL_SIZE`         | CPU cores   | Number of V8 worker threads                        |
+| `MAX_QUEUED_WORKERS`       | pool × 10   | Max queued tasks before backpressure               |
+| `WORKER_WAIT_TIMEOUT_MS`   | `10000`     | Timeout (ms) waiting for a worker slot             |
 
 `V8_EXECUTE` modes:
 
