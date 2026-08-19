@@ -8,28 +8,34 @@ This runner manages instances of [OpenWorkers Runtime](https://github.com/openwo
 
 ### Build
 
-The runner supports multiple JavaScript runtime backends via feature flags.
-
-**V8 is the recommended runtime** for production use.
+One backend per build. Selecting none, or more than one, is a compile error.
 
 ```bash
-# V8 runtime (recommended)
-cargo build --release --features v8
-
-# Alternative runtimes (experimental)
-cargo build --release --features quickjs   # QuickJS - lightweight
-cargo build --release --features boa       # Boa - pure Rust
-cargo build --release --features jsc       # JavaScriptCore (macOS/iOS)
-cargo build --release --features deno      # Deno - legacy
+cargo build --release --features v8        # recommended for production
+cargo build --release --features jsc
+cargo build --release --features quickjs
+cargo build --release --features boa
+cargo build --release --features wasm
 ```
 
-Available features:
+Every backend serves `fetch` and, through `Event::Task` with a schedule source,
+`scheduled`. Only v8 implements bindings; on the others the runner refuses a
+worker that declares one rather than handing the guest an undefined `env.ASSETS`.
 
-- `v8` - **Recommended** - Standalone V8 engine with full Web API support
-- `quickjs` - Lightweight QuickJS engine
-- `boa` - Pure Rust JS engine (experimental)
-- `jsc` - JavaScriptCore (Apple platforms)
-- `deno` - Full Deno runtime (legacy, not actively maintained)
+| Backend | Feature   | Guest             | Snapshot / code cache | env | Bindings | Known limitations |
+| ------- | --------- | ----------------- | --------------------- | --- | -------- | ----------------- |
+| V8      | `v8`      | JavaScript        | yes                   | yes | yes      | none; the only backend with an isolate pool, warm reuse and websockets |
+| JSC     | `jsc`     | JavaScript        | no                    | yes | no       | links the system JavaScriptCore; no websockets; a fresh context per request |
+| QuickJS | `quickjs` | JavaScript        | no                    | no  | no       | no `env`, no websockets; a fresh runtime per request |
+| Boa     | `boa`     | JavaScript        | no                    | no  | no       | no `env`, no websockets; a fresh context per request |
+| WASM    | `wasm`    | `wasi:http/proxy` | no                    | yes | no       | components only, JavaScript workers are refused; env arrives as WASI vars, not `env` |
+
+Nova is not selectable: it wires no operations handler, so a guest has no
+`fetch`, and `nova_vm` pulls a `temporal_rs` that does not build against the ICU
+version v8 152 forces in a shared lockfile.
+
+Optional on top of a backend: `database` (default), `telemetry`, and
+`multiplexing` (v8 only, ignored elsewhere).
 
 ### Snapshot the runtime (V8 only)
 
