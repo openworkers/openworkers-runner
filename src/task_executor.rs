@@ -284,7 +284,7 @@ pub async fn execute_task_await_v8_pooled(
                             Ok(cache) => {
                                 let packed =
                                     openworkers_runtime_v8::pack_code_cache(&js_code, &cache);
-                                crate::snapshot_cache::put(&worker_id, version, &packed);
+                                crate::code_cache::put(&worker_id, version, &packed);
                                 tracing::debug!(
                                     "Created code cache: worker={}, version={}, size={}",
                                     crate::utils::short_id(&worker_id),

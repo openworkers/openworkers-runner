@@ -2,7 +2,7 @@
 //!
 //! The wasm counterpart of the V8 code cache: compiling a component with
 //! Cranelift dominates a cold start, so the first start of a worker version
-//! stores the machine code in `snapshot_cache` and later ones load that.
+//! stores the machine code in `code_cache` and later ones load that.
 
 use crate::runtime::Worker;
 use crate::store::WorkerWithBindings;
@@ -29,8 +29,7 @@ pub fn prepare(
 ) -> Result<PreparedWorker, TerminationReason> {
     let engine_key = openworkers_runtime_wasm::compatibility_key(Some(limits.clone()))?;
 
-    let Some(artifact) = crate::snapshot_cache::get_wasm(&data.id, data.version, &engine_key)
-    else {
+    let Some(artifact) = crate::code_cache::get_wasm(&data.id, data.version, &engine_key) else {
         tracing::debug!(
             "component cache MISS: worker={}, version={}",
             crate::utils::short_id(&data.id),
@@ -96,7 +95,7 @@ pub async fn create_worker(
                 artifact.len()
             );
 
-            crate::snapshot_cache::put_wasm(worker_id, version, &engine_key, &artifact);
+            crate::code_cache::put_wasm(worker_id, version, &engine_key, &artifact);
         }
         Err(e) => {
             tracing::warn!(

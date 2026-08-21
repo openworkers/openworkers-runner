@@ -81,7 +81,7 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
             #[cfg(feature = "_js")]
             {
                 #[cfg(feature = "v8")]
-                if let Some(snapshot) = crate::snapshot_cache::get(&data.id, data.version) {
+                if let Some(snapshot) = crate::code_cache::get(&data.id, data.version) {
                     tracing::debug!(
                         "code cache HIT: worker={}, version={}, size={}",
                         crate::utils::short_id(&data.id),

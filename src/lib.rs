@@ -2,6 +2,8 @@
 pub mod adaptive_span_exporter;
 #[cfg(feature = "telemetry")]
 pub mod adaptive_span_processor;
+#[cfg(any(feature = "v8", feature = "wasm"))]
+pub mod code_cache;
 pub mod event_fetch;
 pub mod event_scheduled;
 pub mod limiter;
@@ -11,8 +13,6 @@ pub mod nats;
 pub mod ops;
 pub mod runtime;
 pub mod services;
-#[cfg(any(feature = "v8", feature = "wasm"))]
-pub mod snapshot_cache;
 pub mod store;
 pub mod task_executor;
 pub mod telemetry;

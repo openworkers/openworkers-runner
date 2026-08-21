@@ -78,13 +78,24 @@ NATS_SERVERS='nats://localhost:4222'
 | `WORKER_DOMAINS`              | `workers.rocks` | Comma-separated list of worker domains for internal routing |
 | `HTTP_POOL_MAX_IDLE_PER_HOST` | `100`           | Max idle HTTP connections per host (for worker `fetch()`)   |
 
+#### Code cache
+
+Holds V8 code caches and precompiled wasm components, so a worker version is
+compiled once instead of on every cold start.
+
+| Variable               | Default     | Description                                        |
+| ---------------------- | ----------- | -------------------------------------------------- |
+| `CODE_CACHE_MAX`       | `5000`      | Max entries in the in-memory LRU                   |
+| `CODE_CACHE_MAX_BYTES` | `536870912` | Max total bytes in that LRU, whichever binds first |
+
+`SNAPSHOT_CACHE_MAX` and `SNAPSHOT_CACHE_MAX_BYTES` are still read when the
+`CODE_CACHE_*` name is unset, with a warning.
+
 #### V8 Runtime
 
 | Variable                   | Default     | Description                                        |
 | -------------------------- | ----------- | -------------------------------------------------- |
 | `V8_EXECUTE`               | `PINNED`    | Execution mode: `PINNED`, `POOLED`, or `ONESHOT`   |
-| `SNAPSHOT_CACHE_MAX`       | `5000`      | Max entries in the in-memory code cache LRU        |
-| `SNAPSHOT_CACHE_MAX_BYTES` | `536870912` | Max total bytes in that LRU, whichever binds first |
 | `WORKER_POOL_SIZE`         | CPU cores   | Number of V8 worker threads                        |
 | `MAX_QUEUED_WORKERS`       | pool × 10   | Max queued tasks before backpressure               |
 | `WORKER_WAIT_TIMEOUT_MS`   | `10000`     | Timeout (ms) waiting for a worker slot             |
