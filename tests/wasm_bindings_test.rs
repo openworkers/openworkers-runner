@@ -1,4 +1,4 @@
-//! End-to-end binding test for the wasm backend.
+//! End-to-end tests for the wasm backend.
 //!
 //! A wasip2 component goes through the runner's own dispatch path
 //! (`prepare_script` + `create_worker` + a fetch event) with a recording
@@ -7,22 +7,35 @@
 
 use openworkers_core::{
     DatabaseOp, DatabaseResult, Event, HttpMethod, HttpRequest, KvOp, KvResult, OpFuture,
-    OperationsHandler, RequestBody, SqlParam, SqlPrimitive, StorageOp, StorageResult,
+    OperationsHandler, RequestBody, RuntimeLimits, SqlParam, SqlPrimitive, StorageOp,
+    StorageResult,
 };
+use openworkers_runner::snapshot_cache;
 use openworkers_runner::store::{
     Binding, CodeType, DatabaseConfig, DatabaseProvider, KvConfig, StorageConfig,
     WorkerWithBindings,
 };
 use openworkers_runner::task_executor::TaskExecutionConfig;
-use openworkers_runner::worker::{create_worker, prepare_script};
+use openworkers_runner::worker::{create_cached_worker, create_worker, prepare_script};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::time::Duration;
+use std::time::Instant;
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/bindings-worker"
 );
+
+/// The guest component, built on first use and shared by the tests in this
+/// binary; two cargo builds of the fixture would only queue on its lock
+fn probe_component() -> Vec<u8> {
+    static COMPONENT: OnceLock<Vec<u8>> = OnceLock::new();
+
+    COMPONENT.get_or_init(build_probe_component).clone()
+}
 
 /// Build the guest component; it is a fixture, so no artifact is checked in
 fn build_probe_component() -> Vec<u8> {
@@ -162,7 +175,7 @@ impl OperationsHandler for RecordingOps {
 
 #[tokio::test]
 async fn a_wasm_worker_reaches_kv_database_and_storage() {
-    let data = probe_worker(build_probe_component());
+    let data = probe_worker(probe_component());
 
     let script = prepare_script(&data).expect("the wasm backend serves these binding types");
 
@@ -239,4 +252,82 @@ async fn a_wasm_worker_reaches_kv_database_and_storage() {
         matches!(&storage[0].1, StorageOp::Put { key, body } if key == "hello.txt" && body == b"round trip")
     );
     assert!(matches!(&storage[1].1, StorageOp::Get { key } if key == "hello.txt"));
+}
+
+/// A component is compiled once per worker version: the second cold start
+/// loads what the first one precompiled instead of running Cranelift again.
+#[tokio::test]
+async fn a_second_cold_start_loads_the_precompiled_component() {
+    let mut data = probe_worker(probe_component());
+
+    // Its own id, so the binding test above cannot seed this cache entry
+    data.id = "component-cache-worker".to_string();
+
+    let limits = TaskExecutionConfig::default_limits();
+    let hits_before = openworkers_runner::wasm_cache::hits();
+
+    let first = serve_one_request(&data, limits.clone()).await;
+
+    wait_for_artifact(&data, &limits).await;
+
+    let second = serve_one_request(&data, limits.clone()).await;
+
+    assert_eq!(
+        openworkers_runner::wasm_cache::hits(),
+        hits_before + 1,
+        "the second cold start should have come from the cache"
+    );
+
+    assert_eq!(first, second);
+}
+
+/// One cold start, from the worker row to the response body
+async fn serve_one_request(data: &WorkerWithBindings, limits: RuntimeLimits) -> String {
+    let script = prepare_script(data).expect("the wasm backend serves these binding types");
+    let ops = Arc::new(RecordingOps::default());
+
+    let mut worker = create_cached_worker(script, limits, ops, &data.id, data.version)
+        .await
+        .expect("worker should initialize");
+
+    let (event, rx) = Event::fetch(HttpRequest {
+        method: HttpMethod::Get,
+        url: "http://localhost/".to_string(),
+        headers: HashMap::new(),
+        body: RequestBody::None,
+    });
+
+    worker.exec(event).await.expect("fetch should run");
+
+    let response = rx.await.expect("worker should respond");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("body stream failed")
+        .expect("response has a body");
+    let body = String::from_utf8_lossy(&body).into_owned();
+
+    assert_eq!(response.status, 200, "guest reported: {body}");
+
+    body
+}
+
+/// Precompilation runs off the request path, so the second start only finds an
+/// artifact once that has landed
+async fn wait_for_artifact(data: &WorkerWithBindings, limits: &RuntimeLimits) {
+    let engine_key = openworkers_runtime_wasm::compatibility_key(Some(limits.clone()))
+        .expect("the engine should build");
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+
+    while Instant::now() < deadline {
+        if snapshot_cache::get_wasm(&data.id, data.version, &engine_key).is_some() {
+            return;
+        }
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    panic!("the component was never precompiled");
 }
