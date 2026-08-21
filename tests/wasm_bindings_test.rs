@@ -21,8 +21,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::time::Duration;
-use std::time::Instant;
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -268,7 +266,10 @@ async fn a_second_cold_start_loads_the_precompiled_component() {
 
     let first = serve_one_request(&data, limits.clone()).await;
 
-    wait_for_artifact(&data, &limits).await;
+    assert!(
+        snapshot_cache::get_wasm(&data.id, data.version, &engine_key(&limits)).is_some(),
+        "the first cold start should have cached its component"
+    );
 
     let second = serve_one_request(&data, limits.clone()).await;
 
@@ -313,21 +314,7 @@ async fn serve_one_request(data: &WorkerWithBindings, limits: RuntimeLimits) -> 
     body
 }
 
-/// Precompilation runs off the request path, so the second start only finds an
-/// artifact once that has landed
-async fn wait_for_artifact(data: &WorkerWithBindings, limits: &RuntimeLimits) {
-    let engine_key = openworkers_runtime_wasm::compatibility_key(Some(limits.clone()))
-        .expect("the engine should build");
-
-    let deadline = Instant::now() + Duration::from_secs(60);
-
-    while Instant::now() < deadline {
-        if snapshot_cache::get_wasm(&data.id, data.version, &engine_key).is_some() {
-            return;
-        }
-
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-
-    panic!("the component was never precompiled");
+fn engine_key(limits: &RuntimeLimits) -> String {
+    openworkers_runtime_wasm::compatibility_key(Some(limits.clone()))
+        .expect("the engine should build")
 }

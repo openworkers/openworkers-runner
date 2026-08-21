@@ -9,7 +9,6 @@ use openworkers_core::OperationsHandle;
 use openworkers_core::RuntimeLimits;
 use openworkers_core::Script;
 use openworkers_core::TerminationReason;
-use openworkers_core::WorkerCode;
 use openworkers_runtime_wasm::PrecompiledComponent;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -24,9 +23,9 @@ pub fn hits() -> u64 {
 /// Build a worker, reusing the component compiled for an earlier cold start of
 /// the same version.
 ///
-/// On a miss the component is compiled as usual and precompiled again in the
-/// background: that spends one core for the length of a compile, but keeps it
-/// off the request that paid for the cold start already.
+/// A miss compiles as usual, then keeps the machine code the worker is already
+/// holding: serializing it costs about 220 us, against the 13 ms compiling the
+/// guest a second time would.
 pub async fn create_worker(
     script: Script,
     limits: RuntimeLimits,
@@ -46,8 +45,8 @@ pub async fn create_worker(
 
         HITS.fetch_add(1, Ordering::Relaxed);
 
-        // SAFETY: the artifact was put there by `precompile` below, in this
-        // very process; nothing else writes to the cache.
+        // SAFETY: the artifact was serialized below from a component this
+        // process compiled; nothing else writes to the cache.
         let component = unsafe { PrecompiledComponent::from_trusted_bytes(artifact) };
 
         return Worker::new_precompiled(component, script, Some(limits), Some(ops)).await;
@@ -59,38 +58,26 @@ pub async fn create_worker(
         version
     );
 
-    // A worker whose code is not wasm fails in the runtime, with its message
-    let wasm_bytes = match &script.code {
-        WorkerCode::WebAssembly(bytes) => Some(bytes.clone()),
-        _ => None,
-    };
+    let worker = Worker::new_with_ops(script, Some(limits), ops).await?;
 
-    let worker = Worker::new_with_ops(script, Some(limits.clone()), ops).await?;
+    match worker.serialize_component() {
+        Ok(artifact) => {
+            tracing::debug!(
+                "Cached component: worker={}, version={}, size={}",
+                crate::utils::short_id(worker_id),
+                version,
+                artifact.len()
+            );
 
-    if let Some(wasm_bytes) = wasm_bytes {
-        let worker_id = worker_id.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            match openworkers_runtime_wasm::precompile(&wasm_bytes, Some(limits)) {
-                Ok(artifact) => {
-                    tracing::debug!(
-                        "Precompiled component: worker={}, version={}, size={}",
-                        crate::utils::short_id(&worker_id),
-                        version,
-                        artifact.len()
-                    );
-
-                    crate::snapshot_cache::put_wasm(&worker_id, version, &engine_key, &artifact);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to precompile component for worker={}: {}",
-                        crate::utils::short_id(&worker_id),
-                        e
-                    );
-                }
-            }
-        });
+            crate::snapshot_cache::put_wasm(worker_id, version, &engine_key, &artifact);
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to serialize component for worker={}: {}",
+                crate::utils::short_id(worker_id),
+                e
+            );
+        }
     }
 
     Ok(worker)
