@@ -1,10 +1,11 @@
 .PHONY: test test-wasm fmt check snapshot
 
-# Run all runner tests
+# Run all runner tests; the wasm ones build their guest, so this needs the
+# wasm32-wasip2 target
 test:
-	cargo test --features v8
+	cargo test --features v8,wasm
 
-# The binding test builds its guest, so this one needs the wasm32-wasip2 target
+# Only the wasm backend, to check what a build without a JavaScript engine does
 test-wasm:
 	cargo test --features wasm
 
@@ -14,7 +15,7 @@ fmt:
 
 # Check compilation
 check:
-	cargo check --features v8
+	cargo check --features v8,wasm
 
 # Regenerate runtime snapshot
 snapshot:

@@ -25,7 +25,9 @@ fn create_test_worker(code: Vec<u8>, code_type: CodeType) -> WorkerWithBindings 
     }
 }
 
-/// The wasm backend runs components, so a JavaScript worker has to be refused
+/// A build carrying only the wasm backend runs components, so a JavaScript
+/// worker has to be refused
+#[cfg(not(feature = "_js"))]
 #[test]
 fn test_prepare_script_rejects_javascript() {
     let worker = create_test_worker(
@@ -41,6 +43,7 @@ fn test_prepare_script_rejects_javascript() {
     }
 }
 
+#[cfg(not(feature = "_js"))]
 #[test]
 fn test_prepare_script_rejects_typescript() {
     let worker = create_test_worker(

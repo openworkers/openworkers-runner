@@ -139,6 +139,11 @@ required-features = ["wasm"]
 name = "wasm_bindings_test"
 required-features = ["wasm"]
 
+# Both backends in one binary, so it needs both features
+[[test]]
+name = "cohabitation_test"
+required-features = ["v8", "wasm"]
+
 # The rest drive openworkers-runtime-v8 directly
 [[test]]
 name = "fetch_streaming_test"
