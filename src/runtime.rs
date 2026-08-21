@@ -1,10 +1,10 @@
-//! The runtime backend selected at build time.
+//! The runtime backends selected at build time.
 //!
-//! Exactly one backend feature is enabled per build. This module re-exports the
-//! backend's worker type and states what it supports, so the rest of the crate
-//! never repeats the cfg chain.
+//! A build takes at most one JavaScript engine; the wasm backend is orthogonal
+//! and adds to it. This module re-exports each backend's worker type and states
+//! what it supports, so the rest of the crate never repeats the cfg chain.
 //!
-//!   cargo build --features v8       (recommended)
+//!   cargo build --features v8,wasm  (recommended)
 //!   cargo build --features jsc
 //!   cargo build --features quickjs
 //!   cargo build --features boa
@@ -22,21 +22,14 @@ compile_error!("no runtime backend selected: build with --features v8|jsc|quickj
 #[cfg(any(
     all(
         feature = "v8",
-        any(
-            feature = "jsc",
-            feature = "quickjs",
-            feature = "boa",
-            feature = "wasm"
-        )
+        any(feature = "jsc", feature = "quickjs", feature = "boa")
     ),
-    all(
-        feature = "jsc",
-        any(feature = "quickjs", feature = "boa", feature = "wasm")
-    ),
-    all(feature = "quickjs", any(feature = "boa", feature = "wasm")),
-    all(feature = "boa", feature = "wasm"),
+    all(feature = "jsc", any(feature = "quickjs", feature = "boa")),
+    all(feature = "quickjs", feature = "boa"),
 ))]
-compile_error!("runtime backends are mutually exclusive: select exactly one");
+compile_error!(
+    "JavaScript engines are mutually exclusive: select at most one of v8|jsc|quickjs|boa"
+);
 
 use openworkers_core::BindingType;
 

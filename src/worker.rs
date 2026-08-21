@@ -56,7 +56,9 @@ pub async fn create_worker(
     // A build without a JavaScript engine has the wasm one, which took the
     // script above unless its code is something wasmtime cannot run
     #[cfg(not(feature = "_js"))]
-    Err(unsupported("JavaScript"))
+    Err(TerminationReason::InitializationError(
+        "this build cannot run JavaScript workers".to_string(),
+    ))
 }
 
 /// A worker ready to be built.
@@ -158,7 +160,9 @@ fn parse_code(data: &WorkerWithBindings) -> Result<(Backend, WorkerCode), Termin
             }
 
             #[cfg(not(feature = "_js"))]
-            Err(unsupported("JavaScript"))
+            Err(TerminationReason::InitializationError(
+                "this build cannot run JavaScript workers".to_string(),
+            ))
         }
         CodeType::Wasm => {
             #[cfg(feature = "wasm")]
@@ -167,7 +171,9 @@ fn parse_code(data: &WorkerWithBindings) -> Result<(Backend, WorkerCode), Termin
             }
 
             #[cfg(not(feature = "wasm"))]
-            Err(unsupported("WebAssembly"))
+            Err(TerminationReason::InitializationError(
+                "this build cannot run WebAssembly workers".to_string(),
+            ))
         }
         CodeType::Snapshot => {
             #[cfg(feature = "v8")]
@@ -176,13 +182,11 @@ fn parse_code(data: &WorkerWithBindings) -> Result<(Backend, WorkerCode), Termin
             }
 
             #[cfg(not(feature = "v8"))]
-            Err(unsupported("snapshot"))
+            Err(TerminationReason::InitializationError(
+                "this build cannot run snapshot workers".to_string(),
+            ))
         }
     }
-}
-
-fn unsupported(code_type: &str) -> TerminationReason {
-    TerminationReason::InitializationError(format!("this build cannot run {code_type} workers"))
 }
 
 /// Refuse a worker declaring a binding its backend cannot serve, or the guest
