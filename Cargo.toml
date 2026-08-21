@@ -71,13 +71,11 @@ openworkers-core = { git = "https://github.com/openworkers/openworkers-core", ta
 openworkers-transform = { git = "https://github.com/openworkers/openworkers-transform", tag = "v0.1.0", optional = true }
 
 # Runtime backends
-openworkers-runtime-v8 = { path = "../openworkers-runtime-v8", optional = true, features = ["ptrcomp"] }
-openworkers-runtime-jsc = { path = "../openworkers-runtime-jsc", optional = true }
-openworkers-runtime-quickjs = { path = "../openworkers-runtime-quickjs", optional = true }
-openworkers-runtime-boa = { path = "../openworkers-runtime-boa", optional = true }
-openworkers-runtime-wasm = { path = "../openworkers-runtime-wasm", optional = true }
-# nova is absent on purpose: it wires no OperationsHandler, and nova_vm 1.0 pulls
-# temporal_rs 0.1.2, which does not build against the icu 2.2 that v8 152 forces
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.15.0", optional = true, features = ["ptrcomp"] }
+openworkers-runtime-jsc = { git = "https://github.com/openworkers/openworkers-runtime-jsc", tag = "v0.15.0", optional = true }
+openworkers-runtime-quickjs = { git = "https://github.com/openworkers/openworkers-runtime-quickjs", tag = "v0.15.0", optional = true }
+openworkers-runtime-boa = { git = "https://github.com/openworkers/openworkers-runtime-boa", tag = "v0.15.0", optional = true }
+openworkers-runtime-wasm = { git = "https://github.com/openworkers/openworkers-runtime-wasm", tag = "v0.15.0", optional = true }
 
 # Database bindings (optional)
 # postgate = { path = "../postgate", default-features = false, optional = true }

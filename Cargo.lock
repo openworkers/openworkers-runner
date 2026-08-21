@@ -3400,6 +3400,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-boa"
 version = "0.15.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-boa?tag=v0.15.0#9dec1ee79164faf7587184fbd4ab7f804de5f2dd"
 dependencies = [
  "boa_engine",
  "boa_gc",
@@ -3417,6 +3418,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-jsc"
 version = "0.15.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-jsc?tag=v0.15.0#2df2560f2c06a98be3164298fb72495beedcbf1a"
 dependencies = [
  "bytes",
  "env_logger",
@@ -3435,6 +3437,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-quickjs"
 version = "0.15.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-quickjs?tag=v0.15.0#ed14afecb1ed3f3c05b05fcc8908baecec88b05e"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -3451,6 +3454,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8"
 version = "0.15.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.0#f909ab07249a33cde58f41a0b41cf66e6a6aa5a8"
 dependencies = [
  "bytes",
  "encoding_rs",
@@ -3477,6 +3481,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.0#f909ab07249a33cde58f41a0b41cf66e6a6aa5a8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3486,6 +3491,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-wasm"
 version = "0.15.0"
+source = "git+https://github.com/openworkers/openworkers-runtime-wasm?tag=v0.15.0#e711d099a5b330a1071eb1f7417fb742fae7ea67"
 dependencies = [
  "bytes",
  "http-body-util",
