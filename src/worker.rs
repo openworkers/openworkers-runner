@@ -1,22 +1,61 @@
-//! Worker construction on top of the selected backend.
+//! Worker construction on top of the backends the build carries.
 //!
-//! Backends are mutually exclusive, so `Worker` is a plain alias and every call
-//! site is free of runtime dispatch.
+//! Which backend runs a worker follows from its code, not from the build: a
+//! runner carrying both a JavaScript engine and the wasm one serves both kinds,
+//! so `Worker` names whichever backend built it.
 
+#[cfg(feature = "_js")]
+use crate::runtime::JsWorker;
+#[cfg(feature = "wasm")]
+use crate::runtime::WasmWorker;
 use crate::store::{CodeType, WorkerWithBindings, bindings_to_infos};
 
 use openworkers_core::{
-    BindingInfo, OperationsHandle, RuntimeLimits, Script, TerminationReason, WorkerCode,
+    BindingInfo, Event, OperationsHandle, RuntimeLimits, Script, TerminationReason, WorkerCode,
 };
 
-pub use crate::runtime::Worker;
+/// A live worker, on the backend its code selected.
+pub enum Worker {
+    #[cfg(feature = "_js")]
+    Js(JsWorker),
+    #[cfg(feature = "wasm")]
+    Wasm(WasmWorker),
+}
+
+impl Worker {
+    pub async fn exec(&mut self, task: Event) -> Result<(), TerminationReason> {
+        match self {
+            #[cfg(feature = "_js")]
+            Self::Js(worker) => worker.exec(task).await,
+            #[cfg(feature = "wasm")]
+            Self::Wasm(worker) => worker.exec(task).await,
+        }
+    }
+}
 
 pub async fn create_worker(
     script: Script,
     limits: RuntimeLimits,
     ops: OperationsHandle,
 ) -> Result<Worker, TerminationReason> {
-    Worker::new_with_ops(script, Some(limits), ops).await
+    #[cfg(feature = "wasm")]
+    if script.code.is_wasm() {
+        let worker = WasmWorker::new_with_ops(script, Some(limits), ops).await?;
+
+        return Ok(Worker::Wasm(worker));
+    }
+
+    #[cfg(feature = "_js")]
+    {
+        let worker = JsWorker::new_with_ops(script, Some(limits), ops).await?;
+
+        Ok(Worker::Js(worker))
+    }
+
+    // A build without a JavaScript engine has the wasm one, which took the
+    // script above unless its code is something wasmtime cannot run
+    #[cfg(not(feature = "_js"))]
+    Err(unsupported("JavaScript"))
 }
 
 /// A worker ready to be built.
@@ -29,7 +68,7 @@ pub struct PreparedWorker {
     pub precompiled: Option<Vec<u8>>,
 }
 
-/// Prepare a worker, taking whatever the backend already compiled for this
+/// Prepare a worker, taking whatever its backend already compiled for this
 /// version out of its cache.
 ///
 /// V8 looks its bytecode up in `parse_code`, inside the script; wasm hands
@@ -39,16 +78,18 @@ pub fn prepare_worker(
     limits: &RuntimeLimits,
 ) -> Result<PreparedWorker, TerminationReason> {
     #[cfg(feature = "wasm")]
-    return crate::wasm_cache::prepare(data, limits);
+    if data.code_type == CodeType::Wasm {
+        return crate::wasm_cache::prepare(data, limits);
+    }
 
     #[cfg(not(feature = "wasm"))]
-    {
-        let _ = limits;
+    let _ = limits;
 
-        Ok(PreparedWorker {
-            script: prepare_script(data)?,
-        })
-    }
+    Ok(PreparedWorker {
+        script: prepare_script(data)?,
+        #[cfg(feature = "wasm")]
+        precompiled: None,
+    })
 }
 
 /// Build a worker from what `prepare_worker` found.
@@ -60,14 +101,14 @@ pub async fn create_cached_worker(
     version: i32,
 ) -> Result<Worker, TerminationReason> {
     #[cfg(feature = "wasm")]
-    return crate::wasm_cache::create_worker(prepared, limits, ops, worker_id, version).await;
+    if prepared.script.code.is_wasm() {
+        return crate::wasm_cache::create_worker(prepared, limits, ops, worker_id, version).await;
+    }
 
     #[cfg(not(feature = "wasm"))]
-    {
-        let _ = (worker_id, version);
+    let _ = (worker_id, version);
 
-        create_worker(prepared.script, limits, ops).await
-    }
+    create_worker(prepared.script, limits, ops).await
 }
 
 /// Parse worker code based on code type.

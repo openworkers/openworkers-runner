@@ -4,9 +4,10 @@
 //! Cranelift dominates a cold start, so the first start of a worker version
 //! stores the machine code in `code_cache` and later ones load that.
 
-use crate::runtime::Worker;
+use crate::runtime::WasmWorker;
 use crate::store::WorkerWithBindings;
 use crate::worker::PreparedWorker;
+use crate::worker::Worker;
 use openworkers_core::OperationsHandle;
 use openworkers_core::RuntimeLimits;
 use openworkers_core::TerminationReason;
@@ -79,12 +80,15 @@ pub async fn create_worker(
         // process compiled; nothing else writes to the cache.
         let component = unsafe { PrecompiledComponent::from_trusted_bytes(artifact) };
 
-        return Worker::new_precompiled(component, script, Some(limits), Some(ops)).await;
+        let worker =
+            WasmWorker::new_precompiled(component, script, Some(limits), Some(ops)).await?;
+
+        return Ok(Worker::Wasm(worker));
     }
 
     let engine_key = openworkers_runtime_wasm::compatibility_key(Some(limits.clone()))?;
 
-    let worker = Worker::new_with_ops(script, Some(limits), ops).await?;
+    let worker = WasmWorker::new_with_ops(script, Some(limits), ops).await?;
 
     match worker.serialize_component() {
         Ok(artifact) => {
@@ -106,5 +110,5 @@ pub async fn create_worker(
         }
     }
 
-    Ok(worker)
+    Ok(Worker::Wasm(worker))
 }

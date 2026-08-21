@@ -9,6 +9,8 @@ use crate::log::WorkerLogHandler;
 #[cfg(feature = "v8")]
 use crate::ops::LogTx;
 use crate::ops::{DbPool, RunnerOperations};
+#[cfg(feature = "v8")]
+use crate::store::CodeType;
 use crate::store::WorkerWithBindings;
 #[cfg(feature = "v8")]
 use crate::worker::create_worker;
@@ -316,79 +318,76 @@ pub async fn execute_task_await_v8_pooled(
         })
 }
 
-/// Execute a task in the worker pool and await its completion (legacy Worker-based).
+/// Execute a task in the worker pool and await its completion.
 ///
-/// NOTE: This creates a new V8 isolate per request (~3-5ms overhead).
-/// For V8 workloads, prefer `execute_task_await_v8_pooled` which reuses isolates.
+/// A JavaScript worker goes to `execute_task_await_v8_pooled` where that
+/// backend is in the build; every other worker gets a backend instance of its
+/// own, which for v8 would cost the ~3-5ms an isolate takes to create.
 ///
 /// Execution steps:
 /// 1. Parse script (fail fast)
 /// 2. Setup logging
-/// 3. Create V8 isolate with runtime limits
+/// 3. Create the worker with runtime limits
 /// 4. Execute task
 /// 5. Flush logs
 /// 6. Auto-release permit and notify drain monitor
 pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), TerminationReason> {
-    // Only v8 has an isolate pool to reuse
+    // Only v8 has an isolate pool to reuse, and only its own guests reach it
     #[cfg(feature = "v8")]
-    {
-        #[allow(clippy::needless_return)]
+    if config.worker_data.code_type != CodeType::Wasm {
         return execute_task_await_v8_pooled(config).await;
     }
 
-    #[cfg(not(feature = "v8"))]
-    {
-        let components = prepare_task_components(&config)
-            .ok_or_else(|| TerminationReason::Other("Failed to prepare script".to_string()))?;
+    let components = prepare_task_components(&config)
+        .ok_or_else(|| TerminationReason::Other("Failed to prepare script".to_string()))?;
 
-        let limits = config.limits;
-        let task = config.task;
-        let external_timeout_ms = config.external_timeout_ms;
-        let permit = config.permit;
-        let span = config.span.clone();
-        let worker_id = config.worker_data.id.clone();
-        let version = config.worker_data.version;
+    let limits = config.limits;
+    let task = config.task;
+    let external_timeout_ms = config.external_timeout_ms;
+    let permit = config.permit;
+    let span = config.span.clone();
+    let worker_id = config.worker_data.id.clone();
+    let version = config.worker_data.version;
 
-        WORKER_POOL
-            .spawn_await(move || {
-                async move {
-                    // Wrap permit to automatically notify drain monitor on drop
-                    let _permit = TaskPermit::new(permit);
+    WORKER_POOL
+        .spawn_await(move || {
+            async move {
+                // Wrap permit to automatically notify drain monitor on drop
+                let _permit = TaskPermit::new(permit);
 
-                    let mut worker = create_cached_worker(
-                        components.prepared,
-                        limits,
-                        components.ops,
-                        &worker_id,
-                        version,
-                    )
-                    .await
-                    .map_err(|err| {
-                        tracing::error!("Failed to create worker: {err:?}");
-                        err
-                    })?;
+                let mut worker = create_cached_worker(
+                    components.prepared,
+                    limits,
+                    components.ops,
+                    &worker_id,
+                    version,
+                )
+                .await
+                .map_err(|err| {
+                    tracing::error!("Failed to create worker: {err:?}");
+                    err
+                })?;
 
-                    let result =
-                        run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
+                let result =
+                    run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
 
-                    // CRITICAL: Flush logs before worker is dropped to prevent log loss
-                    components.log_handler.flush();
+                // CRITICAL: Flush logs before worker is dropped to prevent log loss
+                components.log_handler.flush();
 
-                    // TaskPermit is automatically dropped here, releasing the semaphore
-                    // and notifying the drain monitor
+                // TaskPermit is automatically dropped here, releasing the semaphore
+                // and notifying the drain monitor
 
-                    result
-                }
-                .instrument(span)
-            })
-            .await
-            .unwrap_or_else(|_| {
-                tracing::error!("Worker pool channel closed unexpectedly");
-                Err(TerminationReason::Other(
-                    "Worker pool channel closed".to_string(),
-                ))
-            })
-    }
+                result
+            }
+            .instrument(span)
+        })
+        .await
+        .unwrap_or_else(|_| {
+            tracing::error!("Worker pool channel closed unexpectedly");
+            Err(TerminationReason::Other(
+                "Worker pool channel closed".to_string(),
+            ))
+        })
 }
 
 /// Execute a task in the worker pool without waiting for completion (fire-and-forget).

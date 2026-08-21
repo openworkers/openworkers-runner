@@ -1,8 +1,8 @@
 //! The runtime backend selected at build time.
 //!
-//! Exactly one backend feature is enabled per build. This module re-exports its
-//! `Worker` and states what it supports, so the rest of the crate never repeats
-//! the cfg chain.
+//! Exactly one backend feature is enabled per build. This module re-exports the
+//! backend's worker type and states what it supports, so the rest of the crate
+//! never repeats the cfg chain.
 //!
 //!   cargo build --features v8       (recommended)
 //!   cargo build --features jsc
@@ -41,15 +41,15 @@ compile_error!("runtime backends are mutually exclusive: select exactly one");
 use openworkers_core::BindingType;
 
 #[cfg(feature = "boa")]
-pub use openworkers_runtime_boa::Worker;
+pub use openworkers_runtime_boa::Worker as JsWorker;
 #[cfg(feature = "jsc")]
-pub use openworkers_runtime_jsc::Worker;
+pub use openworkers_runtime_jsc::Worker as JsWorker;
 #[cfg(feature = "quickjs")]
-pub use openworkers_runtime_quickjs::Worker;
+pub use openworkers_runtime_quickjs::Worker as JsWorker;
 #[cfg(feature = "v8")]
-pub use openworkers_runtime_v8::Worker;
+pub use openworkers_runtime_v8::Worker as JsWorker;
 #[cfg(feature = "wasm")]
-pub use openworkers_runtime_wasm::WasmWorker as Worker;
+pub use openworkers_runtime_wasm::WasmWorker;
 
 #[cfg(feature = "v8")]
 pub use openworkers_runtime_v8::snapshot;
