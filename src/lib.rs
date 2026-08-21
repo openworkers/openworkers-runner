@@ -11,12 +11,14 @@ pub mod nats;
 pub mod ops;
 pub mod runtime;
 pub mod services;
-#[cfg(feature = "v8")]
+#[cfg(any(feature = "v8", feature = "wasm"))]
 pub mod snapshot_cache;
 pub mod store;
 pub mod task_executor;
 pub mod telemetry;
 pub mod utils;
+#[cfg(feature = "wasm")]
+pub mod wasm_cache;
 pub mod worker;
 pub mod worker_pool;
 

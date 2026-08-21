@@ -1,8 +1,8 @@
-//! In-memory LRU cache for worker snapshots.
+//! In-memory LRU cache for compiled worker code.
 //!
-//! Stores V8 snapshot blobs in memory, keyed by `(worker_id, version)`.
-//! This avoids disk I/O on every request and keeps snapshot bytes readily
-//! available for V8 isolate creation.
+//! Holds V8 code caches and precompiled wasm components, keyed by
+//! `(worker_id, version)`. Both spare a cold start the work of compiling code
+//! the runner has already compiled once.
 
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
@@ -102,6 +102,31 @@ pub fn put(worker_id: &str, version: i32, snapshot: &[u8]) {
     let key = (worker_id.to_string(), version);
 
     SNAPSHOT_CACHE.lock().unwrap().put(key, snapshot);
+}
+
+/// Id half of a precompiled wasm component's key.
+///
+/// `engine_key` names the engine settings the artifact was compiled with. It
+/// rides in the key rather than being checked on read, so an upgraded runtime
+/// stops looking the old entries up and the LRU evicts them. The prefix keeps
+/// components and V8 snapshots of the same worker apart.
+fn wasm_id(worker_id: &str, engine_key: &str) -> String {
+    format!("wasm:{engine_key}:{worker_id}")
+}
+
+/// Try to read a worker's precompiled wasm component from memory.
+pub fn get_wasm(worker_id: &str, version: i32, engine_key: &str) -> Option<Vec<u8>> {
+    let key = (wasm_id(worker_id, engine_key), version);
+
+    SNAPSHOT_CACHE.lock().unwrap().get(&key)
+}
+
+/// Store a worker's precompiled wasm component, unless it alone exceeds the
+/// byte budget.
+pub fn put_wasm(worker_id: &str, version: i32, engine_key: &str, component: &[u8]) {
+    let key = (wasm_id(worker_id, engine_key), version);
+
+    SNAPSHOT_CACHE.lock().unwrap().put(key, component);
 }
 
 #[cfg(test)]

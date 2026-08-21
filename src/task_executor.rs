@@ -10,7 +10,9 @@ use crate::log::WorkerLogHandler;
 use crate::ops::LogTx;
 use crate::ops::{DbPool, RunnerOperations};
 use crate::store::WorkerWithBindings;
-use crate::worker::{Worker, create_worker, prepare_script};
+#[cfg(feature = "v8")]
+use crate::worker::create_worker;
+use crate::worker::{Worker, create_cached_worker, prepare_script};
 use crate::worker_pool::{TaskPermit, WORKER_POOL};
 
 use openworkers_core::{Event, RuntimeLimits, Script, TerminationReason};
@@ -338,6 +340,8 @@ pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), Termi
         let external_timeout_ms = config.external_timeout_ms;
         let permit = config.permit;
         let span = config.span.clone();
+        let worker_id = config.worker_data.id.clone();
+        let version = config.worker_data.version;
 
         WORKER_POOL
             .spawn_await(move || {
@@ -345,12 +349,18 @@ pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), Termi
                     // Wrap permit to automatically notify drain monitor on drop
                     let _permit = TaskPermit::new(permit);
 
-                    let mut worker = create_worker(components.script, limits, components.ops)
-                        .await
-                        .map_err(|err| {
-                            tracing::error!("Failed to create worker: {err:?}");
-                            err
-                        })?;
+                    let mut worker = create_cached_worker(
+                        components.script,
+                        limits,
+                        components.ops,
+                        &worker_id,
+                        version,
+                    )
+                    .await
+                    .map_err(|err| {
+                        tracing::error!("Failed to create worker: {err:?}");
+                        err
+                    })?;
 
                     let result =
                         run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
@@ -388,12 +398,22 @@ pub fn execute_task(config: TaskExecutionConfig) {
     let task = config.task;
     let external_timeout_ms = config.external_timeout_ms;
     let permit = config.permit;
+    let worker_id = config.worker_data.id.clone();
+    let version = config.worker_data.version;
 
     WORKER_POOL.spawn(move || async move {
         // Wrap permit to automatically notify drain monitor on drop
         let _permit = TaskPermit::new(permit);
 
-        let mut worker = match create_worker(components.script, limits, components.ops).await {
+        let mut worker = match create_cached_worker(
+            components.script,
+            limits,
+            components.ops,
+            &worker_id,
+            version,
+        )
+        .await
+        {
             Ok(w) => w,
             Err(err) => {
                 tracing::error!("Failed to create worker: {err:?}");

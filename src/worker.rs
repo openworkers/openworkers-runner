@@ -19,6 +19,30 @@ pub async fn create_worker(
     Worker::new_with_ops(script, Some(limits), ops).await
 }
 
+/// Build a worker, reusing whatever the backend compiled for an earlier cold
+/// start of the same version.
+///
+/// V8 caches its bytecode in `parse_code`, before the script exists; wasm
+/// caches machine code, which only the constructor can take, so it happens
+/// here instead.
+pub async fn create_cached_worker(
+    script: Script,
+    limits: RuntimeLimits,
+    ops: OperationsHandle,
+    worker_id: &str,
+    version: i32,
+) -> Result<Worker, TerminationReason> {
+    #[cfg(feature = "wasm")]
+    return crate::wasm_cache::create_worker(script, limits, ops, worker_id, version).await;
+
+    #[cfg(not(feature = "wasm"))]
+    {
+        let _ = (worker_id, version);
+
+        create_worker(script, limits, ops).await
+    }
+}
+
 /// Parse worker code based on code type.
 ///
 /// For JS/TS workers on v8: checks the code cache (fast path) and returns cached
