@@ -21,7 +21,7 @@ COPY --from=planner /build/recipe.json recipe.json
 RUN --mount=type=cache,target=$CARGO_HOME/git \
     --mount=type=cache,target=$CARGO_HOME/registry \
     --mount=type=cache,target=/build/target \
-    FEATURES="$RUNTIME,database,multiplexing"; \
+    FEATURES="$RUNTIME,wasm,database,multiplexing"; \
     if [ "$TELEMETRY" = "true" ]; then FEATURES="$FEATURES,telemetry"; fi; \
     cargo chef cook --release --features=$FEATURES --recipe-path recipe.json
 
@@ -33,7 +33,7 @@ RUN touch $RUNTIME_SNAPSHOT_PATH
 RUN --mount=type=cache,target=$CARGO_HOME/git \
     --mount=type=cache,target=$CARGO_HOME/registry \
     --mount=type=cache,target=/build/target \
-    FEATURES="$RUNTIME,database,multiplexing"; \
+    FEATURES="$RUNTIME,wasm,database,multiplexing"; \
     if [ "$TELEMETRY" = "true" ]; then FEATURES="$FEATURES,telemetry"; fi; \
     # Only v8 has snapshots, and the empty file touched above stands in elsewhere
     if [ "$RUNTIME" = "v8" ]; then cargo run --release --features=$FEATURES --bin snapshot; fi && \
