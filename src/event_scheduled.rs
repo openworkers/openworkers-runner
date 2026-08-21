@@ -4,6 +4,7 @@ use crate::task_executor::{self, TaskExecutionConfig};
 use crate::worker::prepare_script;
 
 use openworkers_core::Event;
+use openworkers_core::TaskSource;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -124,8 +125,12 @@ fn run_scheduled(
 
     tokio::spawn(
         async move {
-            // Create task event with schedule source
-            let (event, res_rx) = Event::from_schedule(task_id, data.scheduled_time);
+            let source = TaskSource::Schedule {
+                time: data.scheduled_time,
+                cron: Some(data.cron),
+            };
+
+            let (event, res_rx) = Event::task(task_id, None, Some(source), 1);
 
             let config = TaskExecutionConfig {
                 worker_data,
