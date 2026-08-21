@@ -37,7 +37,12 @@ async fn eval_js(code: &str) -> String {
     let response = rx.await.expect("Should receive response");
     assert_eq!(response.status, 200);
 
-    let body = response.body.collect().await.expect("Should have body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("body stream failed")
+        .expect("Should have body");
     String::from_utf8(body.to_vec()).expect("Body should be valid UTF-8")
 }
 

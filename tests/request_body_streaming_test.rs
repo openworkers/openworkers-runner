@@ -62,7 +62,12 @@ async fn test_stream_body_as_text() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         assert_eq!(
             String::from_utf8_lossy(&body),
             "Got: Hello streaming world!"
@@ -104,7 +109,12 @@ async fn test_stream_body_as_json() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), "name=Alice,age=30");
     })
     .await;
@@ -145,7 +155,12 @@ async fn test_stream_body_as_arraybuffer() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), "len=5,sum=15");
     })
     .await;
@@ -191,7 +206,12 @@ async fn test_stream_body_with_reader() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), "chunks=3:one|two|three");
     })
     .await;
@@ -234,7 +254,12 @@ async fn test_stream_body_echo() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), "Hello World!");
     })
     .await;
@@ -340,7 +365,12 @@ async fn test_stream_body_empty() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), "length=0");
     })
     .await;
@@ -380,7 +410,12 @@ async fn test_stream_body_error() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         let body_text = String::from_utf8_lossy(&body);
 
         // Should either get partial data or error message
@@ -439,7 +474,12 @@ async fn test_stream_body_cancelled() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), "First: chunk1");
     })
     .await;
@@ -479,7 +519,12 @@ async fn test_stream_body_ignored() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), "Ignored");
     })
     .await;
@@ -533,7 +578,12 @@ async fn test_stream_body_large() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         let expected = format!("chunks={},bytes={}", num_chunks, num_chunks * chunk_size);
         assert_eq!(String::from_utf8_lossy(&body), expected);
     })
@@ -578,7 +628,12 @@ async fn test_stream_body_utf8_boundary() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), "chars=5:Hi 🎉!");
     })
     .await;
@@ -620,7 +675,12 @@ async fn test_stream_body_binary_nulls() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), "len=7,nulls=4");
     })
     .await;
@@ -660,7 +720,12 @@ async fn test_stream_body_double_consume() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         let text = String::from_utf8_lossy(&body);
         assert!(
             text.starts_with("OK:"),
@@ -736,7 +801,12 @@ async fn test_backpressure_input_slow_consumer() {
         let sent = producer.await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         let text = String::from_utf8_lossy(&body);
 
         // All 10 chunks should be sent and received
@@ -949,7 +1019,12 @@ async fn test_backpressure_minimal_buffer() {
         let sent = producer.await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
 
         assert_eq!(sent, 10);
         assert_eq!(String::from_utf8_lossy(&body), "chunks=10");
@@ -1010,7 +1085,12 @@ async fn test_backpressure_no_data_loss() {
         producer.await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         let text = String::from_utf8_lossy(&body);
 
         // Verify no data loss: sum should be 210
@@ -1057,7 +1137,12 @@ async fn test_bytes_body_still_works() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), "Got: Hello from Bytes!");
     })
     .await;
@@ -1087,7 +1172,12 @@ async fn test_none_body_still_works() {
         worker.exec(task).await.unwrap();
 
         let response = response_rx.await.unwrap();
-        let body = response.body.collect().await.unwrap();
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), "length=0");
     })
     .await;

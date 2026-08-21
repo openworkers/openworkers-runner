@@ -75,7 +75,12 @@ async fn test_pinned_simple_response() {
         let response = rx.await.expect("Should receive response");
         assert_eq!(response.status, 200);
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         println!("Response body: '{}' ({} bytes)", body_str, body.len());
@@ -129,7 +134,12 @@ async fn test_pinned_html_response() {
         let response = rx.await.expect("Should receive response");
         assert_eq!(response.status, 200);
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         println!("Response body: '{}' ({} bytes)", body_str, body.len());
@@ -181,7 +191,12 @@ async fn test_pinned_json_response() {
         let response = rx.await.expect("Should receive response");
         assert_eq!(response.status, 200);
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         println!("Response body: '{}' ({} bytes)", body_str, body.len());
@@ -239,7 +254,12 @@ async fn test_pinned_global_default_fetch() {
         let response = rx.await.expect("Should receive response");
         assert_eq!(response.status, 200);
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         println!(
@@ -300,7 +320,12 @@ async fn test_pinned_global_default_async_fetch() {
         let response = rx.await.expect("Should receive response");
         assert_eq!(response.status, 200);
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         println!(
@@ -389,7 +414,7 @@ async fn test_buffered_response_body_not_empty_production_scenario() {
 
     // THIS IS THE CRITICAL ASSERTION:
     // Without the fix, the body would be empty because the forwarding task was aborted
-    let body = response.body.collect().await;
+    let body = response.body.collect().await.expect("body stream failed");
 
     // Body should NOT be None/empty for a buffered response
     let body = body.expect("Body should exist for buffered response");
@@ -459,7 +484,12 @@ async fn test_json_response_body_not_empty_production_scenario() {
     let response = rx.await.expect("Should receive response");
     assert_eq!(response.status, 200);
 
-    let body = response.body.collect().await.expect("Body should exist");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("body stream failed")
+        .expect("Body should exist");
     let body_str = String::from_utf8_lossy(&body);
 
     println!(
@@ -536,7 +566,12 @@ async fn test_streaming_response_with_localset_alive() {
         let response = rx.await.expect("Should receive response");
         assert_eq!(response.status, 200);
 
-        let body = response.body.collect().await.expect("Body should exist");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Body should exist");
         let body_str = String::from_utf8_lossy(&body);
 
         println!(

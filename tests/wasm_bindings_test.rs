@@ -184,7 +184,12 @@ async fn a_wasm_worker_reaches_kv_database_and_storage() {
     worker.exec(event).await.expect("fetch should run");
 
     let response = rx.await.expect("worker should respond");
-    let body = response.body.collect().await.expect("response has a body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("body stream failed")
+        .expect("response has a body");
     let body = String::from_utf8_lossy(&body);
 
     assert_eq!(response.status, 200, "guest reported: {body}");

@@ -40,7 +40,12 @@ async fn test_simple_response() {
         let response = rx.await.expect("Should receive response");
         assert_eq!(response.status, 200);
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         assert_eq!(String::from_utf8_lossy(&body), "Hello, World!");
     })
     .await;
@@ -82,7 +87,12 @@ async fn test_json_response() {
             .map(|(_, v)| v.as_str());
         assert_eq!(content_type, Some("application/json"));
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
         assert!(body_str.contains("Hello"));
         assert!(body_str.contains("42"));
@@ -143,7 +153,12 @@ async fn test_request_method() {
         worker.exec(task).await.expect("Task should execute");
 
         let response = rx.await.expect("Should receive response");
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         assert_eq!(String::from_utf8_lossy(&body), "POST");
     })
     .await;
@@ -174,7 +189,12 @@ async fn test_request_url() {
         worker.exec(task).await.expect("Task should execute");
 
         let response = rx.await.expect("Should receive response");
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         assert_eq!(String::from_utf8_lossy(&body), "/api/test");
     })
     .await;
@@ -207,7 +227,12 @@ async fn test_async_handler() {
         worker.exec(task).await.expect("Task should execute");
 
         let response = rx.await.expect("Should receive response");
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
         assert!(body_str.contains("true"));
     })
@@ -317,7 +342,12 @@ async fn test_console_methods() {
         let response = rx.await.expect("Should receive response");
         assert_eq!(response.status, 200);
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         assert_eq!(String::from_utf8_lossy(&body), "logged");
     })
     .await;
@@ -366,7 +396,12 @@ async fn test_buffered_response_is_bytes_not_stream() {
             "Buffered response should be Bytes, not Stream"
         );
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         assert_eq!(String::from_utf8_lossy(&body), "Hello, buffered!");
     })
     .await;
@@ -412,7 +447,12 @@ async fn test_true_streaming_response_is_stream() {
             "True streaming response should be Stream"
         );
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         assert_eq!(String::from_utf8_lossy(&body), "Hello, streaming!");
     })
     .await;
@@ -445,7 +485,12 @@ async fn test_multiple_requests() {
             worker.exec(task).await.expect("Task should execute");
 
             let response = rx.await.expect("Should receive response");
-            let body = response.body.collect().await.expect("Should have body");
+            let body = response
+                .body
+                .collect()
+                .await
+                .expect("body stream failed")
+                .expect("Should have body");
             assert_eq!(String::from_utf8_lossy(&body), format!("Request {}", i));
         }
     })
@@ -477,7 +522,12 @@ async fn test_request_body_text() {
         worker.exec(task).await.expect("Task should execute");
 
         let response = rx.await.expect("Should receive response");
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         assert_eq!(String::from_utf8_lossy(&body), "Received: Hello, World!");
     })
     .await;
@@ -517,7 +567,12 @@ async fn test_request_body_json() {
         worker.exec(task).await.expect("Task should execute");
 
         let response = rx.await.expect("Should receive response");
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
         assert!(body_str.contains(r#""received":true"#));
         assert!(body_str.contains(r#""name":"test""#));
@@ -556,7 +611,12 @@ async fn test_request_headers() {
         worker.exec(task).await.expect("Task should execute");
 
         let response = rx.await.expect("Should receive response");
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
         assert!(body_str.contains("Bearer token123"));
         assert!(body_str.contains("custom-value"));

@@ -108,7 +108,12 @@ async fn the_selected_backend_serves_a_fetch() {
             let response = rx.await.expect("worker should respond");
             assert_eq!(response.status, 200);
 
-            let body = response.body.collect().await.expect("response has a body");
+            let body = response
+                .body
+                .collect()
+                .await
+                .expect("body stream failed")
+                .expect("response has a body");
             assert_eq!(String::from_utf8_lossy(&body), "OK");
         })
         .await;

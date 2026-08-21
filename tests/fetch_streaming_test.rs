@@ -79,7 +79,7 @@ async fn test_fetch_basic() {
 
         assert_eq!(response.status, 200, "Status should be 200");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response.body.collect().await.expect("body stream failed").expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         // httpbin.workers.rocks/get returns JSON with request info
@@ -158,7 +158,12 @@ async fn test_fetch_streaming_read() {
 
         assert_eq!(response.status, 200, "Status should be 200");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         // Parse the JSON response
@@ -234,7 +239,7 @@ async fn test_fetch_forward() {
 
         assert_eq!(response.status, 200, "Status should be 200");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response.body.collect().await.expect("body stream failed").expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         // httpbin.workers.rocks/headers returns request headers as JSON
@@ -308,7 +313,12 @@ async fn test_fetch_post_with_body() {
 
         assert_eq!(response.status, 200, "Status should be 200");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -363,7 +373,12 @@ async fn test_fetch_forward_streaming() {
         );
 
         // Consume the stream and verify we got 100 bytes
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         assert_eq!(
             body.len(),
             100,
@@ -414,7 +429,12 @@ async fn test_streaming_response_chunked() {
         assert!(response.body.is_stream(), "Should be streaming");
 
         // Consume the stream - /stream/3 returns 3 JSON objects
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         assert!(!body.is_empty(), "Should have received data");
     })
     .await;
@@ -461,7 +481,12 @@ async fn test_processed_fetch_response() {
 
         // Buffered responses (string body) use ResponseBody::Bytes, not Stream
         // Only true streaming responses (user-provided ReadableStream) use Stream
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
         assert!(body_str.starts_with("Processed:"), "Body: {}", body_str);
     })
@@ -538,7 +563,12 @@ async fn test_response_clone_after_fetch() {
 
         assert_eq!(response.status, 200, "Status should be 200");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -640,7 +670,12 @@ async fn test_response_clone_cache_pattern() {
 
         assert_eq!(response.status, 200, "Status should be 200");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -720,7 +755,12 @@ async fn test_fetch_with_streaming_body() {
 
         assert_eq!(response.status, 200);
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -824,7 +864,12 @@ async fn test_basic_stream_tee() {
 
         assert_eq!(response.status, 200, "Status should be 200");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -913,7 +958,12 @@ async fn test_basic_stream_no_tee() {
 
         assert_eq!(response.status, 200, "Status should be 200");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -993,7 +1043,12 @@ async fn test_tee_branch1_only() {
             .expect("Response timeout")
             .expect("Should receive response");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -1068,7 +1123,12 @@ async fn test_tee_branch2_only() {
             .expect("Response timeout")
             .expect("Should receive response");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -1145,7 +1205,12 @@ async fn test_stream_async_pull() {
             .expect("Response timeout")
             .expect("Should receive response");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -1232,7 +1297,12 @@ async fn test_stream_async_pull_nested() {
             .expect("Response timeout")
             .expect("Should receive response");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -1350,7 +1420,12 @@ async fn test_two_streams_shared_reader() {
             .expect("Response timeout")
             .expect("Should receive response");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -1461,7 +1536,12 @@ async fn test_inline_tee_logic() {
             .expect("Response timeout")
             .expect("Should receive response");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -1553,7 +1633,12 @@ async fn test_tee_debug() {
             .expect("Response timeout")
             .expect("Should receive response");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         println!("Debug output: {}", body_str);

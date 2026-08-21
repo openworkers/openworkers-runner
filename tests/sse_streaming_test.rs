@@ -106,7 +106,7 @@ async fn test_sse_streaming_with_start() {
         );
 
         // Collect all SSE events
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response.body.collect().await.expect("body stream failed").expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         // Verify we got all expected events
@@ -186,7 +186,12 @@ async fn test_sse_with_readable_stream_pull() {
         assert_eq!(response.status, 200);
         assert!(response.body.is_stream(), "Should be streaming");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         assert!(
@@ -341,7 +346,12 @@ async fn test_sse_longer_stream() {
         let response = rx.await.expect("Should receive response");
         assert_eq!(response.status, 200);
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         // Verify all 5 events received

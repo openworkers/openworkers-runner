@@ -77,7 +77,12 @@ async fn pinned_fetch(worker_id: &str, version: i32, script: Script) -> (u16, St
         .expect("Should receive response in time")
         .expect("Channel should not be closed");
 
-    let body = response.body.collect().await.expect("Should collect body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("body stream failed")
+        .expect("Should collect body");
     let body_str = String::from_utf8_lossy(&body).to_string();
 
     (response.status, body_str)
@@ -486,7 +491,12 @@ async fn pinned_fetch_with_ops(
         .expect("Should receive response in time")
         .expect("Channel should not be closed");
 
-    let body = response.body.collect().await.expect("Should collect body");
+    let body = response
+        .body
+        .collect()
+        .await
+        .expect("body stream failed")
+        .expect("Should collect body");
     let body_str = String::from_utf8_lossy(&body).to_string();
 
     (response.status, body_str)

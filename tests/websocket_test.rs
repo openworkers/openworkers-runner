@@ -97,7 +97,7 @@ async fn test_websocket_echo() {
             .expect("Response timeout")
             .expect("Should receive response");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response.body.collect().await.expect("body stream failed").expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         println!("Response status: {}", response.status);
@@ -154,7 +154,12 @@ async fn test_websocket_class_exists() {
             .expect("Response timeout")
             .expect("Should receive response");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
         println!("Body: {}", body_str);
 
@@ -221,7 +226,12 @@ async fn test_websocket_connect_error() {
             .expect("Response timeout")
             .expect("Should receive response");
 
-        let body = response.body.collect().await.expect("Should have body");
+        let body = response
+            .body
+            .collect()
+            .await
+            .expect("body stream failed")
+            .expect("Should have body");
         let body_str = String::from_utf8_lossy(&body);
 
         println!("Error response: {}", body_str);

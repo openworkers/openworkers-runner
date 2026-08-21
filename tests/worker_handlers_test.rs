@@ -61,7 +61,8 @@ async fn fetch_with_timeout(
         .body
         .collect()
         .await
-        .ok_or_else(|| "body collection failed".to_string())?;
+        .map_err(|e| format!("body collection failed: {e}"))?
+        .ok_or_else(|| "response has no body".to_string())?;
     let body_str = String::from_utf8_lossy(&body).to_string();
 
     Ok((response.status, body_str))
