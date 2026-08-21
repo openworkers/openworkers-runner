@@ -186,8 +186,3 @@ required-features = ["v8"]
 [[test]]
 name = "worker_tests"
 required-features = ["v8"]
-
-# The 152 alignment is unpublished, and cargo honours a patch only in the root manifest
-[patch.crates-io]
-openworkers-serde-v8 = { path = "../serde-v8" }
-openworkers-glue-v8 = { path = "../glue-v8" }

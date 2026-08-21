@@ -3336,6 +3336,8 @@ dependencies = [
 [[package]]
 name = "openworkers-glue-v8"
 version = "152.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d464ac710034f741dd0099884e1086ed39e2738501a892cd6fd3e236eedc2e7d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3499,6 +3501,8 @@ dependencies = [
 [[package]]
 name = "openworkers-serde-v8"
 version = "152.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0d3040092bb6890f54153965cda7c073c73a7cb6ff4afd5307c82f004d5c662"
 dependencies = [
  "bytes",
  "num-bigint 0.4.6",
