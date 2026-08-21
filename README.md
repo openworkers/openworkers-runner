@@ -25,7 +25,7 @@ handing the guest an undefined `env.ASSETS`.
 
 | Backend | Feature   | Guest             | Snapshot / code cache | env | Bindings | Known limitations |
 | ------- | --------- | ----------------- | --------------------- | --- | -------- | ----------------- |
-| V8      | `v8`      | JavaScript        | yes                   | yes | all      | none; the only backend with an isolate pool, warm reuse and websockets |
+| V8      | `v8`      | JavaScript        | yes                   | yes | all but images | no images handler on any backend; the only backend with an isolate pool, warm reuse and websockets |
 | JSC     | `jsc`     | JavaScript        | no                    | yes | none     | links the system JavaScriptCore; no websockets; a fresh context per request |
 | QuickJS | `quickjs` | JavaScript        | no                    | no  | none     | no `env`, no websockets; a fresh runtime per request |
 | Boa     | `boa`     | JavaScript        | no                    | no  | none     | no `env`, no websockets; a fresh context per request |
