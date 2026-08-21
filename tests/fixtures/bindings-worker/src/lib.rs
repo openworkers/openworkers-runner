@@ -13,17 +13,17 @@ wit_bindgen::generate!({
 });
 
 use exports::openworkers::worker::scheduled::Guest as ScheduledGuest;
-use exports::wasi::http::incoming_handler::Guest as HttpGuest;
+use exports::wasi::http0_2_0::incoming_handler::Guest as HttpGuest;
 use openworkers::bindings::database;
 use openworkers::bindings::database::SqlParam;
 use openworkers::bindings::database::SqlValue;
 use openworkers::bindings::kv;
 use openworkers::bindings::storage;
-use wasi::http::types::Fields;
-use wasi::http::types::IncomingRequest;
-use wasi::http::types::OutgoingBody;
-use wasi::http::types::OutgoingResponse;
-use wasi::http::types::ResponseOutparam;
+use wasi::http0_2_0::types::Fields;
+use wasi::http0_2_0::types::IncomingRequest;
+use wasi::http0_2_0::types::OutgoingBody;
+use wasi::http0_2_0::types::OutgoingResponse;
+use wasi::http0_2_0::types::ResponseOutparam;
 
 /// wasi:io caps `blocking-write-and-flush` at this many bytes
 const CHUNK_SIZE: usize = 4096;
