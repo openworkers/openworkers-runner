@@ -54,37 +54,100 @@ pub use openworkers_runtime_wasm::WasmWorker;
 #[cfg(feature = "v8")]
 pub use openworkers_runtime_v8::snapshot;
 
-/// Selected backend, for logs and error messages.
-#[cfg(feature = "v8")]
-pub const NAME: &str = "v8";
-#[cfg(feature = "jsc")]
-pub const NAME: &str = "jsc";
-#[cfg(feature = "quickjs")]
-pub const NAME: &str = "quickjs";
-#[cfg(feature = "boa")]
-pub const NAME: &str = "boa";
-#[cfg(feature = "wasm")]
-pub const NAME: &str = "wasm";
+/// Whether this build carries a JavaScript engine.
+pub const RUNS_JAVASCRIPT: bool = cfg!(feature = "_js");
 
-/// Binding types the backend serves: v8 builds an `env` object per binding,
-/// wasm links the `openworkers:bindings` WIT package, which has no assets or
-/// worker interface, and the rest ignore `Script::bindings`.
+/// Whether this build carries the wasm engine.
+pub const RUNS_WASM: bool = cfg!(feature = "wasm");
+
+/// Name of the selected JavaScript engine, for logs and error messages.
 #[cfg(feature = "v8")]
-pub const SUPPORTED_BINDINGS: &[BindingType] = &[
+const JS_NAME: &str = "v8";
+#[cfg(feature = "jsc")]
+const JS_NAME: &str = "jsc";
+#[cfg(feature = "quickjs")]
+const JS_NAME: &str = "quickjs";
+#[cfg(feature = "boa")]
+const JS_NAME: &str = "boa";
+/// A build with no JavaScript engine refuses a JavaScript worker before any
+/// backend is named, so this one only stands in for the format string.
+#[cfg(not(feature = "_js"))]
+const JS_NAME: &str = "javascript";
+
+/// Binding types v8 serves: it builds an `env` object per binding, while the
+/// other JavaScript engines ignore `Script::bindings`.
+#[cfg(feature = "v8")]
+const JS_BINDINGS: &[BindingType] = &[
     BindingType::Assets,
     BindingType::Storage,
     BindingType::Kv,
     BindingType::Database,
     BindingType::Worker,
 ];
-#[cfg(feature = "wasm")]
-pub const SUPPORTED_BINDINGS: &[BindingType] =
-    &[BindingType::Kv, BindingType::Database, BindingType::Storage];
-#[cfg(any(feature = "jsc", feature = "quickjs", feature = "boa"))]
-pub const SUPPORTED_BINDINGS: &[BindingType] = &[];
+#[cfg(not(feature = "v8"))]
+const JS_BINDINGS: &[BindingType] = &[];
 
-pub fn supports_binding(binding_type: BindingType) -> bool {
-    SUPPORTED_BINDINGS.contains(&binding_type)
+/// A backend a build can carry. Which one runs a worker follows from the code
+/// the worker was deployed with, not from the build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backend {
+    /// The selected JavaScript engine
+    Js,
+    /// Wasmtime, running `wasi:http/proxy` components
+    Wasm,
+}
+
+impl Backend {
+    /// Backend name, as it is written in logs and errors
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Js => JS_NAME,
+            Self::Wasm => "wasm",
+        }
+    }
+
+    /// Binding types the backend serves. Wasm links the `openworkers:bindings`
+    /// WIT package, which has no assets or worker interface.
+    pub const fn supported_bindings(self) -> &'static [BindingType] {
+        match self {
+            Self::Js => JS_BINDINGS,
+            Self::Wasm => &[BindingType::Kv, BindingType::Database, BindingType::Storage],
+        }
+    }
+
+    pub fn supports_binding(self, binding_type: BindingType) -> bool {
+        self.supported_bindings().contains(&binding_type)
+    }
+
+    /// Whether the backend reads `Script::env` and exposes the variables to the
+    /// guest.
+    pub const fn supports_env(self) -> bool {
+        match self {
+            Self::Js => cfg!(any(feature = "v8", feature = "jsc")),
+            Self::Wasm => true,
+        }
+    }
+
+    /// What a worker on this backend can rely on.
+    fn capabilities(self) -> String {
+        let bindings: Vec<&str> = self
+            .supported_bindings()
+            .iter()
+            .copied()
+            .map(binding_type_name)
+            .collect();
+
+        format!(
+            "{} (env={}, bindings={})",
+            self.name(),
+            self.supports_env(),
+            if bindings.is_empty() {
+                "none".to_string()
+            } else {
+                bindings.join("/")
+            },
+        )
+    }
 }
 
 /// Binding type as it is named in logs and errors
@@ -99,32 +162,17 @@ pub fn binding_type_name(binding_type: BindingType) -> &'static str {
     }
 }
 
-/// Whether the backend reads `Script::env` and exposes the variables to the guest.
-pub const SUPPORTS_ENV: bool = cfg!(any(feature = "v8", feature = "jsc", feature = "wasm"));
-
-/// Whether the guest is JavaScript; the wasm backend runs components instead.
-pub const RUNS_JAVASCRIPT: bool = cfg!(feature = "_js");
-
-/// One line naming the backend and what a worker can rely on.
+/// One line naming the backends in this build and what each of them serves.
 pub fn capabilities() -> String {
-    let bindings: Vec<&str> = SUPPORTED_BINDINGS
-        .iter()
-        .copied()
-        .map(binding_type_name)
-        .collect();
+    let mut backends: Vec<String> = Vec::new();
 
-    format!(
-        "runtime backend: {NAME} (guest={}, env={}, bindings={})",
-        if RUNS_JAVASCRIPT {
-            "javascript"
-        } else {
-            "wasm component"
-        },
-        SUPPORTS_ENV,
-        if bindings.is_empty() {
-            "none".to_string()
-        } else {
-            bindings.join("/")
-        },
-    )
+    if RUNS_JAVASCRIPT {
+        backends.push(Backend::Js.capabilities());
+    }
+
+    if RUNS_WASM {
+        backends.push(Backend::Wasm.capabilities());
+    }
+
+    format!("runtime backends: {}", backends.join(", "))
 }

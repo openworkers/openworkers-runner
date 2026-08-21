@@ -29,6 +29,14 @@ fn native_code_type() -> CodeType {
     }
 }
 
+fn native_backend() -> runtime::Backend {
+    if runtime::RUNS_JAVASCRIPT {
+        runtime::Backend::Js
+    } else {
+        runtime::Backend::Wasm
+    }
+}
+
 fn assets_binding() -> Binding {
     Binding::Assets {
         key: "ASSETS".to_string(),
@@ -59,7 +67,7 @@ fn a_worker_without_bindings_is_accepted() {
 fn bindings_are_refused_unless_the_backend_implements_their_type() {
     let result = prepare_script(&worker("", native_code_type(), vec![assets_binding()]));
 
-    if runtime::supports_binding(BindingType::Assets) {
+    if native_backend().supports_binding(BindingType::Assets) {
         let script = result.expect("the backend wires assets bindings");
         assert_eq!(script.bindings.len(), 1);
     } else {

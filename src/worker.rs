@@ -4,6 +4,7 @@
 //! runner carrying both a JavaScript engine and the wasm one serves both kinds,
 //! so `Worker` names whichever backend built it.
 
+use crate::runtime::Backend;
 #[cfg(feature = "_js")]
 use crate::runtime::JsWorker;
 #[cfg(feature = "wasm")]
@@ -111,12 +112,12 @@ pub async fn create_cached_worker(
     create_worker(prepared.script, limits, ops).await
 }
 
-/// Parse worker code based on code type.
+/// Parse worker code based on code type, naming the backend that will run it.
 ///
 /// For JS/TS workers on v8: checks the code cache (fast path) and returns cached
 /// bytecode. On cache miss, transpiles the source and returns JS - a code cache
 /// entry is created in the background after first successful execution.
-fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason> {
+fn parse_code(data: &WorkerWithBindings) -> Result<(Backend, WorkerCode), TerminationReason> {
     match data.code_type {
         CodeType::Javascript | CodeType::Typescript => {
             #[cfg(feature = "_js")]
@@ -129,7 +130,7 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
                         data.version,
                         snapshot.len()
                     );
-                    return Ok(WorkerCode::snapshot(snapshot));
+                    return Ok((Backend::Js, WorkerCode::snapshot(snapshot)));
                 }
 
                 #[cfg(feature = "v8")]
@@ -153,7 +154,7 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
                         ))
                     })?;
 
-                Ok(WorkerCode::js(transpiled))
+                Ok((Backend::Js, WorkerCode::js(transpiled)))
             }
 
             #[cfg(not(feature = "_js"))]
@@ -162,7 +163,7 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
         CodeType::Wasm => {
             #[cfg(feature = "wasm")]
             {
-                Ok(WorkerCode::wasm(data.code.clone()))
+                Ok((Backend::Wasm, WorkerCode::wasm(data.code.clone())))
             }
 
             #[cfg(not(feature = "wasm"))]
@@ -171,7 +172,7 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
         CodeType::Snapshot => {
             #[cfg(feature = "v8")]
             {
-                Ok(WorkerCode::snapshot(data.code.clone()))
+                Ok((Backend::Js, WorkerCode::snapshot(data.code.clone())))
             }
 
             #[cfg(not(feature = "v8"))]
@@ -181,19 +182,15 @@ fn parse_code(data: &WorkerWithBindings) -> Result<WorkerCode, TerminationReason
 }
 
 fn unsupported(code_type: &str) -> TerminationReason {
-    TerminationReason::InitializationError(format!(
-        "the {} backend cannot run {} workers",
-        crate::runtime::NAME,
-        code_type
-    ))
+    TerminationReason::InitializationError(format!("this build cannot run {code_type} workers"))
 }
 
-/// Refuse a worker declaring a binding the backend cannot serve, or the guest
+/// Refuse a worker declaring a binding its backend cannot serve, or the guest
 /// reads `env.ASSETS` as undefined and serves a broken page instead of an error.
-fn check_bindings(bindings: &[BindingInfo]) -> Result<(), TerminationReason> {
+fn check_bindings(backend: Backend, bindings: &[BindingInfo]) -> Result<(), TerminationReason> {
     let unsupported: Vec<&BindingInfo> = bindings
         .iter()
-        .filter(|b| !crate::runtime::supports_binding(b.binding_type))
+        .filter(|b| !backend.supports_binding(b.binding_type))
         .collect();
 
     if unsupported.is_empty() {
@@ -215,7 +212,7 @@ fn check_bindings(bindings: &[BindingInfo]) -> Result<(), TerminationReason> {
 
     Err(TerminationReason::InitializationError(format!(
         "the {} backend does not implement {} bindings, declared as {}",
-        crate::runtime::NAME,
+        backend.name(),
         types.join("/"),
         names.join(", ")
     )))
@@ -223,7 +220,9 @@ fn check_bindings(bindings: &[BindingInfo]) -> Result<(), TerminationReason> {
 
 /// Prepare a Script from WorkerWithBindings
 pub fn prepare_script(data: &WorkerWithBindings) -> Result<Script, TerminationReason> {
-    script_with_code(data, parse_code(data)?)
+    let (backend, code) = parse_code(data)?;
+
+    script_with_code(data, backend, code)
 }
 
 /// A Script for a cold start that will load a precompiled component: it leaves
@@ -231,23 +230,24 @@ pub fn prepare_script(data: &WorkerWithBindings) -> Result<Script, TerminationRe
 /// them and copying them per request is what the cache is there to avoid.
 #[cfg(feature = "wasm")]
 pub(crate) fn script_without_code(data: &WorkerWithBindings) -> Result<Script, TerminationReason> {
-    script_with_code(data, WorkerCode::wasm(Vec::new()))
+    script_with_code(data, Backend::Wasm, WorkerCode::wasm(Vec::new()))
 }
 
 fn script_with_code(
     data: &WorkerWithBindings,
+    backend: Backend,
     code: WorkerCode,
 ) -> Result<Script, TerminationReason> {
     let binding_infos = bindings_to_infos(&data.bindings);
 
-    check_bindings(&binding_infos)?;
+    check_bindings(backend, &binding_infos)?;
 
-    if !crate::runtime::SUPPORTS_ENV && !data.env.is_empty() {
+    if !backend.supports_env() && !data.env.is_empty() {
         tracing::warn!(
             "worker={} declares {} env variables, the {} backend exposes none",
             crate::utils::short_id(&data.id),
             data.env.len(),
-            crate::runtime::NAME
+            backend.name()
         );
     }
 
