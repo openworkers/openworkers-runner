@@ -8,28 +8,33 @@ This runner manages instances of [OpenWorkers Runtime](https://github.com/openwo
 
 ### Build
 
-One backend per build. Selecting none, or more than one, is a compile error.
+One JavaScript engine per build, and `wasm` on top of it if the runner should
+also serve components. Selecting no backend, or two JavaScript engines, is a
+compile error.
 
 ```bash
-cargo build --release --features v8        # recommended for production
+cargo build --release --features v8,wasm   # recommended for production
 cargo build --release --features jsc
 cargo build --release --features quickjs
 cargo build --release --features boa
 cargo build --release --features wasm
 ```
 
+A worker goes to the backend its code type names, so a build carrying both
+serves JavaScript workers and components from the same process.
+
 Every backend serves `fetch` and, through `Event::Task` with a schedule source,
 `scheduled`. Bindings are supported per type: the runner refuses a worker that
 declares a binding its backend cannot serve, naming the types, rather than
 handing the guest an undefined `env.ASSETS`.
 
-| Backend | Feature   | Guest             | Snapshot / code cache | env | Bindings | Known limitations |
-| ------- | --------- | ----------------- | --------------------- | --- | -------- | ----------------- |
-| V8      | `v8`      | JavaScript        | yes                   | yes | all but images | no images handler on any backend; the only backend with an isolate pool, warm reuse and websockets |
-| JSC     | `jsc`     | JavaScript        | no                    | yes | none     | links the system JavaScriptCore; no websockets; a fresh context per request |
-| QuickJS | `quickjs` | JavaScript        | no                    | no  | none     | no `env`, no websockets; a fresh runtime per request |
-| Boa     | `boa`     | JavaScript        | no                    | no  | none     | no `env`, no websockets; a fresh context per request |
-| WASM    | `wasm`    | `wasi:http/proxy` | no                    | yes | kv, database, storage | components only, JavaScript workers are refused; env arrives as WASI vars, not `env`; no assets or worker bindings |
+| Backend | Feature   | Code type            | Snapshot / code cache | env | Bindings | Known limitations |
+| ------- | --------- | -------------------- | --------------------- | --- | -------- | ----------------- |
+| V8      | `v8`      | javascript, snapshot | yes                   | yes | all but images | no images handler on any backend; the only backend with an isolate pool, warm reuse and websockets |
+| JSC     | `jsc`     | javascript           | no                    | yes | none     | links the system JavaScriptCore; no websockets; a fresh context per request |
+| QuickJS | `quickjs` | javascript           | no                    | no  | none     | no `env`, no websockets; a fresh runtime per request |
+| Boa     | `boa`     | javascript           | no                    | no  | none     | no `env`, no websockets; a fresh context per request |
+| WASM    | `wasm`    | wasm                 | no                    | yes | kv, database, storage | `wasi:http/proxy` components only; env arrives as WASI vars, not `env`; no assets or worker bindings |
 
 The wasm guest reaches its bindings through the `openworkers:bindings` WIT
 package rather than an `env` object: every call names its binding, and the

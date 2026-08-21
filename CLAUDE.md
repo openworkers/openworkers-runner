@@ -38,12 +38,14 @@ Without this, tests will fail with cryptic errors like:
 ## Running tests
 
 ```bash
-cargo test --features v8              # all tests
-cargo test --features v8 test_name    # specific test
+cargo test --features v8,wasm              # all tests
+cargo test --features v8,wasm test_name    # specific test
 ```
+
+The wasm tests build their guest, so they need the `wasm32-wasip2` target.
 
 ## Feature flags
 
 - `v8` - Enable V8 runtime (default for development)
-- `wasm` - Enable WASM runtime
+- `wasm` - Enable WASM runtime, alongside whichever JavaScript engine is selected
 - `database` - Enable database bindings (postgate)
