@@ -12,10 +12,10 @@ use crate::ops::{DbPool, RunnerOperations};
 use crate::store::WorkerWithBindings;
 #[cfg(feature = "v8")]
 use crate::worker::create_worker;
-use crate::worker::{Worker, create_cached_worker, prepare_script};
+use crate::worker::{PreparedWorker, Worker, create_cached_worker, prepare_worker};
 use crate::worker_pool::{TaskPermit, WORKER_POOL};
 
-use openworkers_core::{Event, RuntimeLimits, Script, TerminationReason};
+use openworkers_core::{Event, RuntimeLimits, TerminationReason};
 
 /// V8 execution mode - controls how isolates are managed
 #[cfg(feature = "v8")]
@@ -83,7 +83,7 @@ impl TaskExecutionConfig {
 
 /// Components needed for task execution, separated for ownership management.
 struct TaskComponents {
-    script: Script,
+    prepared: PreparedWorker,
     ops: Arc<RunnerOperations>,
     log_handler: WorkerLogHandler,
     /// Raw log sender for warm hit callback (to update cached ops)
@@ -98,8 +98,8 @@ struct TaskComponents {
 ///
 /// Returns None if script preparation fails (error is logged).
 fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponents> {
-    let script = match prepare_script(&config.worker_data) {
-        Ok(s) => s,
+    let prepared = match prepare_worker(&config.worker_data, &config.limits) {
+        Ok(prepared) => prepared,
         Err(err) => {
             tracing::error!("Failed to prepare script: {err:?}");
             return None;
@@ -119,7 +119,7 @@ fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponent
     );
 
     Some(TaskComponents {
-        script,
+        prepared,
         ops,
         log_handler,
         #[cfg(feature = "v8")]
@@ -182,7 +182,12 @@ pub async fn execute_task_await_v8_pooled(
         .ok_or_else(|| TerminationReason::Other("Failed to prepare script".to_string()))?;
 
     // Capture JS code for background code cache creation (before script is moved)
-    let js_code_for_snapshot = components.script.code.as_js().map(|s| s.to_string());
+    let js_code_for_snapshot = components
+        .prepared
+        .script
+        .code
+        .as_js()
+        .map(|s| s.to_string());
     let worker_id_for_snapshot = config.worker_data.id.clone();
     let version_for_snapshot = config.worker_data.version;
 
@@ -227,7 +232,7 @@ pub async fn execute_task_await_v8_pooled(
                                 owner_id,
                                 worker_id: worker_id_for_snapshot.clone(),
                                 version: version_for_snapshot,
-                                script: components.script,
+                                script: components.prepared.script,
                                 ops: components.ops,
                                 task,
                                 on_warm_hit: Some(on_warm_hit),
@@ -252,12 +257,13 @@ pub async fn execute_task_await_v8_pooled(
                         })?;
 
                         // Fresh isolate per request (no caching)
-                        let mut worker = create_worker(components.script, limits, components.ops)
-                            .await
-                            .map_err(|err| {
-                                tracing::error!("Failed to create worker: {err:?}");
-                                err
-                            })?;
+                        let mut worker =
+                            create_worker(components.prepared.script, limits, components.ops)
+                                .await
+                                .map_err(|err| {
+                                    tracing::error!("Failed to create worker: {err:?}");
+                                    err
+                                })?;
 
                         worker.exec(task).await
                     }
@@ -350,7 +356,7 @@ pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), Termi
                     let _permit = TaskPermit::new(permit);
 
                     let mut worker = create_cached_worker(
-                        components.script,
+                        components.prepared,
                         limits,
                         components.ops,
                         &worker_id,
@@ -406,7 +412,7 @@ pub fn execute_task(config: TaskExecutionConfig) {
         let _permit = TaskPermit::new(permit);
 
         let mut worker = match create_cached_worker(
-            components.script,
+            components.prepared,
             limits,
             components.ops,
             &worker_id,

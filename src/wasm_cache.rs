@@ -5,9 +5,10 @@
 //! stores the machine code in `snapshot_cache` and later ones load that.
 
 use crate::runtime::Worker;
+use crate::store::WorkerWithBindings;
+use crate::worker::PreparedWorker;
 use openworkers_core::OperationsHandle;
 use openworkers_core::RuntimeLimits;
-use openworkers_core::Script;
 use openworkers_core::TerminationReason;
 use openworkers_runtime_wasm::PrecompiledComponent;
 use std::sync::atomic::AtomicU64;
@@ -20,29 +21,59 @@ pub fn hits() -> u64 {
     HITS.load(Ordering::Relaxed)
 }
 
-/// Build a worker, reusing the component compiled for an earlier cold start of
-/// the same version.
+/// Look the worker's component up before its script is built, so a hit never
+/// copies the guest bytes the precompiled constructor would ignore.
+pub fn prepare(
+    data: &WorkerWithBindings,
+    limits: &RuntimeLimits,
+) -> Result<PreparedWorker, TerminationReason> {
+    let engine_key = openworkers_runtime_wasm::compatibility_key(Some(limits.clone()))?;
+
+    let Some(artifact) = crate::snapshot_cache::get_wasm(&data.id, data.version, &engine_key)
+    else {
+        tracing::debug!(
+            "component cache MISS: worker={}, version={}",
+            crate::utils::short_id(&data.id),
+            data.version
+        );
+
+        return Ok(PreparedWorker {
+            script: crate::worker::prepare_script(data)?,
+            precompiled: None,
+        });
+    };
+
+    tracing::debug!(
+        "component cache HIT: worker={}, version={}, size={}",
+        crate::utils::short_id(&data.id),
+        data.version,
+        artifact.len()
+    );
+
+    Ok(PreparedWorker {
+        script: crate::worker::script_without_code(data)?,
+        precompiled: Some(artifact),
+    })
+}
+
+/// Build the worker `prepare` found.
 ///
 /// A miss compiles as usual, then keeps the machine code the worker is already
-/// holding: serializing it costs about 220 us, against the 13 ms compiling the
+/// holding: serializing it costs about 250 us, against the 13 ms compiling the
 /// guest a second time would.
 pub async fn create_worker(
-    script: Script,
+    prepared: PreparedWorker,
     limits: RuntimeLimits,
     ops: OperationsHandle,
     worker_id: &str,
     version: i32,
 ) -> Result<Worker, TerminationReason> {
-    let engine_key = openworkers_runtime_wasm::compatibility_key(Some(limits.clone()))?;
+    let PreparedWorker {
+        script,
+        precompiled,
+    } = prepared;
 
-    if let Some(artifact) = crate::snapshot_cache::get_wasm(worker_id, version, &engine_key) {
-        tracing::debug!(
-            "component cache HIT: worker={}, version={}, size={}",
-            crate::utils::short_id(worker_id),
-            version,
-            artifact.len()
-        );
-
+    if let Some(artifact) = precompiled {
         HITS.fetch_add(1, Ordering::Relaxed);
 
         // SAFETY: the artifact was serialized below from a component this
@@ -52,11 +83,7 @@ pub async fn create_worker(
         return Worker::new_precompiled(component, script, Some(limits), Some(ops)).await;
     }
 
-    tracing::debug!(
-        "component cache MISS: worker={}, version={}",
-        crate::utils::short_id(worker_id),
-        version
-    );
+    let engine_key = openworkers_runtime_wasm::compatibility_key(Some(limits.clone()))?;
 
     let worker = Worker::new_with_ops(script, Some(limits), ops).await?;
 

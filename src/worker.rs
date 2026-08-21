@@ -19,27 +19,54 @@ pub async fn create_worker(
     Worker::new_with_ops(script, Some(limits), ops).await
 }
 
-/// Build a worker, reusing whatever the backend compiled for an earlier cold
-/// start of the same version.
+/// A worker ready to be built.
+pub struct PreparedWorker {
+    pub script: Script,
+    /// The component the wasm backend compiled for an earlier cold start of
+    /// this version. `script` then carries no guest bytes, because the
+    /// precompiled constructor does not read them.
+    #[cfg(feature = "wasm")]
+    pub precompiled: Option<Vec<u8>>,
+}
+
+/// Prepare a worker, taking whatever the backend already compiled for this
+/// version out of its cache.
 ///
-/// V8 caches its bytecode in `parse_code`, before the script exists; wasm
-/// caches machine code, which only the constructor can take, so it happens
-/// here instead.
+/// V8 looks its bytecode up in `parse_code`, inside the script; wasm hands
+/// back machine code alongside it, because only the constructor can take that.
+pub fn prepare_worker(
+    data: &WorkerWithBindings,
+    limits: &RuntimeLimits,
+) -> Result<PreparedWorker, TerminationReason> {
+    #[cfg(feature = "wasm")]
+    return crate::wasm_cache::prepare(data, limits);
+
+    #[cfg(not(feature = "wasm"))]
+    {
+        let _ = limits;
+
+        Ok(PreparedWorker {
+            script: prepare_script(data)?,
+        })
+    }
+}
+
+/// Build a worker from what `prepare_worker` found.
 pub async fn create_cached_worker(
-    script: Script,
+    prepared: PreparedWorker,
     limits: RuntimeLimits,
     ops: OperationsHandle,
     worker_id: &str,
     version: i32,
 ) -> Result<Worker, TerminationReason> {
     #[cfg(feature = "wasm")]
-    return crate::wasm_cache::create_worker(script, limits, ops, worker_id, version).await;
+    return crate::wasm_cache::create_worker(prepared, limits, ops, worker_id, version).await;
 
     #[cfg(not(feature = "wasm"))]
     {
         let _ = (worker_id, version);
 
-        create_worker(script, limits, ops).await
+        create_worker(prepared.script, limits, ops).await
     }
 }
 
@@ -155,7 +182,21 @@ fn check_bindings(bindings: &[BindingInfo]) -> Result<(), TerminationReason> {
 
 /// Prepare a Script from WorkerWithBindings
 pub fn prepare_script(data: &WorkerWithBindings) -> Result<Script, TerminationReason> {
-    let code = parse_code(data)?;
+    script_with_code(data, parse_code(data)?)
+}
+
+/// A Script for a cold start that will load a precompiled component: it leaves
+/// the guest bytes out, because `WasmWorker::new_precompiled` does not read
+/// them and copying them per request is what the cache is there to avoid.
+#[cfg(feature = "wasm")]
+pub(crate) fn script_without_code(data: &WorkerWithBindings) -> Result<Script, TerminationReason> {
+    script_with_code(data, WorkerCode::wasm(Vec::new()))
+}
+
+fn script_with_code(
+    data: &WorkerWithBindings,
+    code: WorkerCode,
+) -> Result<Script, TerminationReason> {
     let binding_infos = bindings_to_infos(&data.bindings);
 
     check_bindings(&binding_infos)?;

@@ -8,15 +8,16 @@
 use openworkers_core::{
     DatabaseOp, DatabaseResult, Event, HttpMethod, HttpRequest, KvOp, KvResult, OpFuture,
     OperationsHandler, RequestBody, RuntimeLimits, SqlParam, SqlPrimitive, StorageOp,
-    StorageResult,
+    StorageResult, WorkerCode,
 };
-use openworkers_runner::snapshot_cache;
 use openworkers_runner::store::{
     Binding, CodeType, DatabaseConfig, DatabaseProvider, KvConfig, StorageConfig,
     WorkerWithBindings,
 };
 use openworkers_runner::task_executor::TaskExecutionConfig;
-use openworkers_runner::worker::{create_cached_worker, create_worker, prepare_script};
+use openworkers_runner::worker::{
+    create_cached_worker, create_worker, prepare_script, prepare_worker,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -266,9 +267,16 @@ async fn a_second_cold_start_loads_the_precompiled_component() {
 
     let first = serve_one_request(&data, limits.clone()).await;
 
+    let prepared = prepare_worker(&data, &limits).expect("preparing should work");
+
     assert!(
-        snapshot_cache::get_wasm(&data.id, data.version, &engine_key(&limits)).is_some(),
+        prepared.precompiled.is_some(),
         "the first cold start should have cached its component"
+    );
+
+    assert!(
+        matches!(&prepared.script.code, WorkerCode::WebAssembly(bytes) if bytes.is_empty()),
+        "a cache hit should not carry a copy of the guest bytes"
     );
 
     let second = serve_one_request(&data, limits.clone()).await;
@@ -284,10 +292,10 @@ async fn a_second_cold_start_loads_the_precompiled_component() {
 
 /// One cold start, from the worker row to the response body
 async fn serve_one_request(data: &WorkerWithBindings, limits: RuntimeLimits) -> String {
-    let script = prepare_script(data).expect("the wasm backend serves these binding types");
+    let prepared = prepare_worker(data, &limits).expect("the wasm backend serves these bindings");
     let ops = Arc::new(RecordingOps::default());
 
-    let mut worker = create_cached_worker(script, limits, ops, &data.id, data.version)
+    let mut worker = create_cached_worker(prepared, limits, ops, &data.id, data.version)
         .await
         .expect("worker should initialize");
 
@@ -312,9 +320,4 @@ async fn serve_one_request(data: &WorkerWithBindings, limits: RuntimeLimits) -> 
     assert_eq!(response.status, 200, "guest reported: {body}");
 
     body
-}
-
-fn engine_key(limits: &RuntimeLimits) -> String {
-    openworkers_runtime_wasm::compatibility_key(Some(limits.clone()))
-        .expect("the engine should build")
 }
