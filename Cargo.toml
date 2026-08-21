@@ -75,7 +75,7 @@ openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-run
 openworkers-runtime-jsc = { git = "https://github.com/openworkers/openworkers-runtime-jsc", tag = "v0.15.0", optional = true }
 openworkers-runtime-quickjs = { git = "https://github.com/openworkers/openworkers-runtime-quickjs", tag = "v0.15.0", optional = true }
 openworkers-runtime-boa = { git = "https://github.com/openworkers/openworkers-runtime-boa", tag = "v0.15.0", optional = true }
-openworkers-runtime-wasm = { git = "https://github.com/openworkers/openworkers-runtime-wasm", tag = "v0.15.0", optional = true }
+openworkers-runtime-wasm = { git = "https://github.com/openworkers/openworkers-runtime-wasm", tag = "v0.15.1", optional = true }
 
 # Database bindings (optional)
 # postgate = { path = "../postgate", default-features = false, optional = true }

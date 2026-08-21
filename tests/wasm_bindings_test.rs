@@ -123,7 +123,7 @@ async fn a_second_cold_start_loads_the_precompiled_component() {
     let prepared = prepare_worker(&data, &limits).expect("preparing should work");
 
     assert!(
-        prepared.precompiled.is_some(),
+        prepared.prepared.is_some(),
         "the first cold start should have cached its component"
     );
 

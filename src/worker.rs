@@ -64,11 +64,11 @@ pub async fn create_worker(
 /// A worker ready to be built.
 pub struct PreparedWorker {
     pub script: Script,
-    /// The component the wasm backend compiled for an earlier cold start of
-    /// this version. `script` then carries no guest bytes, because the
-    /// precompiled constructor does not read them.
+    /// The live component the wasm backend prepared for this version.
+    /// `script` then carries no guest bytes, because assembly does not read
+    /// them.
     #[cfg(feature = "wasm")]
-    pub precompiled: Option<Vec<u8>>,
+    pub prepared: Option<std::sync::Arc<openworkers_runtime_wasm::PreparedComponent>>,
 }
 
 /// Prepare a worker, taking whatever its backend already compiled for this
@@ -91,7 +91,7 @@ pub fn prepare_worker(
     Ok(PreparedWorker {
         script: prepare_script(data)?,
         #[cfg(feature = "wasm")]
-        precompiled: None,
+        prepared: None,
     })
 }
 
