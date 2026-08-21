@@ -250,6 +250,7 @@ pub fn bind_sql_param<'q>(
                 SqlPrimitive::Int(_) => Some("int"),
                 SqlPrimitive::Float(_) => Some("float"),
                 SqlPrimitive::String(_) => Some("string"),
+                SqlPrimitive::Bytes(_) => Some("bytes"),
             });
 
             match first_type {
@@ -281,6 +282,17 @@ pub fn bind_sql_param<'q>(
                         .map(|p| match p {
                             SqlPrimitive::Float(f) => Some(*f),
                             SqlPrimitive::Int(i) => Some(*i as f64),
+                            SqlPrimitive::Null => None,
+                            _ => None,
+                        })
+                        .collect();
+                    query.bind(values)
+                }
+                Some("bytes") => {
+                    let values: Vec<Option<&[u8]>> = arr
+                        .iter()
+                        .map(|p| match p {
+                            SqlPrimitive::Bytes(b) => Some(b.as_slice()),
                             SqlPrimitive::Null => None,
                             _ => None,
                         })
@@ -335,6 +347,8 @@ pub fn bind_sql_primitive<'q>(
             }
         }
         SqlPrimitive::String(s) => query.bind(s.as_str()),
+        // A byte slice binds as bytea; core decoded the {"$bytes": base64} form
+        SqlPrimitive::Bytes(b) => query.bind(b.as_slice()),
     }
 }
 
