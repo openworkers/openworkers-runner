@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.14.7"
+version = "0.15.0"
 edition = "2024"
 license = "MIT"
 default-run = "openworkers-runner"
@@ -64,7 +64,9 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", features = ["ring"] }
 
 # Core types
-openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.14.0", features = ["hyper"] }
+# Every backend has to name this same tag: two cores in one build are two
+# unrelated sets of types, and cargo will not [patch] a tagged git dependency
+openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.15.0", features = ["hyper"] }
 
 # Transform (TS strip + export default -> globalThis.default)
 openworkers-transform = { git = "https://github.com/openworkers/openworkers-transform", tag = "v0.1.0", optional = true }
