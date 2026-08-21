@@ -141,10 +141,10 @@ async fn handle_request(
         let res_tx_for_task = res_tx_clone.clone();
 
         tokio::task::spawn_local(async move {
-            if let Ok(response) = rx.await {
-                if let Some(tx) = res_tx_for_task.lock().unwrap().take() {
-                    let _ = tx.send(Ok(response));
-                }
+            if let Ok(response) = rx.await
+                && let Some(tx) = res_tx_for_task.lock().unwrap().take()
+            {
+                let _ = tx.send(Ok(response));
             }
         });
 
