@@ -3491,6 +3491,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-wasm"
 version = "0.15.1"
+source = "git+https://github.com/openworkers/openworkers-runtime-wasm?tag=v0.15.1#61993f25297333cea92305b0f6e23cf14e700776"
 dependencies = [
  "bytes",
  "http-body-util",

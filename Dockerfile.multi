@@ -5,7 +5,7 @@ RUN apt-get update \
     && apt-get install -y ca-certificates wget \
     && rm -rf /var/lib/apt/lists/*
 
-FROM --platform=$BUILDPLATFORM rust:1.91-bookworm AS prepare
+FROM --platform=$BUILDPLATFORM rust:1.97-bookworm AS prepare
 
 ARG RUNTIME=v8
 
