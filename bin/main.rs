@@ -131,16 +131,6 @@ async fn handle_request(
         headers.get("x-worker-name").and_then(|h| h.to_str().ok())
     );
 
-    // Acquire database connection from internal pool (for worker resolution queries)
-    let mut conn: sqlx::pool::PoolConnection<sqlx::Postgres> =
-        match state.db_internal.acquire().await {
-            Ok(db) => db,
-            Err(err) => {
-                error!("Failed to acquire database connection: {}", err);
-                return Ok(error_response(500, "Failed to acquire database connection"));
-            }
-        };
-
     // Extract x-request-id header
     let request_id = match headers.get("x-request-id") {
         Some(value) => match value.to_str() {
@@ -168,7 +158,7 @@ async fn handle_request(
     use tracing::Instrument;
 
     // Execute the rest of the handler within the span context
-    handle_worker_request(state, span.clone(), &mut conn, req)
+    handle_worker_request(state, span.clone(), req)
         .instrument(span)
         .await
 }
@@ -177,7 +167,6 @@ async fn handle_request(
 async fn handle_worker_request(
     state: &AppState,
     span: tracing::Span,
-    conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<HyperBody>, std::convert::Infallible> {
     let method = req.method().clone();
@@ -225,9 +214,24 @@ async fn handle_worker_request(
         host, worker_id, worker_name, path
     );
 
+    // The internal connection covers resolution only: held across the worker's
+    // execution, five slow requests starve resolution for the whole runner
+    let mut conn: sqlx::pool::PoolConnection<sqlx::Postgres> =
+        match state.db_internal.acquire().await {
+            Ok(db) => db,
+            Err(err) => {
+                error!("Failed to acquire database connection: {}", err);
+                return Ok(error_response_with_span(
+                    &span,
+                    500,
+                    "Failed to acquire database connection",
+                ));
+            }
+        };
+
     // Resolve request in a single DB call (handles endpoint resolution + routing)
     let resolution = openworkers_runner::store::resolve_worker_from_request(
-        conn,
+        &mut conn,
         host.as_deref(),
         worker_id.as_deref(),
         worker_name.as_deref(),
@@ -269,9 +273,11 @@ async fn handle_worker_request(
                 match backend_type {
                     BackendType::Worker => {
                         if let Some(worker_id) = res.worker_id {
-                            let worker =
-                                get_worker_with_bindings(conn, WorkerIdentifier::Id(worker_id))
-                                    .await;
+                            let worker = get_worker_with_bindings(
+                                &mut conn,
+                                WorkerIdentifier::Id(worker_id),
+                            )
+                            .await;
 
                             match worker {
                                 Some(w) => w,
@@ -309,9 +315,11 @@ async fn handle_worker_request(
                         };
 
                         // Load storage config
-                        let storage_config =
-                            openworkers_runner::store::get_storage_config(conn, storage_config_id)
-                                .await;
+                        let storage_config = openworkers_runner::store::get_storage_config(
+                            &mut conn,
+                            storage_config_id,
+                        )
+                        .await;
 
                         let storage_config = match storage_config {
                             Some(config) => config,
@@ -323,6 +331,9 @@ async fn handle_worker_request(
                                 ));
                             }
                         };
+
+                        // Serving the asset does not touch the database
+                        drop(conn);
 
                         // Create RunnerOperations with ASSETS binding to get limiters and stats
                         let ops = openworkers_runner::RunnerOperations::new().with_bindings(vec![
@@ -394,7 +405,8 @@ async fn handle_worker_request(
             else if let Some(worker_id) = res.worker_id {
                 // Record backend type for standalone workers
                 span.record("backend_type", tracing::field::display(BackendType::Worker));
-                let worker = get_worker_with_bindings(conn, WorkerIdentifier::Id(worker_id)).await;
+                let worker =
+                    get_worker_with_bindings(&mut conn, WorkerIdentifier::Id(worker_id)).await;
 
                 match worker {
                     Some(w) => w,
@@ -422,6 +434,9 @@ async fn handle_worker_request(
             ));
         }
     };
+
+    // Connection is dropped here, returned to internal pool
+    drop(conn);
 
     // Record worker info in span now that we have it
     span.record("worker_id", tracing::field::display(&worker.id));
