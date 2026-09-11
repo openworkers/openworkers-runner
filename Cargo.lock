@@ -3346,7 +3346,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.15.2"
+version = "0.15.3"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -3453,8 +3453,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.15.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.0#f909ab07249a33cde58f41a0b41cf66e6a6aa5a8"
+version = "0.15.2"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.2#e93c3a28815f84bddc2a58129819498c1c0ab528"
 dependencies = [
  "bytes",
  "encoding_rs",
@@ -3465,6 +3465,7 @@ dependencies = [
  "openworkers-runtime-v8-gc-derive",
  "openworkers-serde-v8",
  "openworkers-v8",
+ "openworkers-wintertc",
  "ring",
  "serde",
  "serde_json",
@@ -3475,13 +3476,14 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "urlpattern",
  "uuid",
 ]
 
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.0#f909ab07249a33cde58f41a0b41cf66e6a6aa5a8"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.2#e93c3a28815f84bddc2a58129819498c1c0ab528"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3548,6 +3550,11 @@ dependencies = [
  "temporal_capi",
  "which",
 ]
+
+[[package]]
+name = "openworkers-wintertc"
+version = "0.1.0"
+source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.0#a3803d5d43ba28af426055023b927053aaf379c3"
 
 [[package]]
 name = "outref"
@@ -6408,6 +6415,47 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 
 [[package]]
+name = "unic-char-property"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8c57a407d9b6fa02b4795eb81c5b6652060a15a7903ea981f3d723e6c0be221"
+dependencies = [
+ "unic-char-range",
+]
+
+[[package]]
+name = "unic-char-range"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0398022d5f700414f6b899e10b8348231abf9173fa93144cbc1a43b9793c1fbc"
+
+[[package]]
+name = "unic-common"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80d7ff825a6a654ee85a63e80f92f054f904f21e7d12da4e22f9834a4aaa35bc"
+
+[[package]]
+name = "unic-ucd-ident"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e230a37c0381caa9219d67cf063aa3a375ffed5bf541a452db16e744bdab6987"
+dependencies = [
+ "unic-char-property",
+ "unic-char-range",
+ "unic-ucd-version",
+]
+
+[[package]]
+name = "unic-ucd-version"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96bd2f2237fe450fcd0a1d2f5f4e91711124f7857ba2e964247776ebeeb7b0c4"
+dependencies = [
+ "unic-common",
+]
+
+[[package]]
 name = "unicode-bidi"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6474,6 +6522,18 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+]
+
+[[package]]
+name = "urlpattern"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70acd30e3aa1450bc2eece896ce2ad0d178e9c079493819301573dae3c37ba6d"
+dependencies = [
+ "regex",
+ "serde",
+ "unic-ucd-ident",
+ "url",
 ]
 
 [[package]]
