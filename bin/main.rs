@@ -149,8 +149,10 @@ async fn handle_request(
         "request",
         request_id = %request_id,
         http.request.method = %method,
+        url.scheme = forwarded_scheme(&headers),
         url.path = %uri.path(),
         url.query = tracing::field::Empty,
+        url.full = tracing::field::Empty,
         server.address = tracing::field::Empty,
         http.response.status_code = tracing::field::Empty,
         backend_type = tracing::field::Empty,
@@ -161,6 +163,13 @@ async fn handle_request(
 
     if let Some(query) = uri.query() {
         span.record("url.query", query);
+    }
+
+    if let Some(host) = headers.get("host").and_then(|h| h.to_str().ok()) {
+        span.record(
+            "url.full",
+            format!("{}://{}{}", forwarded_scheme(&headers), host, uri),
+        );
     }
 
     // Use Instrument trait for async operations
@@ -523,6 +532,7 @@ async fn handle_worker_request(
 
     let start = tokio::time::Instant::now();
 
+    let scheme = forwarded_scheme(&headers);
     let is_streaming = headers.contains_key("x-request-body-stream");
 
     let mut pump_handle: Option<tokio::task::JoinHandle<()>> = None;
@@ -534,7 +544,7 @@ async fn handle_worker_request(
         const MAX_BODY_SIZE: usize = 1024 * 1024;
 
         let (req_obj, body_tx) =
-            HttpRequest::from_hyper_parts_streaming(&method, &uri, &headers, "http", 16);
+            HttpRequest::from_hyper_parts_streaming(&method, &uri, &headers, scheme, 16);
 
         pump_handle = Some(tokio::spawn(async move {
             use http_body_util::BodyExt;
@@ -593,7 +603,7 @@ async fn handle_worker_request(
             }
         };
 
-        HttpRequest::from_hyper_parts(&method, &uri, &headers, body_bytes, "http")
+        HttpRequest::from_hyper_parts(&method, &uri, &headers, body_bytes, scheme)
     };
 
     // Add worker headers if not present
@@ -741,6 +751,17 @@ fn error_response(status: u16, message: &str) -> Response<HyperBody> {
         .header("content-type", "text/plain")
         .body(full_body(message.to_string()))
         .unwrap()
+}
+
+/// The scheme the client used, as the proxy in front reports it. The runner is
+/// reached over plain http, so its own connection says nothing about it.
+fn forwarded_scheme(headers: &hyper::HeaderMap) -> &str {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').next().unwrap_or(v).trim())
+        .filter(|v| *v == "https" || *v == "http")
+        .unwrap_or("http")
 }
 
 /// Answer without running the worker, counting the refusal under `reason`. Taking
