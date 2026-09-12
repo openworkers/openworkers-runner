@@ -142,18 +142,26 @@ async fn handle_request(
     };
 
     // Create tracing span for this request
+    //
+    // The four http fields carry the names the OpenTelemetry semantic conventions
+    // give them, or a backend reads its own empty column of the same name instead.
     let span = tracing::info_span!(
         "request",
         request_id = %request_id,
-        http_method = %method,
-        uri = %uri,
-        http_host = tracing::field::Empty,
-        response_status_code = tracing::field::Empty,
+        http.request.method = %method,
+        url.path = %uri.path(),
+        url.query = tracing::field::Empty,
+        server.address = tracing::field::Empty,
+        http.response.status_code = tracing::field::Empty,
         backend_type = tracing::field::Empty,
         worker_id = tracing::field::Empty,
         worker_name = tracing::field::Empty,
         user_id = tracing::field::Empty,
     );
+
+    if let Some(query) = uri.query() {
+        span.record("url.query", query);
+    }
 
     // Use Instrument trait for async operations
     use tracing::Instrument;
@@ -184,7 +192,7 @@ async fn handle_worker_request(
 
     // Record HTTP host header (even if worker not found)
     if let Some(ref hostname) = host {
-        span.record("http_host", hostname.as_str());
+        span.record("server.address", hostname.as_str());
     }
 
     let worker_id = headers
@@ -397,7 +405,7 @@ async fn handle_worker_request(
                                 // Record status code and convert to hyper response
                                 let hyper_response = http_response.into_hyper();
                                 span.record(
-                                    "response_status_code",
+                                    "http.response.status_code",
                                     hyper_response.status().as_u16(),
                                 );
                                 metrics_timer.record_http_request(Outcome::Success);
@@ -717,7 +725,7 @@ async fn handle_worker_request(
     debug!("handle_request done in {}ms", start.elapsed().as_millis());
 
     // Record response status code and metrics
-    span.record("response_status_code", response.status().as_u16());
+    span.record("http.response.status_code", response.status().as_u16());
     metrics_timer.record_http_request(outcome);
 
     Ok(response)
@@ -745,7 +753,7 @@ fn refuse(
     message: &str,
 ) -> Response<HyperBody> {
     timer.record_http_request(Outcome::Failed(reason));
-    span.record("response_status_code", status);
+    span.record("http.response.status_code", status);
     error_response(status, message)
 }
 
