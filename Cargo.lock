@@ -3390,7 +3390,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.15.3"
+version = "0.15.4"
 dependencies = [
  "async-nats",
  "aws-credential-types",
@@ -3496,8 +3496,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.15.2"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.2#e93c3a28815f84bddc2a58129819498c1c0ab528"
+version = "0.15.3"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.3#21d698972d3d09408f4cf8d5226c87d4320a9514"
 dependencies = [
  "bytes",
  "encoding_rs",
@@ -3526,7 +3526,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.2#e93c3a28815f84bddc2a58129819498c1c0ab528"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.3#21d698972d3d09408f4cf8d5226c87d4320a9514"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3596,8 +3596,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-wintertc"
-version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.0#a3803d5d43ba28af426055023b927053aaf379c3"
+version = "0.1.1"
+source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.1#09a243867bcc0444bafb54b9c2141cb98c8f0f4b"
 
 [[package]]
 name = "outref"
