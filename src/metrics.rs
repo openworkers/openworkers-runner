@@ -3,7 +3,7 @@
 //! Provides OpenTelemetry metrics for observability:
 //! - Request rate and latency
 //! - Scheduled task performance
-//! - Worker pool utilization
+//! - Worker pool and isolate pool occupancy
 //! - Queue time vs execution time
 
 use std::time::Instant;
@@ -129,8 +129,51 @@ static METRICS: once_cell::sync::OnceCell<Metrics> = once_cell::sync::OnceCell::
 #[cfg(feature = "telemetry")]
 pub fn init_metrics() {
     let meter = global::meter("openworkers-runner");
-    let metrics = Metrics::new(meter);
+    let metrics = Metrics::new(meter.clone());
     let _ = METRICS.set(metrics);
+    observe_pools(&meter);
+}
+
+/// Pool occupancy is read at collection time, so a pool never has to push.
+#[cfg(feature = "telemetry")]
+fn observe_pools(meter: &Meter) {
+    meter
+        .u64_observable_gauge("worker.pool.active_tasks")
+        .with_description("Workers running or queued")
+        .with_callback(|observer| {
+            observer.observe(crate::worker_pool::get_active_tasks() as u64, &[])
+        })
+        .build();
+
+    meter
+        .u64_observable_gauge("worker.pool.available_permits")
+        .with_description("Free slots in the worker semaphore")
+        .with_callback(|observer| {
+            let free = crate::worker_pool::WORKER_SEMAPHORE.available_permits();
+            observer.observe(free as u64, &[])
+        })
+        .build();
+
+    #[cfg(feature = "v8")]
+    {
+        meter
+            .u64_observable_counter("isolate.pool.requests")
+            .with_description("Executions that asked the isolate pool for an isolate")
+            .with_callback(|observer| {
+                let stats = openworkers_runtime_v8::get_pinned_pool_stats();
+                observer.observe(stats.total_requests as u64, &[])
+            })
+            .build();
+
+        meter
+            .u64_observable_counter("isolate.pool.hits")
+            .with_description("Executions served by an isolate already holding the worker")
+            .with_callback(|observer| {
+                let stats = openworkers_runtime_v8::get_pinned_pool_stats();
+                observer.observe(stats.cache_hits as u64, &[])
+            })
+            .build();
+    }
 }
 
 /// Get global metrics instance
