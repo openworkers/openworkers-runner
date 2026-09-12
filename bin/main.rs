@@ -11,6 +11,7 @@ use tokio::sync::oneshot::channel;
 use tracing::{debug, error, info, warn};
 
 use openworkers_core::{HttpRequest, HttpResponse, HyperBody};
+use openworkers_runner::metrics::{MetricsTimer, Outcome};
 use openworkers_runner::store::WorkerIdentifier;
 
 use sqlx::postgres::PgPoolOptions;
@@ -174,7 +175,7 @@ async fn handle_worker_request(
     let headers = req.headers().clone();
 
     // Start metrics timer
-    let mut metrics_timer = openworkers_runner::metrics::MetricsTimer::new();
+    let mut metrics_timer = MetricsTimer::new();
 
     let host = headers
         .get("host")
@@ -221,9 +222,11 @@ async fn handle_worker_request(
             Ok(db) => db,
             Err(err) => {
                 error!("Failed to acquire database connection: {}", err);
-                return Ok(error_response_with_span(
+                return Ok(refuse(
+                    metrics_timer,
                     &span,
                     500,
+                    "db_unavailable",
                     "Failed to acquire database connection",
                 ));
             }
@@ -254,13 +257,21 @@ async fn handle_worker_request(
                     // If neither worker_id nor project_id is set, worker/project not found (502)
                     // If at least one is set, route not found (404)
                     if res.worker_id.is_none() && res.project_id.is_none() {
-                        return Ok(error_response_with_span(
+                        return Ok(refuse(
+                            metrics_timer,
                             &span,
                             502,
+                            "no_worker",
                             "No worker or project found for request",
                         ));
                     } else {
-                        return Ok(error_response_with_span(&span, 404, "Not Found"));
+                        return Ok(refuse(
+                            metrics_timer,
+                            &span,
+                            404,
+                            "route_not_found",
+                            "Not Found",
+                        ));
                     }
                 }
             };
@@ -282,17 +293,21 @@ async fn handle_worker_request(
                             match worker {
                                 Some(w) => w,
                                 None => {
-                                    return Ok(error_response_with_span(
+                                    return Ok(refuse(
+                                        metrics_timer,
                                         &span,
                                         500,
+                                        "worker_not_found",
                                         "Route has worker backend but worker not found",
                                     ));
                                 }
                             }
                         } else {
-                            return Ok(error_response_with_span(
+                            return Ok(refuse(
+                                metrics_timer,
                                 &span,
                                 500,
+                                "route_without_worker",
                                 "Route has worker backend but no worker_id",
                             ));
                         }
@@ -306,9 +321,11 @@ async fn handle_worker_request(
                         let storage_config_id = match &res.assets_storage_id {
                             Some(id) => id,
                             None => {
-                                return Ok(error_response_with_span(
+                                return Ok(refuse(
+                                    metrics_timer,
                                     &span,
                                     500,
+                                    "assets_not_configured",
                                     "ASSETS storage config not found",
                                 ));
                             }
@@ -324,9 +341,11 @@ async fn handle_worker_request(
                         let storage_config = match storage_config {
                             Some(config) => config,
                             None => {
-                                return Ok(error_response_with_span(
+                                return Ok(refuse(
+                                    metrics_timer,
                                     &span,
                                     500,
+                                    "assets_not_configured",
                                     "Storage config not found",
                                 ));
                             }
@@ -381,6 +400,7 @@ async fn handle_worker_request(
                                     "response_status_code",
                                     hyper_response.status().as_u16(),
                                 );
+                                metrics_timer.record_http_request(Outcome::Success);
                                 return Ok(hyper_response);
                             }
                             Err(e) => {
@@ -390,10 +410,11 @@ async fn handle_worker_request(
                                 );
 
                                 error!("Failed to fetch from storage: {}", e);
-                                span.record("response_status_code", 500u16);
-                                return Ok(error_response_with_span(
+                                return Ok(refuse(
+                                    metrics_timer,
                                     &span,
                                     500,
+                                    "assets_fetch_failed",
                                     "Failed to fetch from storage",
                                 ));
                             }
@@ -411,25 +432,31 @@ async fn handle_worker_request(
                 match worker {
                     Some(w) => w,
                     None => {
-                        return Ok(error_response_with_span(
+                        return Ok(refuse(
+                            metrics_timer,
                             &span,
                             500,
+                            "worker_not_found",
                             "Route has worker_id but worker not found",
                         ));
                     }
                 }
             } else {
-                return Ok(error_response_with_span(
+                return Ok(refuse(
+                    metrics_timer,
                     &span,
                     500,
+                    "unresolvable",
                     "Invalid resolution: no worker_id or project_id",
                 ));
             }
         }
         None => {
-            return Ok(error_response_with_span(
+            return Ok(refuse(
+                metrics_timer,
                 &span,
                 502,
+                "no_worker",
                 "No worker or project found for request",
             ));
         }
@@ -466,10 +493,21 @@ async fn handle_worker_request(
     .await
     {
         Ok(Ok(permit)) => permit,
-        Ok(Err(_)) => return Ok(error_response(500, "Internal server error")),
+        Ok(Err(_)) => {
+            return Ok(refuse(
+                metrics_timer,
+                &span,
+                500,
+                "semaphore_closed",
+                "Internal server error",
+            ));
+        }
         Err(_) => {
-            return Ok(error_response(
+            return Ok(refuse(
+                metrics_timer,
+                &span,
                 429,
+                "worker_concurrency_limit",
                 "Too many concurrent requests for this worker",
             ));
         }
@@ -537,7 +575,13 @@ async fn handle_worker_request(
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
                 error!("Failed to read request body: {}", e);
-                return Ok(error_response(400, "Failed to read request body"));
+                return Ok(refuse(
+                    metrics_timer,
+                    &span,
+                    400,
+                    "bad_request_body",
+                    "Failed to read request body",
+                ));
             }
         };
 
@@ -572,15 +616,24 @@ async fn handle_worker_request(
         Ok(Ok(permit)) => permit,
         Ok(Err(_)) => {
             error!("semaphore closed unexpectedly");
-            return Ok(error_response(500, "Internal server error"));
+            return Ok(refuse(
+                metrics_timer,
+                &span,
+                500,
+                "semaphore_closed",
+                "Internal server error",
+            ));
         }
         Err(_) => {
             debug!(
                 "worker pool saturated after {}ms timeout, returning 503",
                 timeout.as_millis()
             );
-            return Ok(error_response(
+            return Ok(refuse(
+                metrics_timer,
+                &span,
                 503,
+                "overloaded",
                 "Server is overloaded, please try again later",
             ));
         }
@@ -610,10 +663,13 @@ async fn handle_worker_request(
 
     // TODO: Pass disconnect_rx to the worker so it can stop processing
 
-    let (response, success) = match res_rx.await {
+    let (response, outcome) = match res_rx.await {
         Ok(res) => {
             // Convert to hyper Response with disconnect notification
-            (res.into_hyper_with_disconnect(Some(disconnect_tx)), true)
+            (
+                res.into_hyper_with_disconnect(Some(disconnect_tx)),
+                Outcome::Success,
+            )
         }
         Err(_) => {
             // Worker didn't send response, check termination reason
@@ -623,12 +679,15 @@ async fn handle_worker_request(
                 .await
                 .unwrap_or(Err(TerminationReason::Other("Unknown error".to_string())));
 
-            let resp = match result {
+            let (resp, outcome) = match result {
                 Ok(()) => {
                     error!("worker completed but did not send response");
-                    error_response(
-                        500,
-                        "Worker completed but did not send a response (missing fetch event listener?)",
+                    (
+                        error_response(
+                            500,
+                            "Worker completed but did not send a response (missing fetch event listener?)",
+                        ),
+                        Outcome::Failed("no_response"),
                     )
                 }
                 Err(reason) => {
@@ -643,10 +702,10 @@ async fn handle_worker_request(
                         );
                         headers
                     };
-                    resp
+                    (resp, Outcome::terminated(&reason))
                 }
             };
-            (resp, false)
+            (resp, outcome)
         }
     };
 
@@ -659,7 +718,7 @@ async fn handle_worker_request(
 
     // Record response status code and metrics
     span.record("response_status_code", response.status().as_u16());
-    metrics_timer.record_http_request(success);
+    metrics_timer.record_http_request(outcome);
 
     Ok(response)
 }
@@ -676,11 +735,16 @@ fn error_response(status: u16, message: &str) -> Response<HyperBody> {
         .unwrap()
 }
 
-fn error_response_with_span(
+/// Answer without running the worker, counting the refusal under `reason`. Taking
+/// the timer by value is what keeps a refusal from escaping uncounted.
+fn refuse(
+    timer: MetricsTimer,
     span: &tracing::Span,
     status: u16,
+    reason: &'static str,
     message: &str,
 ) -> Response<HyperBody> {
+    timer.record_http_request(Outcome::Failed(reason));
     span.record("response_status_code", status);
     error_response(status, message)
 }

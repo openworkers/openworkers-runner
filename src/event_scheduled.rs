@@ -1,3 +1,4 @@
+use crate::metrics::Outcome;
 use crate::ops::DbPool;
 use crate::store::{self, WorkerWithBindings};
 use crate::task_executor::{self, TaskExecutionConfig};
@@ -36,6 +37,7 @@ async fn handle_scheduled_task(
         Ok(c) => c,
         Err(err) => {
             tracing::error!("Failed to acquire database connection: {}", err);
+            metrics_timer.record_scheduled_task(Outcome::Failed("db_unavailable"));
             return;
         }
     };
@@ -48,6 +50,7 @@ async fn handle_scheduled_task(
                 "worker not found: {}",
                 crate::utils::short_id(&data.worker_id)
             );
+            metrics_timer.record_scheduled_task(Outcome::Failed("worker_not_found"));
             return;
         }
     };
@@ -97,6 +100,7 @@ fn run_scheduled(
     // Parse script before spawning (fail fast)
     if let Err(err) = prepare_script(&worker_data) {
         tracing::error!("Failed to prepare script for scheduled task: {err:?}");
+        metrics_timer.record_scheduled_task(Outcome::Failed("script_invalid"));
         return;
     }
 
@@ -111,6 +115,7 @@ fn run_scheduled(
                 "worker pool saturated, skipping scheduled task for worker: {}",
                 data.worker_id
             );
+            metrics_timer.record_scheduled_task(Outcome::Failed("overloaded"));
             return;
         }
     };
@@ -146,8 +151,8 @@ fn run_scheduled(
             // Execute the task
             let result = task_executor::execute_task_await(config).await;
 
-            // Log the execution result and track success
-            let success = match result {
+            // Log the execution result and track the outcome
+            let outcome = match result {
                 Ok(()) => {
                     tracing::debug!("scheduled task exec completed successfully");
                     // Wait for the task event handler to respond
@@ -155,29 +160,29 @@ fn run_scheduled(
                         Ok(task_result) => {
                             if task_result.success {
                                 tracing::debug!("scheduled task responded successfully");
-                                true
+                                Outcome::Success
                             } else {
                                 tracing::error!(
                                     "scheduled task failed: {}",
                                     task_result.error.unwrap_or_default()
                                 );
-                                false
+                                Outcome::Failed("task_error")
                             }
                         }
                         Err(err) => {
                             tracing::error!("scheduled task response error: {err}");
-                            false
+                            Outcome::Failed("no_response")
                         }
                     }
                 }
                 Err(reason) => {
                     tracing::error!("scheduled task terminated: {:?}", reason);
-                    false
+                    Outcome::terminated(&reason)
                 }
             };
 
             // Record metrics
-            metrics_timer.record_scheduled_task(success);
+            metrics_timer.record_scheduled_task(outcome);
         }
         .instrument(span),
     );

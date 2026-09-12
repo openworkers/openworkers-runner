@@ -8,10 +8,45 @@
 
 use std::time::Instant;
 
+use openworkers_core::TerminationReason;
+
 #[cfg(feature = "telemetry")]
 use opentelemetry::metrics::{Counter, Histogram, Meter};
 #[cfg(feature = "telemetry")]
 use opentelemetry::{KeyValue, global};
+
+/// How a request or a task ended. A failure name is a metric label, so the set
+/// is closed and never carries the message a reason holds.
+#[derive(Clone, Copy)]
+pub enum Outcome {
+    Success,
+    Failed(&'static str),
+}
+
+impl Outcome {
+    /// The outcome of a worker the runtime stopped.
+    pub fn terminated(reason: &TerminationReason) -> Self {
+        Self::Failed(match reason {
+            TerminationReason::CpuTimeLimit => "cpu_time_limit",
+            TerminationReason::WallClockTimeout => "wall_clock_timeout",
+            TerminationReason::MemoryLimit => "memory_limit",
+            TerminationReason::MaxIterationsReached => "max_iterations",
+            TerminationReason::Exception(_) => "exception",
+            TerminationReason::InitializationError(_) => "initialization_error",
+            TerminationReason::Terminated => "terminated",
+            TerminationReason::Aborted => "aborted",
+            TerminationReason::Other(_) => "other",
+        })
+    }
+
+    #[cfg(feature = "telemetry")]
+    fn status(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failed(_) => "error",
+        }
+    }
+}
 
 /// Global metrics instance
 #[cfg(feature = "telemetry")]
@@ -139,16 +174,13 @@ impl MetricsTimer {
 
     /// Record HTTP request metrics
     #[cfg(feature = "telemetry")]
-    pub fn record_http_request(self, success: bool) {
+    pub fn record_http_request(self, outcome: Outcome) {
         if let Some(m) = metrics() {
             let total_duration = self.start.elapsed().as_secs_f64();
 
             // Record total count
             let mut labels = self.labels.clone();
-            labels.push(KeyValue::new(
-                "status",
-                if success { "success" } else { "error" },
-            ));
+            labels.push(KeyValue::new("status", outcome.status()));
             m.http_requests_total.add(1, &labels);
 
             // Record durations
@@ -163,24 +195,19 @@ impl MetricsTimer {
                     .record(execution_time, &labels);
             }
 
-            if !success {
-                m.errors_total.add(1, &labels);
-            }
+            record_error(m, labels, outcome);
         }
     }
 
     /// Record scheduled task metrics
     #[cfg(feature = "telemetry")]
-    pub fn record_scheduled_task(self, success: bool) {
+    pub fn record_scheduled_task(self, outcome: Outcome) {
         if let Some(m) = metrics() {
             let total_duration = self.start.elapsed().as_secs_f64();
 
             // Record total count
             let mut labels = self.labels.clone();
-            labels.push(KeyValue::new(
-                "status",
-                if success { "success" } else { "error" },
-            ));
+            labels.push(KeyValue::new("status", outcome.status()));
             m.scheduled_tasks_total.add(1, &labels);
 
             // Record durations
@@ -195,9 +222,7 @@ impl MetricsTimer {
                     .record(execution_time, &labels);
             }
 
-            if !success {
-                m.errors_total.add(1, &labels);
-            }
+            record_error(m, labels, outcome);
         }
     }
 
@@ -206,10 +231,22 @@ impl MetricsTimer {
     pub fn mark_worker_spawned(&mut self) {}
 
     #[cfg(not(feature = "telemetry"))]
-    pub fn record_http_request(self, _success: bool) {}
+    pub fn record_http_request(self, _outcome: Outcome) {}
 
     #[cfg(not(feature = "telemetry"))]
-    pub fn record_scheduled_task(self, _success: bool) {}
+    pub fn record_scheduled_task(self, _outcome: Outcome) {}
+}
+
+/// The reason rides on `errors.total` alone: on a duration histogram it would
+/// multiply every bucket.
+#[cfg(feature = "telemetry")]
+fn record_error(m: &Metrics, mut labels: Vec<KeyValue>, outcome: Outcome) {
+    let Outcome::Failed(reason) = outcome else {
+        return;
+    };
+
+    labels.push(KeyValue::new("reason", reason));
+    m.errors_total.add(1, &labels);
 }
 
 impl Default for MetricsTimer {
