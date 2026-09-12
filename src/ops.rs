@@ -48,6 +48,7 @@ use crate::services::fetch::{
     FetchContext, do_fetch, generate_request_id, try_internal_worker_route,
 };
 use crate::services::kv as kv_service;
+use crate::services::net_guard::EgressPolicy;
 use crate::services::storage::{build_s3_url, execute_s3_operation, sign_s3_request};
 use crate::store::{Binding, DatabaseConfig, KvConfig, StorageConfig, WorkerBindingConfig};
 
@@ -273,7 +274,14 @@ impl RunnerOperations {
                     worker_id: self.worker_id.as_deref(),
                     user_id: self.user_id.as_deref(),
                 };
-                do_fetch(auth_request, &self.stats, Some(&signed_headers), Some(&ctx)).await
+                do_fetch(
+                    auth_request,
+                    &self.stats,
+                    Some(&signed_headers),
+                    Some(&ctx),
+                    EgressPolicy::Unrestricted,
+                )
+                .await
             }
             .instrument(span),
         )
@@ -328,10 +336,24 @@ impl OperationsHandler for RunnerOperations {
                         "[ops] fetch shortcut: {} -> internal routing via x-worker-name",
                         request.url
                     );
-                    return do_fetch(internal_request, &self.stats, None, Some(&ctx)).await;
+                    return do_fetch(
+                        internal_request,
+                        &self.stats,
+                        None,
+                        Some(&ctx),
+                        EgressPolicy::Unrestricted,
+                    )
+                    .await;
                 }
 
-                do_fetch(request, &self.stats, None, Some(&ctx)).await
+                do_fetch(
+                    request,
+                    &self.stats,
+                    None,
+                    Some(&ctx),
+                    EgressPolicy::PublicOnly,
+                )
+                .await
             }
             .instrument(span),
         )
@@ -661,7 +683,14 @@ impl OperationsHandler for RunnerOperations {
                 };
 
                 // Execute the request through the runner
-                do_fetch(internal_request, &OperationsStats::new(), None, None).await
+                do_fetch(
+                    internal_request,
+                    &OperationsStats::new(),
+                    None,
+                    None,
+                    EgressPolicy::Unrestricted,
+                )
+                .await
             }
             .instrument(span),
         )
@@ -680,35 +709,46 @@ impl OperationsHandler for RunnerOperations {
 
         Box::pin(async move {
             use futures::{SinkExt, StreamExt};
+            use tokio_tungstenite::WebSocketStream;
             use tokio_tungstenite::tungstenite;
-            use tungstenite::client::IntoClientRequest;
+            use tungstenite::handshake::client::generate_key;
+            use tungstenite::handshake::derive_accept_key;
+            use tungstenite::protocol::Role;
 
-            // Ensure rustls CryptoProvider is installed (no-op if already set)
-            let _ = rustls::crypto::ring::default_provider().install_default();
-
-            // Parse URL, converting http(s) to ws(s) if needed
-            let ws_url = if url.starts_with("http://") {
-                url.replacen("http://", "ws://", 1)
-            } else if url.starts_with("https://") {
-                url.replacen("https://", "wss://", 1)
+            // The upgrade handshake speaks HTTP, so normalise ws(s) -> http(s).
+            let http_url = if let Some(rest) = url.strip_prefix("ws://") {
+                format!("http://{}", rest)
+            } else if let Some(rest) = url.strip_prefix("wss://") {
+                format!("https://{}", rest)
             } else {
                 url.clone()
             };
 
-            tracing::debug!("[ops] websocket connect {}", ws_url);
+            // Reject literal non-public IPs; hostnames are filtered by the WS
+            // client's DNS resolver at connection time.
+            crate::services::net_guard::guard_url_host(&http_url)?;
 
-            // Use IntoClientRequest to build the handshake with proper WS headers
-            let mut request: tungstenite::http::Request<()> = ws_url
-                .as_str()
-                .into_client_request()
-                .map_err(|e| format!("WebSocket request build error: {}", e))?;
+            tracing::debug!("[ops] websocket connect {}", http_url);
 
-            // Add custom headers (skip protocol headers handled by tungstenite)
-            for (key, value) in &headers {
-                let k = key.to_lowercase();
+            let key = generate_key();
+
+            // Run the upgrade on the filtered, HTTP/1.1-only client so the SSRF
+            // guard covers the WebSocket path exactly like fetch().
+            let client = crate::services::fetch::ws_client();
+
+            let mut req = client
+                .get(&http_url)
+                .header("Connection", "Upgrade")
+                .header("Upgrade", "websocket")
+                .header("Sec-WebSocket-Version", "13")
+                .header("Sec-WebSocket-Key", &key);
+
+            // Forward custom headers, skipping the ones the handshake owns.
+            for (name, value) in &headers {
+                let lower = name.to_lowercase();
 
                 if matches!(
-                    k.as_str(),
+                    lower.as_str(),
                     "upgrade"
                         | "connection"
                         | "sec-websocket-key"
@@ -718,23 +758,44 @@ impl OperationsHandler for RunnerOperations {
                     continue;
                 }
 
-                if let (Ok(name), Ok(val)) = (
-                    tungstenite::http::header::HeaderName::from_bytes(key.as_bytes()),
-                    tungstenite::http::header::HeaderValue::from_str(value),
-                ) {
-                    request.headers_mut().insert(name, val);
-                }
+                req = req.header(name, value);
             }
 
-            let (ws_stream, _response) =
-                tokio_tungstenite::connect_async(request)
-                    .await
-                    .map_err(|e| {
-                        tracing::debug!("[ops] websocket connect failed: {}", e);
-                        format!("WebSocket connect error: {}", e)
-                    })?;
+            let response = req
+                .send()
+                .await
+                .map_err(|e| format!("WebSocket connect error: {}", e))?;
+
+            if response.status() != reqwest::StatusCode::SWITCHING_PROTOCOLS {
+                return Err(format!(
+                    "WebSocket upgrade rejected: status {}",
+                    response.status()
+                ));
+            }
+
+            // Confirm the server proved it speaks WebSocket before framing over it.
+            let expected = derive_accept_key(key.as_bytes());
+
+            let accepted = response
+                .headers()
+                .get("sec-websocket-accept")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v == expected)
+                .unwrap_or(false);
+
+            if !accepted {
+                return Err("WebSocket handshake failed: invalid Sec-WebSocket-Accept".to_string());
+            }
+
+            let upgraded = response
+                .upgrade()
+                .await
+                .map_err(|e| format!("WebSocket upgrade failed: {}", e))?;
 
             tracing::debug!("[ops] websocket connected successfully");
+
+            // reqwest owns the connection and TLS; tungstenite only frames messages.
+            let ws_stream = WebSocketStream::from_raw_socket(upgraded, Role::Client, None).await;
 
             let (mut ws_write, mut ws_read) = ws_stream.split();
 

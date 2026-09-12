@@ -12,4 +12,5 @@
 pub mod database;
 pub mod fetch;
 pub mod kv;
+pub mod net_guard;
 pub mod storage;

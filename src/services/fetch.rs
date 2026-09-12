@@ -16,10 +16,13 @@ use bytes::Bytes;
 use once_cell::sync::Lazy;
 use openworkers_core::{HttpMethod, HttpRequest, HttpResponse, RequestBody, ResponseBody};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::ops::OperationsStats;
+use crate::services::net_guard::EgressPolicy;
+use crate::services::net_guard::FilteringResolver;
 
 /// Worker domains for internal routing (e.g., "workers.rocks,workers.dev.localhost")
 /// URLs matching `*.{domain}` will be routed internally instead of going through DNS.
@@ -41,31 +44,72 @@ pub fn generate_request_id(prefix: &str) -> String {
     format!("{}_{}", prefix, &uuid[..uuid_len])
 }
 
-// Thread-local HTTP client with connection pooling.
-//
-// Each worker thread gets its own client to avoid cross-runtime issues.
-// Configuration:
-// - pool_max_idle_per_host: Configurable via HTTP_POOL_MAX_IDLE_PER_HOST env var (default: 100)
-// - pool_idle_timeout: 90s (keep connections warm)
-// - connect_timeout: 5s (DNS + TCP handshake)
-// - timeout: 30s (total request)
-thread_local! {
-    static HTTP_CLIENT: once_cell::unsync::Lazy<reqwest::Client> = once_cell::unsync::Lazy::new(|| {
-        let pool_size = std::env::var("HTTP_POOL_MAX_IDLE_PER_HOST")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(100);
+// Builder for the outbound HTTP clients. Pool size is configurable via
+// HTTP_POOL_MAX_IDLE_PER_HOST. When `filtered`, the SSRF-guarding DNS resolver
+// rejects any host resolving to a non-public address at connection time.
+fn build_http_client(filtered: bool) -> reqwest::Client {
+    let pool_size = std::env::var("HTTP_POOL_MAX_IDLE_PER_HOST")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(100);
 
-        reqwest::Client::builder()
-            .user_agent(format!("openworkers-runner/{}", env!("CARGO_PKG_VERSION")))
-            .pool_max_idle_per_host(pool_size)
-            .pool_idle_timeout(Duration::from_secs(90))
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("Failed to create HTTP client")
-    });
+    let mut builder = reqwest::Client::builder()
+        .user_agent(format!("openworkers-runner/{}", env!("CARGO_PKG_VERSION")))
+        .pool_max_idle_per_host(pool_size)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none());
+
+    if filtered {
+        builder = builder.dns_resolver(Arc::new(FilteringResolver));
+    }
+
+    builder.build().expect("Failed to create HTTP client")
+}
+
+// Builder for the WebSocket upgrade client.
+//
+// WebSocket connections are worker-controlled, so this client is filtered like
+// HTTP_CLIENT_FILTERED. It differs in two ways:
+// - `http1_only`: the upgrade handshake is HTTP/1.1 only.
+// - no total request timeout: an upgraded connection is long-lived, and the
+//   30s cap would kill it. Only the connect timeout applies.
+fn build_ws_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(format!("openworkers-runner/{}", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .http1_only()
+        .dns_resolver(Arc::new(FilteringResolver))
+        .build()
+        .expect("Failed to create WebSocket HTTP client")
+}
+
+// Thread-local HTTP clients with connection pooling.
+//
+// Each worker thread gets its own clients to avoid cross-runtime issues.
+// - HTTP_CLIENT is unrestricted: internal worker routing and operator-configured
+//   binding endpoints (S3/R2), neither of which is worker-controlled.
+// - HTTP_CLIENT_FILTERED guards worker-controlled `fetch()` URLs against SSRF.
+// - HTTP_CLIENT_WS guards worker-controlled WebSocket upgrades against SSRF.
+thread_local! {
+    static HTTP_CLIENT: once_cell::unsync::Lazy<reqwest::Client> =
+        once_cell::unsync::Lazy::new(|| build_http_client(false));
+
+    static HTTP_CLIENT_FILTERED: once_cell::unsync::Lazy<reqwest::Client> =
+        once_cell::unsync::Lazy::new(|| build_http_client(true));
+
+    static HTTP_CLIENT_WS: once_cell::unsync::Lazy<reqwest::Client> =
+        once_cell::unsync::Lazy::new(build_ws_client);
+}
+
+/// Filtered, HTTP/1.1-only client for WebSocket upgrade handshakes.
+///
+/// The returned client applies the SSRF DNS guard, so the WebSocket path is
+/// filtered like `fetch()`. Clone is cheap: reqwest::Client is an Arc.
+pub fn ws_client() -> reqwest::Client {
+    HTTP_CLIENT_WS.with(|c| (**c).clone())
 }
 
 /// Check if a request should be routed internally to another worker.
@@ -126,12 +170,23 @@ pub async fn do_fetch(
     stats: &OperationsStats,
     extra_headers: Option<&HashMap<String, String>>,
     ctx: Option<&FetchContext<'_>>,
+    policy: EgressPolicy,
 ) -> Result<HttpResponse, String> {
     use std::sync::atomic::Ordering;
 
-    // Use thread-local HTTP client (created in this thread's runtime)
-    // Clone is cheap - reqwest::Client is an Arc internally
-    let client = HTTP_CLIENT.with(|c| (**c).clone());
+    // Guard worker-controlled URLs whose host is a literal non-public IP: a
+    // literal address never reaches the filtering DNS resolver below.
+    if policy == EgressPolicy::PublicOnly {
+        crate::services::net_guard::guard_url_host(&request.url)?;
+    }
+
+    // Use the thread-local HTTP client (created in this thread's runtime).
+    // Clone is cheap - reqwest::Client is an Arc internally. The filtered
+    // client rejects hosts resolving to non-public addresses.
+    let client = match policy {
+        EgressPolicy::Unrestricted => HTTP_CLIENT.with(|c| (**c).clone()),
+        EgressPolicy::PublicOnly => HTTP_CLIENT_FILTERED.with(|c| (**c).clone()),
+    };
 
     // Prepare request builder
     let mut req_builder = match request.method {
@@ -240,6 +295,41 @@ pub async fn do_fetch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn do_fetch_blocks_literal_private_ip() {
+        // The literal-IP guard rejects before any connection is attempted.
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            url: "http://127.0.0.1:9/".to_string(),
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+
+        let stats = OperationsStats::new();
+        let result = do_fetch(request, &stats, None, None, EgressPolicy::PublicOnly).await;
+
+        assert!(result.is_err(), "loopback literal should be blocked");
+    }
+
+    #[tokio::test]
+    async fn do_fetch_blocks_hostname_resolving_to_loopback() {
+        // `localhost` is a name, so the filtering DNS resolver must reject it.
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            url: "http://localhost:9/".to_string(),
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+
+        let stats = OperationsStats::new();
+        let result = do_fetch(request, &stats, None, None, EgressPolicy::PublicOnly).await;
+
+        assert!(
+            result.is_err(),
+            "localhost should be blocked by the resolver"
+        );
+    }
 
     #[test]
     fn test_generate_request_id_format() {
