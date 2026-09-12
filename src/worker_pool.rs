@@ -167,30 +167,32 @@ pub static WORKER_POOL: Lazy<SequentialWorkerPool> = Lazy::new(|| {
     SequentialWorkerPool::new(pool_size)
 });
 
+/// Workers the runner accepts at once, running plus queued. It is the semaphore's
+/// capacity, so `get_active_tasks` can subtract from it.
+///
+/// Default: pool_size * 10 (e.g., 8 threads = 80 max queued workers)
+/// In test mode: pool_size * 100 to handle parallel test execution
+static MAX_QUEUED_WORKERS: Lazy<usize> = Lazy::new(|| {
+    let default_multiplier = if cfg!(test) { 100 } else { 10 };
+
+    std::env::var("MAX_QUEUED_WORKERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(get_pool_size() * default_multiplier)
+});
+
 /// Semaphore to limit queued workers and prevent unbounded queue growth
 ///
 /// This limits the total number of workers (running + queued).
 /// With sequential execution, at most pool_size workers run concurrently,
 /// but more can be queued. This semaphore prevents queue explosion under load.
-///
-/// Default: pool_size * 10 (e.g., 8 threads = 80 max queued workers)
-/// In test mode: pool_size * 100 to handle parallel test execution
 pub static WORKER_SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| {
-    let pool_size = get_pool_size();
-
-    let default_multiplier = if cfg!(test) { 100 } else { 10 };
-
-    let max_queued = std::env::var("MAX_QUEUED_WORKERS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(pool_size * default_multiplier);
-
     tracing::info!(
         "Initializing worker semaphore with {} max queued workers",
-        max_queued
+        *MAX_QUEUED_WORKERS
     );
 
-    Arc::new(Semaphore::new(max_queued))
+    Arc::new(Semaphore::new(*MAX_QUEUED_WORKERS))
 });
 
 /// Timeout for waiting on a worker slot
@@ -226,12 +228,7 @@ pub fn is_draining() -> bool {
 
 /// Get the number of active tasks
 pub fn get_active_tasks() -> usize {
-    let max_queued = std::env::var("MAX_QUEUED_WORKERS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(get_pool_size() * 10);
-
-    max_queued - WORKER_SEMAPHORE.available_permits()
+    *MAX_QUEUED_WORKERS - WORKER_SEMAPHORE.available_permits()
 }
 
 /// Notify for task completion events
@@ -436,5 +433,12 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(100), sem.clone().acquire_owned()).await;
 
         assert!(result.is_ok(), "Should succeed after a permit is released");
+    }
+
+    /// A test build sizes the semaphore differently from a release one, which
+    /// used to make this subtraction underflow.
+    #[test]
+    fn active_tasks_does_not_underflow() {
+        assert!(get_active_tasks() <= *MAX_QUEUED_WORKERS);
     }
 }
