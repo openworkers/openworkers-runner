@@ -96,7 +96,7 @@ impl<T: SpanExporter> AdaptiveSpanExporter<T> {
 
         // Apply exponential decay for sliding window effect
         let elapsed = now.duration_since(stats.last_update).as_secs_f64();
-        let decay_rate = 0.693_147_2 / DECAY_HALF_LIFE; // ln(2) / half_life
+        let decay_rate = std::f64::consts::LN_2 / DECAY_HALF_LIFE;
         stats.count *= (-decay_rate * elapsed).exp();
         stats.last_update = now;
         stats.count += 1.0;

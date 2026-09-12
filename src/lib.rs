@@ -1,7 +1,5 @@
 #[cfg(feature = "telemetry")]
 pub mod adaptive_span_exporter;
-#[cfg(feature = "telemetry")]
-pub mod adaptive_span_processor;
 #[cfg(any(feature = "v8", feature = "wasm"))]
 pub mod code_cache;
 pub mod event_fetch;
