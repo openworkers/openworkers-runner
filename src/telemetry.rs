@@ -110,6 +110,7 @@ fn init_otel() -> Result<(), Box<dyn std::error::Error>> {
     // Shared resource for traces and logs
     let resource = Resource::builder()
         .with_attribute(KeyValue::new("service.name", service_name.clone()))
+        .with_attribute(KeyValue::new("service.version", env!("CARGO_PKG_VERSION")))
         .with_attribute(KeyValue::new("service.instance.id", instance_id.clone()))
         .build();
 
@@ -206,6 +207,7 @@ fn init_otel() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(
         service = %service_name,
+        version = env!("CARGO_PKG_VERSION"),
         instance_id = %instance_id,
         endpoint = %otlp_endpoint,
         "OpenTelemetry initialized"

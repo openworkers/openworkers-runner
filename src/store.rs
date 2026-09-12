@@ -1,7 +1,22 @@
 use sqlx::prelude::FromRow;
 use std::collections::HashMap;
+use tracing::Instrument;
 
 use crate::utils::short_id;
+
+/// A client span for one query, carrying the attributes the OpenTelemetry
+/// semantic conventions name for a database call.
+macro_rules! db_span {
+    ($operation:literal, $table:literal) => {
+        tracing::info_span!(
+            concat!($operation, " ", $table),
+            otel.kind = "client",
+            db.system = "postgresql",
+            db.operation = $operation,
+            db.sql.table = $table,
+        )
+    };
+}
 
 #[derive(Debug)]
 pub enum WorkerIdentifier {
@@ -236,6 +251,7 @@ pub async fn get_worker(
     match sqlx::query_as::<_, WorkerData>(query.as_str())
         .bind(identifier)
         .fetch_one(conn)
+        .instrument(db_span!("SELECT", "workers"))
         .await
     {
         Ok(worker) => {
@@ -308,6 +324,7 @@ pub async fn get_worker_with_bindings(
     let basic = match sqlx::query_as::<_, BasicWorker>(&worker_query)
         .bind(&id_str)
         .fetch_one(&mut *conn)
+        .instrument(db_span!("SELECT", "workers"))
         .await
     {
         Ok(w) => w,
@@ -334,6 +351,7 @@ pub async fn get_worker_with_bindings(
     let binding_rows: Vec<BindingRow> = match sqlx::query_as::<_, BindingRow>(bindings_query)
         .bind(&basic.id)
         .fetch_all(&mut *conn)
+        .instrument(db_span!("SELECT", "environment_values"))
         .await
     {
         Ok(rows) => rows,
@@ -480,6 +498,7 @@ async fn fetch_storage_config(
     match sqlx::query_as::<_, Row>(query)
         .bind(config_id)
         .fetch_one(conn)
+        .instrument(db_span!("SELECT", "storage_configs"))
         .await
     {
         Ok(row) => Some(StorageConfig {
@@ -516,6 +535,7 @@ async fn fetch_kv_config(conn: &mut sqlx::PgConnection, config_id: &str) -> Opti
     match sqlx::query_as::<_, Row>(query)
         .bind(config_id)
         .fetch_one(conn)
+        .instrument(db_span!("SELECT", "kv_configs"))
         .await
     {
         Ok(row) => Some(KvConfig {
@@ -554,6 +574,7 @@ async fn fetch_database_config(
     match sqlx::query_as::<_, Row>(query)
         .bind(config_id)
         .fetch_one(conn)
+        .instrument(db_span!("SELECT", "database_configs"))
         .await
     {
         Ok(row) => Some(DatabaseConfig {
@@ -592,6 +613,7 @@ async fn fetch_worker_binding_config(
     match sqlx::query_as::<_, Row>(query)
         .bind(worker_id)
         .fetch_one(conn)
+        .instrument(db_span!("SELECT", "workers"))
         .await
     {
         Ok(row) => Some(WorkerBindingConfig {
@@ -641,6 +663,7 @@ pub async fn get_endpoint_by_name(conn: &mut sqlx::PgConnection, name: &str) -> 
     )
     .bind(name)
     .fetch_one(conn)
+    .instrument(db_span!("SELECT", "endpoints"))
     .await;
 
     match result {
@@ -681,6 +704,7 @@ pub async fn get_endpoint_from_domain(
     )
     .bind(domain)
     .fetch_one(conn)
+    .instrument(db_span!("SELECT", "domains"))
     .await;
 
     match result {
@@ -787,6 +811,7 @@ pub async fn resolve_worker_from_request(
     .bind(worker_name)
     .bind(path)
     .fetch_one(conn)
+    .instrument(db_span!("SELECT", "resolve_worker_from_request"))
     .await;
 
     match result {
@@ -828,6 +853,7 @@ pub async fn get_storage_config(
     )
     .bind(storage_config_id)
     .fetch_one(conn)
+    .instrument(db_span!("SELECT", "storage_configs"))
     .await;
 
     match result {

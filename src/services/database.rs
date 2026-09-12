@@ -41,7 +41,25 @@ impl QueryMode {
     }
 }
 
+/// The statement's leading keyword, which is what `db.operation` names. The
+/// statement itself never becomes a span field: it carries user data.
+fn sql_operation(sql: &str) -> String {
+    sql.split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase()
+}
+
 /// Execute query with direct connection string.
+#[tracing::instrument(
+    name = "guest query",
+    skip_all,
+    fields(
+        otel.kind = "client",
+        db.system = "postgresql",
+        db.operation = %sql_operation(sql),
+    )
+)]
 pub async fn execute_with_connection_string(
     connection_string: &str,
     sql: &str,
@@ -61,6 +79,15 @@ pub async fn execute_with_connection_string(
 }
 
 /// Execute query with schema isolation (SET search_path).
+#[tracing::instrument(
+    name = "guest query",
+    skip_all,
+    fields(
+        otel.kind = "client",
+        db.system = "postgresql",
+        db.operation = %sql_operation(sql),
+    )
+)]
 pub async fn execute_with_schema(
     pool: &DbPool,
     schema_name: &str,
