@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "0.15.5"
+version = "0.15.6"
 edition = "2024"
 license = "MIT"
 default-run = "openworkers-runner"
@@ -70,7 +70,7 @@ openworkers-core = { git = "https://github.com/openworkers/openworkers-core", ta
 openworkers-transform = { git = "https://github.com/openworkers/openworkers-transform", tag = "v0.1.0", optional = true }
 
 # Runtime backends
-openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.15.4", optional = true, features = ["ptrcomp"] }
+openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.15.6", optional = true, features = ["ptrcomp"] }
 openworkers-runtime-jsc = { git = "https://github.com/openworkers/openworkers-runtime-jsc", tag = "v0.15.0", optional = true }
 openworkers-runtime-quickjs = { git = "https://github.com/openworkers/openworkers-runtime-quickjs", tag = "v0.15.0", optional = true }
 openworkers-runtime-boa = { git = "https://github.com/openworkers/openworkers-runtime-boa", tag = "v0.15.0", optional = true }
