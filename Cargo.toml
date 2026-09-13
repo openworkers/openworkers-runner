@@ -121,7 +121,7 @@ opt-level = 3
 [dev-dependencies]
 criterion = { version = "0.8.1", features = ["async_tokio"] }
 wat = "1.0"
-serial_test = "3.2"
+serial_test = "4.0"
 # Not every backend pulls the full tokio, but every test harness needs these
 tokio = { version = "1.49.0", features = ["macros", "rt", "time"] }
 
