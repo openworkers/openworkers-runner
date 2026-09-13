@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use tracing::Instrument;
 
 use crate::utils::short_id;
+use sqlx::AssertSqlSafe;
 
 /// A client span for one query, carrying the attributes the OpenTelemetry
 /// semantic conventions name for a database call.
@@ -248,7 +249,8 @@ pub async fn get_worker(
         WorkerIdentifier::Name(name) => name,
     };
 
-    match sqlx::query_as::<_, WorkerData>(query.as_str())
+    // Only a choice between two literals is interpolated; the value is bound.
+    match sqlx::query_as::<_, WorkerData>(AssertSqlSafe(query))
         .bind(identifier)
         .fetch_one(conn)
         .instrument(db_span!("SELECT", "workers"))
@@ -321,7 +323,8 @@ pub async fn get_worker_with_bindings(
         version: i32,
     }
 
-    let basic = match sqlx::query_as::<_, BasicWorker>(&worker_query)
+    // Only a choice between two literals is interpolated; the value is bound.
+    let basic = match sqlx::query_as::<_, BasicWorker>(AssertSqlSafe(worker_query))
         .bind(&id_str)
         .fetch_one(&mut *conn)
         .instrument(db_span!("SELECT", "workers"))

@@ -10,8 +10,13 @@
 //!
 //! - `postgres`: Direct connection to a PostgreSQL database
 //! - `platform`: Multi-tenant mode using schema isolation on shared pool
+//!
+//! The SQL here is the guest's, which is what the binding is for. What bounds
+//! it is the search_path on the transaction and the role the pool connects as,
+//! never the shape of the text, so every query goes through `AssertSqlSafe`.
 
 use openworkers_core::{SqlParam, SqlPrimitive};
+use sqlx::AssertSqlSafe;
 use sqlx::PgPool;
 
 /// Database connection pool type alias
@@ -114,10 +119,14 @@ pub async fn execute_with_schema(
     tracing::debug!("[db] transaction acquired in {:?}", start.elapsed());
 
     // Set the search_path for this transaction
-    sqlx::query(&format!("SET LOCAL search_path TO \"{}\"", safe_schema))
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("Failed to set search_path: {}", e))?;
+    // An identifier cannot be bound, so it is quoted and its quotes doubled.
+    sqlx::query(AssertSqlSafe(format!(
+        "SET LOCAL search_path TO \"{}\"",
+        safe_schema
+    )))
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("Failed to set search_path: {}", e))?;
 
     tracing::debug!("[db] search_path set in {:?}", start.elapsed());
 
@@ -174,7 +183,7 @@ pub async fn execute_json_query(
     use sqlx::Row;
 
     let wrapped = wrap_query_as_json(sql, mode);
-    let mut query = sqlx::query(&wrapped);
+    let mut query = sqlx::query(AssertSqlSafe(wrapped));
 
     for (i, param) in params.iter().enumerate() {
         query = bind_sql_param(query, param, sql, i + 1);
@@ -202,7 +211,7 @@ pub async fn execute_json_query_tx(
     use sqlx::Row;
 
     let wrapped = wrap_query_as_json(sql, mode);
-    let mut query = sqlx::query(&wrapped);
+    let mut query = sqlx::query(AssertSqlSafe(wrapped));
 
     for (i, param) in params.iter().enumerate() {
         query = bind_sql_param(query, param, sql, i + 1);
@@ -226,7 +235,7 @@ pub async fn execute_mutation(
     sql: &str,
     params: &[SqlParam],
 ) -> Result<String, String> {
-    let mut query = sqlx::query(sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql));
 
     for (i, param) in params.iter().enumerate() {
         query = bind_sql_param(query, param, sql, i + 1);
@@ -246,7 +255,7 @@ pub async fn execute_mutation_tx(
     sql: &str,
     params: &[SqlParam],
 ) -> Result<String, String> {
-    let mut query = sqlx::query(sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql));
 
     for (i, param) in params.iter().enumerate() {
         query = bind_sql_param(query, param, sql, i + 1);
