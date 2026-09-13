@@ -121,7 +121,7 @@ impl<T: SpanExporter> SpanExporter for AdaptiveSpanExporter<T> {
         self.inner.export(filtered).await
     }
 
-    fn shutdown(&mut self) -> OTelSdkResult {
+    fn shutdown(&self) -> OTelSdkResult {
         self.inner.shutdown()
     }
 
