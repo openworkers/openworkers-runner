@@ -35,7 +35,7 @@ handing the guest an undefined `env.ASSETS`.
 | JSC     | `jsc`     | javascript           | no                    | yes | none     | links the system JavaScriptCore; no websockets; a fresh context per request |
 | QuickJS | `quickjs` | javascript           | no                    | no  | none     | no `env`, no websockets; a fresh runtime per request |
 | Boa     | `boa`     | javascript           | no                    | no  | none     | no `env`, no websockets; a fresh context per request |
-| Nova    | `nova`    | javascript           | no                    | no  | none     | pure Rust, no C; no `env`, no `fetch()`, no `crypto.subtle`, no WebAssembly; a fresh agent per request |
+| Nova    | `nova`    | javascript           | no                    | yes | assets, database | pure Rust, no C; no `fetch()`, no WebAssembly; `crypto.subtle` stops at HMAC and AES-GCM; a fresh agent per request |
 | WASM    | `wasm`    | wasm                 | no                    | yes | kv, database, storage | `wasi:http/proxy` components only; env arrives as WASI vars, not `env`; no assets or worker bindings |
 
 The wasm guest reaches its bindings through the `openworkers:bindings` WIT
@@ -44,8 +44,8 @@ runner resolves that name against the worker's bindings.
 
 Nova is the one backend with no C in it: engine, parser and platform layer are
 all Rust, which is what makes it the candidate for a target where a V8 build is
-not worth its size. It is also the least complete, at 406 of the 448 tests
-`openworkers-conformance` scores, against v8's 448.
+not worth its size. It scores 429 of the 448 tests `openworkers-conformance`
+measures, against v8's 448, and serves the dashboard.
 
 Optional on top of a backend: `database` (default), `telemetry`, and
 `multiplexing` (v8 only, ignored elsewhere).

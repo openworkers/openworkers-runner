@@ -3365,7 +3365,6 @@ checksum = "610a5acd306ec67f907abe5567859a3c693fb9886eb1f012ab8f2a47bef3db51"
 [[package]]
 name = "nova_vm"
 version = "1.0.0"
-source = "git+https://github.com/openworkers/nova?tag=v1.0.0-ow.1#656afb3e70e69fd27186feab325b586aa24e1032"
 dependencies = [
  "ahash 0.8.12",
  "ecmascript_atomics",
@@ -3799,10 +3798,10 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-nova"
-version = "0.15.2"
-source = "git+https://github.com/openworkers/openworkers-runtime-nova?tag=v0.15.2#bd748ab98ea966dd042002bf4c81b3a7c2d42642"
+version = "0.15.3"
 dependencies = [
  "aes-gcm",
+ "base64 0.22.1",
  "bytes",
  "getrandom 0.3.4",
  "hmac",
@@ -5966,7 +5965,6 @@ dependencies = [
 [[package]]
 name = "small_string"
 version = "1.0.0"
-source = "git+https://github.com/openworkers/nova?tag=v1.0.0-ow.1#656afb3e70e69fd27186feab325b586aa24e1032"
 dependencies = [
  "wtf8",
 ]

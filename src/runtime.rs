@@ -70,8 +70,8 @@ const JS_NAME: &str = "nova";
 #[cfg(not(feature = "_js"))]
 const JS_NAME: &str = "javascript";
 
-/// Binding types v8 serves: it builds an `env` object per binding, while the
-/// other JavaScript engines ignore `Script::bindings`.
+/// Binding types the selected engine serves: v8 and nova build an `env` object
+/// per binding, while jsc, quickjs and boa ignore `Script::bindings`.
 #[cfg(feature = "v8")]
 const JS_BINDINGS: &[BindingType] = &[
     BindingType::Assets,
@@ -80,7 +80,9 @@ const JS_BINDINGS: &[BindingType] = &[
     BindingType::Database,
     BindingType::Worker,
 ];
-#[cfg(not(feature = "v8"))]
+#[cfg(feature = "nova")]
+const JS_BINDINGS: &[BindingType] = openworkers_runtime_nova::SUPPORTED_BINDINGS;
+#[cfg(not(any(feature = "v8", feature = "nova")))]
 const JS_BINDINGS: &[BindingType] = &[];
 
 /// A backend a build can carry. Which one runs a worker follows from the code
@@ -119,7 +121,7 @@ impl Backend {
     /// guest.
     pub const fn supports_env(self) -> bool {
         match self {
-            Self::Js => cfg!(any(feature = "v8", feature = "jsc")),
+            Self::Js => cfg!(any(feature = "v8", feature = "jsc", feature = "nova")),
             Self::Wasm => true,
         }
     }
