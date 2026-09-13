@@ -106,6 +106,18 @@ incremental = true # Enable incremental compilation.
 codegen-units = 1 # Use a single codegen unit to optimize for size.
 lto = true # Enable link-time optimization.
 
+# Optimizing for size costs an interpreter dearly: nova is Rust all the way down,
+# so its evaluation loop is in this build, where v8's is inside a library someone
+# else compiled. Same for the SWC pass that lowers a module to a classic script.
+[profile.release.package.nova_vm]
+opt-level = 3
+[profile.release.package.openworkers-transform]
+opt-level = 3
+[profile.release.package.swc_ecma_parser]
+opt-level = 3
+[profile.release.package.swc_ecma_transforms_base]
+opt-level = 3
+
 [dev-dependencies]
 criterion = { version = "0.8.1", features = ["async_tokio"] }
 wat = "1.0"

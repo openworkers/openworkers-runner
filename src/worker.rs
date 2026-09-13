@@ -142,6 +142,24 @@ fn parse_code(data: &WorkerWithBindings) -> Result<(Backend, WorkerCode), Termin
                     data.version
                 );
 
+                // A backend with no code cache of its own still pays the SWC
+                // pass on every cold start, which is the larger half of a
+                // megabyte bundle's cost. The lowered source is the same for
+                // every one of them.
+                #[cfg(not(feature = "v8"))]
+                if let Some(lowered) = crate::code_cache::get(&data.id, data.version)
+                    && let Ok(lowered) = String::from_utf8(lowered)
+                {
+                    tracing::debug!(
+                        "lowered code HIT: worker={}, version={}, size={}",
+                        crate::utils::short_id(&data.id),
+                        data.version,
+                        lowered.len()
+                    );
+
+                    return Ok((Backend::Js, WorkerCode::js(lowered)));
+                }
+
                 let language = match data.code_type {
                     CodeType::Javascript => openworkers_transform::CodeLanguage::JavaScript,
                     CodeType::Typescript => openworkers_transform::CodeLanguage::TypeScript,
@@ -155,6 +173,9 @@ fn parse_code(data: &WorkerWithBindings) -> Result<(Backend, WorkerCode), Termin
                             e
                         ))
                     })?;
+
+                #[cfg(not(feature = "v8"))]
+                crate::code_cache::put(&data.id, data.version, transpiled.as_bytes());
 
                 Ok((Backend::Js, WorkerCode::js(transpiled)))
             }
