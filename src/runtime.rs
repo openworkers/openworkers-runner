@@ -11,35 +11,23 @@
 //!   cargo build --features nova
 //!   cargo build --features wasm
 
-#[cfg(not(any(
-    feature = "v8",
-    feature = "jsc",
-    feature = "quickjs",
-    feature = "boa",
-    feature = "nova",
-    feature = "wasm"
-)))]
-compile_error!("no runtime backend selected: build with --features v8|jsc|quickjs|boa|nova|wasm");
+/// JavaScript engines this build carries. One more engine is one more line
+/// here, where the pairwise cfg this replaces grew by a clause per engine
+/// already present.
+const JS_ENGINES: usize = cfg!(feature = "v8") as usize
+    + cfg!(feature = "jsc") as usize
+    + cfg!(feature = "quickjs") as usize
+    + cfg!(feature = "boa") as usize
+    + cfg!(feature = "nova") as usize;
 
-#[cfg(any(
-    all(
-        feature = "v8",
-        any(
-            feature = "jsc",
-            feature = "quickjs",
-            feature = "boa",
-            feature = "nova"
-        )
-    ),
-    all(
-        feature = "jsc",
-        any(feature = "quickjs", feature = "boa", feature = "nova")
-    ),
-    all(feature = "quickjs", any(feature = "boa", feature = "nova")),
-    all(feature = "boa", feature = "nova"),
-))]
-compile_error!(
+const _: () = assert!(
+    JS_ENGINES <= 1,
     "JavaScript engines are mutually exclusive: select at most one of v8|jsc|quickjs|boa|nova"
+);
+
+const _: () = assert!(
+    JS_ENGINES + cfg!(feature = "wasm") as usize >= 1,
+    "no runtime backend selected: build with --features v8|jsc|quickjs|boa|nova|wasm"
 );
 
 use openworkers_core::BindingType;
