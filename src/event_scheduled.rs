@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::metrics::Outcome;
 use crate::ops::DbPool;
 use crate::store::{self, WorkerWithBindings};
@@ -9,6 +11,10 @@ use openworkers_core::TaskSource;
 
 use serde::Deserialize;
 use serde::Serialize;
+
+/// How long a scheduled task may hold a worker slot. A cron fires again whatever
+/// happens, so one that never ends would take a slot out of the pool for good.
+const SCHEDULED_TASK_TIMEOUT_MS: u64 = 60_000;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -144,7 +150,10 @@ fn run_scheduled(
                 db_pool,
                 global_log_tx,
                 limits: task_executor::TaskExecutionConfig::default_limits(),
-                external_timeout_ms: None, // No external timeout for scheduled tasks
+                // A task that never ends holds its pool permit for the life of
+                // the process. Nothing else releases it, and the pool climbed to
+                // saturation over sixteen hours on the back of that.
+                external_timeout_ms: Some(SCHEDULED_TASK_TIMEOUT_MS),
                 span: tracing::Span::current(),
             };
 
@@ -155,8 +164,26 @@ fn run_scheduled(
             let outcome = match result {
                 Ok(()) => {
                     tracing::debug!("scheduled task exec completed successfully");
-                    // Wait for the task event handler to respond
-                    match res_rx.await {
+
+                    // A handler that settles nothing would leave this waiting as
+                    // long as the process lives, permit in hand.
+                    let answered = tokio::time::timeout(
+                        Duration::from_millis(SCHEDULED_TASK_TIMEOUT_MS),
+                        res_rx,
+                    )
+                    .await;
+
+                    let Ok(answered) = answered else {
+                        tracing::error!(
+                            "scheduled task produced no result within {}ms",
+                            SCHEDULED_TASK_TIMEOUT_MS
+                        );
+                        metrics_timer.record_scheduled_task(Outcome::Failed("no_result"));
+
+                        return;
+                    };
+
+                    match answered {
                         Ok(task_result) => {
                             if task_result.success {
                                 tracing::debug!("scheduled task responded successfully");
