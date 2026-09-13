@@ -8,6 +8,7 @@
 //!   cargo build --features jsc
 //!   cargo build --features quickjs
 //!   cargo build --features boa
+//!   cargo build --features nova
 //!   cargo build --features wasm
 
 #[cfg(not(any(
@@ -15,20 +16,30 @@
     feature = "jsc",
     feature = "quickjs",
     feature = "boa",
+    feature = "nova",
     feature = "wasm"
 )))]
-compile_error!("no runtime backend selected: build with --features v8|jsc|quickjs|boa|wasm");
+compile_error!("no runtime backend selected: build with --features v8|jsc|quickjs|boa|nova|wasm");
 
 #[cfg(any(
     all(
         feature = "v8",
-        any(feature = "jsc", feature = "quickjs", feature = "boa")
+        any(
+            feature = "jsc",
+            feature = "quickjs",
+            feature = "boa",
+            feature = "nova"
+        )
     ),
-    all(feature = "jsc", any(feature = "quickjs", feature = "boa")),
-    all(feature = "quickjs", feature = "boa"),
+    all(
+        feature = "jsc",
+        any(feature = "quickjs", feature = "boa", feature = "nova")
+    ),
+    all(feature = "quickjs", any(feature = "boa", feature = "nova")),
+    all(feature = "boa", feature = "nova"),
 ))]
 compile_error!(
-    "JavaScript engines are mutually exclusive: select at most one of v8|jsc|quickjs|boa"
+    "JavaScript engines are mutually exclusive: select at most one of v8|jsc|quickjs|boa|nova"
 );
 
 use openworkers_core::BindingType;
@@ -37,6 +48,8 @@ use openworkers_core::BindingType;
 pub use openworkers_runtime_boa::Worker as JsWorker;
 #[cfg(feature = "jsc")]
 pub use openworkers_runtime_jsc::Worker as JsWorker;
+#[cfg(feature = "nova")]
+pub use openworkers_runtime_nova::Worker as JsWorker;
 #[cfg(feature = "quickjs")]
 pub use openworkers_runtime_quickjs::Worker as JsWorker;
 #[cfg(feature = "v8")]
@@ -62,6 +75,8 @@ const JS_NAME: &str = "jsc";
 const JS_NAME: &str = "quickjs";
 #[cfg(feature = "boa")]
 const JS_NAME: &str = "boa";
+#[cfg(feature = "nova")]
+const JS_NAME: &str = "nova";
 /// A build with no JavaScript engine refuses a JavaScript worker before any
 /// backend is named, so this one only stands in for the format string.
 #[cfg(not(feature = "_js"))]

@@ -17,6 +17,7 @@ cargo build --release --features v8,wasm   # recommended for production
 cargo build --release --features jsc
 cargo build --release --features quickjs
 cargo build --release --features boa
+cargo build --release --features nova
 cargo build --release --features wasm
 ```
 
@@ -34,15 +35,17 @@ handing the guest an undefined `env.ASSETS`.
 | JSC     | `jsc`     | javascript           | no                    | yes | none     | links the system JavaScriptCore; no websockets; a fresh context per request |
 | QuickJS | `quickjs` | javascript           | no                    | no  | none     | no `env`, no websockets; a fresh runtime per request |
 | Boa     | `boa`     | javascript           | no                    | no  | none     | no `env`, no websockets; a fresh context per request |
+| Nova    | `nova`    | javascript           | no                    | no  | none     | pure Rust, no C; no `env`, no `fetch()`, no `crypto.subtle`, no WebAssembly; a fresh agent per request |
 | WASM    | `wasm`    | wasm                 | no                    | yes | kv, database, storage | `wasi:http/proxy` components only; env arrives as WASI vars, not `env`; no assets or worker bindings |
 
 The wasm guest reaches its bindings through the `openworkers:bindings` WIT
 package rather than an `env` object: every call names its binding, and the
 runner resolves that name against the worker's bindings.
 
-Nova is not selectable: it wires no operations handler, so a guest has no
-`fetch`, and `nova_vm` pulls a `temporal_rs` that does not build against the ICU
-version v8 152 forces in a shared lockfile.
+Nova is the one backend with no C in it: engine, parser and platform layer are
+all Rust, which is what makes it the candidate for a target where a V8 build is
+not worth its size. It is also the least complete, at 406 of the 448 tests
+`openworkers-conformance` scores, against v8's 448.
 
 Optional on top of a backend: `database` (default), `telemetry`, and
 `multiplexing` (v8 only, ignored elsewhere).
