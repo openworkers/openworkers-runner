@@ -197,125 +197,143 @@ pub async fn execute_task_await_v8_pooled(
     // This prevents a single tenant from monopolizing resources via multiple workers
     let owner_id = config.worker_data.user_id.clone();
     let task = config.task;
-    let permit = config.permit;
     let limits = config.limits;
     let execute_mode = V8ExecuteMode::get();
+    let external_timeout_ms = config.external_timeout_ms;
     let span = config.span.clone();
 
+    // Held here rather than in the pooled task, so the timeout below can release it
+    // without cancelling: cancelling would drop V8 objects outside the Locker.
+    let _permit = TaskPermit::new(config.permit);
+
     // Round-robin dispatch across V8 threads for better parallelism under load
-    WORKER_POOL
-        .spawn_await(move || {
-            async move {
-                // Wrap permit to automatically notify drain monitor on drop
-                let _permit = TaskPermit::new(permit);
-
-                let result = match execute_mode {
-                    V8ExecuteMode::Pinned => {
-                        // Thread-pinned pool (default, best performance)
-                        // Pass worker_id + version for warm context caching.
-                        // The warm hit callback updates the cached ops' per-request state
-                        // so the existing event loop sends logs to the new handler.
-                        let warm_log_tx = components.log_tx.clone();
-                        let warm_span = components.span.clone();
-                        let on_warm_hit: openworkers_runtime_v8::WarmHitCallback =
-                            Box::new(move |cached_ops| {
-                                // Downcast to RunnerOperations to call update_request.
-                                // This updates the cached ops' per-request state (log_tx, span)
-                                // so the existing event loop sends logs to the new handler.
-                                if let Some(runner_ops) =
-                                    cached_ops.as_any().downcast_ref::<RunnerOperations>()
-                                {
-                                    runner_ops.update_request(warm_log_tx, warm_span);
-                                }
-                            });
-
-                        openworkers_runtime_v8::execute_pinned(
-                            openworkers_runtime_v8::PinnedExecuteRequest {
-                                owner_id,
-                                worker_id: worker_id_for_snapshot.clone(),
-                                version: version_for_snapshot,
-                                script: components.prepared.script,
-                                ops: components.ops,
-                                task,
-                                on_warm_hit: Some(on_warm_hit),
-                                env_updated_at: config.worker_data.env_updated_at,
-                            },
-                        )
-                        .await
-                    }
-                    V8ExecuteMode::Oneshot => {
-                        // Serialize OwnedIsolate creation per thread.
-                        // V8 requires LIFO ordering for Isolate::Enter/Exit. OwnedIsolate
-                        // auto-enters on creation and auto-exits on drop, so concurrent
-                        // isolates on the same thread crash if dropped out of order.
-                        thread_local! {
-                            static ONESHOT_GUARD: Arc<tokio::sync::Semaphore> =
-                                Arc::new(tokio::sync::Semaphore::new(1));
-                        }
-
-                        let guard = ONESHOT_GUARD.with(Arc::clone);
-                        let _permit = guard.acquire().await.map_err(|_| {
-                            TerminationReason::Other("Oneshot semaphore closed".into())
-                        })?;
-
-                        // Fresh isolate per request (no caching)
-                        let mut worker =
-                            create_worker(components.prepared.script, limits, components.ops)
-                                .await
-                                .map_err(|err| {
-                                    tracing::error!("Failed to create worker: {err:?}");
-                                    err
-                                })?;
-
-                        worker.exec(task).await
-                    }
-                };
-
-                // CRITICAL: Flush logs before returning
-                components.log_handler.flush();
-
-                // After successful JS execution, create code cache in background
-                if result.is_ok()
-                    && let Some(js_code) = js_code_for_snapshot
-                {
-                    let worker_id = worker_id_for_snapshot;
-                    let version = version_for_snapshot;
-
-                    tokio::task::spawn_blocking(move || {
-                        match openworkers_runtime_v8::create_code_cache(&js_code) {
-                            Ok(cache) => {
-                                let packed =
-                                    openworkers_runtime_v8::pack_code_cache(&js_code, &cache);
-                                crate::code_cache::put(&worker_id, version, &packed);
-                                tracing::debug!(
-                                    "Created code cache: worker={}, version={}, size={}",
-                                    crate::utils::short_id(&worker_id),
-                                    version,
-                                    packed.len()
-                                );
+    let execution = WORKER_POOL.spawn_await(move || {
+        async move {
+            let result = match execute_mode {
+                V8ExecuteMode::Pinned => {
+                    // Thread-pinned pool (default, best performance)
+                    // Pass worker_id + version for warm context caching.
+                    // The warm hit callback updates the cached ops' per-request state
+                    // so the existing event loop sends logs to the new handler.
+                    let warm_log_tx = components.log_tx.clone();
+                    let warm_span = components.span.clone();
+                    let on_warm_hit: openworkers_runtime_v8::WarmHitCallback =
+                        Box::new(move |cached_ops| {
+                            // Downcast to RunnerOperations to call update_request.
+                            // This updates the cached ops' per-request state (log_tx, span)
+                            // so the existing event loop sends logs to the new handler.
+                            if let Some(runner_ops) =
+                                cached_ops.as_any().downcast_ref::<RunnerOperations>()
+                            {
+                                runner_ops.update_request(warm_log_tx, warm_span);
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Failed to create code cache for worker={}: {}",
-                                    crate::utils::short_id(&worker_id),
-                                    e
-                                );
-                            }
-                        }
-                    });
+                        });
+
+                    openworkers_runtime_v8::execute_pinned(
+                        openworkers_runtime_v8::PinnedExecuteRequest {
+                            owner_id,
+                            worker_id: worker_id_for_snapshot.clone(),
+                            version: version_for_snapshot,
+                            script: components.prepared.script,
+                            ops: components.ops,
+                            task,
+                            on_warm_hit: Some(on_warm_hit),
+                            env_updated_at: config.worker_data.env_updated_at,
+                        },
+                    )
+                    .await
                 }
+                V8ExecuteMode::Oneshot => {
+                    // Serialize OwnedIsolate creation per thread.
+                    // V8 requires LIFO ordering for Isolate::Enter/Exit. OwnedIsolate
+                    // auto-enters on creation and auto-exits on drop, so concurrent
+                    // isolates on the same thread crash if dropped out of order.
+                    thread_local! {
+                        static ONESHOT_GUARD: Arc<tokio::sync::Semaphore> =
+                            Arc::new(tokio::sync::Semaphore::new(1));
+                    }
 
-                result
+                    let guard = ONESHOT_GUARD.with(Arc::clone);
+                    let _permit = guard
+                        .acquire()
+                        .await
+                        .map_err(|_| TerminationReason::Other("Oneshot semaphore closed".into()))?;
+
+                    // Fresh isolate per request (no caching)
+                    let mut worker =
+                        create_worker(components.prepared.script, limits, components.ops)
+                            .await
+                            .map_err(|err| {
+                                tracing::error!("Failed to create worker: {err:?}");
+                                err
+                            })?;
+
+                    worker.exec(task).await
+                }
+            };
+
+            // CRITICAL: Flush logs before returning
+            components.log_handler.flush();
+
+            // After successful JS execution, create code cache in background
+            if result.is_ok()
+                && let Some(js_code) = js_code_for_snapshot
+            {
+                let worker_id = worker_id_for_snapshot;
+                let version = version_for_snapshot;
+
+                tokio::task::spawn_blocking(
+                    move || match openworkers_runtime_v8::create_code_cache(&js_code) {
+                        Ok(cache) => {
+                            let packed = openworkers_runtime_v8::pack_code_cache(&js_code, &cache);
+                            crate::code_cache::put(&worker_id, version, &packed);
+                            tracing::debug!(
+                                "Created code cache: worker={}, version={}, size={}",
+                                crate::utils::short_id(&worker_id),
+                                version,
+                                packed.len()
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to create code cache for worker={}: {}",
+                                crate::utils::short_id(&worker_id),
+                                e
+                            );
+                        }
+                    },
+                );
             }
-            .instrument(span)
-        })
-        .await
-        .unwrap_or_else(|_| {
-            tracing::error!("Worker pool channel closed unexpectedly");
-            Err(TerminationReason::Other(
-                "Worker pool channel closed".to_string(),
-            ))
-        })
+
+            result
+        }
+        .instrument(span)
+    });
+
+    let joined = match external_timeout_ms {
+        Some(timeout_ms) => {
+            match tokio::time::timeout(Duration::from_millis(timeout_ms), execution).await {
+                Ok(joined) => joined,
+                Err(_) => {
+                    tracing::error!(
+                        "Task execution timeout after {}ms (external timeout), releasing pool permit",
+                        timeout_ms
+                    );
+
+                    return Err(TerminationReason::WallClockTimeout);
+                }
+            }
+        }
+        None => execution.await,
+    };
+
+    joined.unwrap_or_else(|_| {
+        tracing::error!("Worker pool channel closed unexpectedly");
+
+        Err(TerminationReason::Other(
+            "Worker pool channel closed".to_string(),
+        ))
+    })
 }
 
 /// Execute a task in the worker pool and await its completion.
