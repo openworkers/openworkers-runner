@@ -154,7 +154,7 @@ fn run_scheduled(
                 // the process. Nothing else releases it, and the pool climbed to
                 // saturation over sixteen hours on the back of that.
                 external_timeout_ms: Some(SCHEDULED_TASK_TIMEOUT_MS),
-                abort: None,
+                abort: Some(tokio_util::sync::CancellationToken::new()),
                 span: tracing::Span::current(),
             };
 

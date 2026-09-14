@@ -744,8 +744,6 @@ fn forwarded_scheme(headers: &hyper::HeaderMap) -> &str {
         .unwrap_or("http")
 }
 
-/// Answer without running the worker, counting the refusal under `reason`. Taking
-/// the timer by value is what keeps a refusal from escaping uncounted.
 /// The answer for a worker that produced no response, with the reason on a header.
 fn terminated_response(
     result: Result<(), openworkers_core::TerminationReason>,
@@ -777,6 +775,8 @@ fn terminated_response(
     }
 }
 
+/// Answer without running the worker, counting the refusal under `reason`. Taking
+/// the timer by value is what keeps a refusal from escaping uncounted.
 fn refuse(
     timer: MetricsTimer,
     span: &tracing::Span,
