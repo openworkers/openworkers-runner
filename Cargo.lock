@@ -3781,7 +3781,7 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runner"
-version = "0.15.13"
+version = "0.15.14"
 dependencies = [
  "async-nats",
  "aws-credential-types",
