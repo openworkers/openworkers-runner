@@ -126,18 +126,9 @@ fn init_otel() -> Result<(), Box<dyn std::error::Error>> {
 
     let span_exporter = span_builder.build()?;
 
-    // Wrap exporter with adaptive sampling
-    // This allows combining tail-based sampling with with_batch_exporter()
-    // which properly propagates resource attributes (unlike with_span_processor)
-    let adaptive_exporter = crate::adaptive_span_exporter::AdaptiveSpanExporter::new(
-        span_exporter,
-        0.01, // min_rate: 1% for high-traffic workers
-        1.0,  // max_rate: 100% for low-traffic workers
-    );
-
     let tracer_provider = SdkTracerProvider::builder()
         .with_resource(resource.clone())
-        .with_batch_exporter(adaptive_exporter)
+        .with_batch_exporter(span_exporter)
         .build();
 
     let tracer = tracer_provider.tracer("openworkers-runner");

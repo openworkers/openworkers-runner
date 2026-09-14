@@ -1,5 +1,3 @@
-#[cfg(feature = "telemetry")]
-pub mod adaptive_span_exporter;
 // Every JavaScript engine caches its lowered source here, and wasm its
 // compiled artifact, so the module follows the use rather than one engine
 #[cfg(any(feature = "_js", feature = "wasm"))]
