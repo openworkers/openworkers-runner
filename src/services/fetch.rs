@@ -54,7 +54,8 @@ fn build_http_client(filtered: bool) -> reqwest::Client {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(100);
 
-    // A fetch that never settles parks the worker's event loop, so keep the cap tight.
+    // A stall cap, not a budget: it fires when the upstream goes quiet for this
+    // long, and lets a body that keeps arriving take as long as it takes.
     let fetch_timeout_ms = std::env::var("FETCH_TIMEOUT_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -65,7 +66,7 @@ fn build_http_client(filtered: bool) -> reqwest::Client {
         .pool_max_idle_per_host(pool_size)
         .pool_idle_timeout(Duration::from_secs(90))
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_millis(fetch_timeout_ms))
+        .read_timeout(Duration::from_millis(fetch_timeout_ms))
         .redirect(reqwest::redirect::Policy::none());
 
     if filtered {
@@ -80,8 +81,8 @@ fn build_http_client(filtered: bool) -> reqwest::Client {
 // WebSocket connections are worker-controlled, so this client is filtered like
 // HTTP_CLIENT_FILTERED. It differs in two ways:
 // - `http1_only`: the upgrade handshake is HTTP/1.1 only.
-// - no total request timeout: an upgraded connection is long-lived, and the
-//   30s cap would kill it. Only the connect timeout applies.
+// - no read timeout: an upgraded connection may sit idle for as long as it
+//   likes. Only the connect timeout applies.
 fn build_ws_client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(format!("openworkers-runner/{}", env!("CARGO_PKG_VERSION")))
@@ -313,7 +314,9 @@ pub async fn do_fetch(
                 thread_name()
             );
         }
-        .instrument(tracing::Span::current()),
+        // A child span: instrumenting the request span itself would move its end
+        // time with every poll of the pump and report the body drain as latency.
+        .instrument(tracing::debug_span!("fetch_body")),
     );
 
     Ok(HttpResponse {
@@ -360,6 +363,88 @@ mod tests {
             result.is_err(),
             "localhost should be blocked by the resolver"
         );
+    }
+
+    /// Serves one chunked 200: `chunks` bodies of ten bytes, `gap` apart, then
+    /// either the terminating chunk or nothing at all.
+    async fn chunked_server(chunks: usize, gap: Duration, finish: bool) -> String {
+        use tokio::io::AsyncReadExt;
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request).await;
+
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+
+            for _ in 0..chunks {
+                tokio::time::sleep(gap).await;
+                socket.write_all(b"a\r\nxxxxxxxxxx\r\n").await.unwrap();
+            }
+
+            if finish {
+                socket.write_all(b"0\r\n\r\n").await.unwrap();
+            } else {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
+
+        url
+    }
+
+    fn stall_cap(ms: &str) {
+        // Read once per thread when the client is first built; each test runs
+        // on its own thread and builds its own.
+        unsafe { std::env::set_var("FETCH_TIMEOUT_MS", ms) };
+    }
+
+    async fn fetch_body(url: String) -> Result<Option<bytes::Bytes>, String> {
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            url,
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+        let stats = OperationsStats::new();
+        let response = do_fetch(request, &stats, None, None, EgressPolicy::Unrestricted).await?;
+
+        response.body.collect().await
+    }
+
+    #[tokio::test]
+    async fn a_slow_body_outlasts_the_stall_cap() {
+        stall_cap("300");
+
+        // Eight chunks a hundred milliseconds apart: well past a 300 ms budget,
+        // never 300 ms without a byte.
+        let url = chunked_server(8, Duration::from_millis(100), true).await;
+        let body = fetch_body(url)
+            .await
+            .expect("a body that keeps arriving must not be cut")
+            .expect("the body was sent");
+
+        assert_eq!(body.len(), 80);
+    }
+
+    #[tokio::test]
+    async fn a_silent_upstream_trips_the_stall_cap() {
+        stall_cap("300");
+
+        let url = chunked_server(1, Duration::from_millis(10), false).await;
+        let result = tokio::time::timeout(Duration::from_secs(3), fetch_body(url))
+            .await
+            .expect("the stall cap must fire long before this");
+
+        assert!(result.is_err(), "an upstream that goes quiet must be cut");
     }
 
     #[test]
