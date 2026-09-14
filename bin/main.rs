@@ -662,21 +662,11 @@ async fn handle_worker_request(
         channel::<Result<(), openworkers_core::TerminationReason>>();
 
     // Create disconnect notification channel
-    let (disconnect_tx, disconnect_rx) = channel::<()>();
+    let (disconnect_tx, _disconnect_rx) = channel::<()>();
 
-    // The receiver resolves when the response body is dropped, whether the client
-    // read it or hung up, so cancelling here also clears ops left over by a
-    // request that ended without them.
+    // Cancelled only when this request is given up on: a body being dropped is
+    // how every response ends, and waitUntil work may still be running then.
     let abort = tokio_util::sync::CancellationToken::new();
-
-    tokio::spawn({
-        let abort = abort.clone();
-
-        async move {
-            let _ = disconnect_rx.await;
-            abort.cancel();
-        }
-    });
 
     // Mark worker spawned (for queue time metric)
     metrics_timer.mark_worker_spawned();
@@ -690,55 +680,32 @@ async fn handle_worker_request(
         permit,
         state.db_worker.clone(),
         state.wall_clock_timeout_ms,
-        abort,
+        abort.clone(),
         span.clone(),
     );
 
-    let (response, outcome) = match res_rx.await {
-        Ok(res) => {
-            // Convert to hyper Response with disconnect notification
-            (
+    // The pooled task frees its permit on this same deadline but keeps res_tx, so
+    // nothing answers the client unless this does. Cancelling the scope settles
+    // whatever op the guest is still awaiting.
+    let deadline = Duration::from_millis(state.wall_clock_timeout_ms);
+
+    let (response, outcome) =
+        match tokio::time::timeout(deadline, res_rx).await {
+            Ok(Ok(res)) => (
                 res.into_hyper_with_disconnect(Some(disconnect_tx)),
                 Outcome::Success,
-            )
-        }
-        Err(_) => {
-            // Worker didn't send response, check termination reason
-            use openworkers_core::TerminationReason;
-
-            let result = termination_rx
-                .await
-                .unwrap_or(Err(TerminationReason::Other("Unknown error".to_string())));
-
-            let (resp, outcome) = match result {
-                Ok(()) => {
-                    error!("worker completed but did not send response");
-                    (
-                        error_response(
-                            500,
-                            "Worker completed but did not send a response (missing fetch event listener?)",
-                        ),
-                        Outcome::Failed("no_response"),
-                    )
-                }
-                Err(reason) => {
-                    error!("worker terminated without sending response: {:?}", reason);
-                    let mut resp = error_response(reason.http_status(), &reason.to_string());
-                    // Add termination reason header
-                    *resp.headers_mut() = {
-                        let mut headers = resp.headers().clone();
-                        headers.insert(
-                            "x-termination-reason",
-                            format!("{:?}", reason).parse().unwrap(),
-                        );
-                        headers
-                    };
-                    (resp, Outcome::terminated(&reason))
-                }
-            };
-            (resp, outcome)
-        }
-    };
+            ),
+            Ok(Err(_)) => {
+                let result = termination_rx.await.unwrap_or(Err(
+                    openworkers_core::TerminationReason::Other("Unknown error".to_string()),
+                ));
+                terminated_response(result)
+            }
+            Err(_) => {
+                abort.cancel();
+                terminated_response(Err(openworkers_core::TerminationReason::WallClockTimeout))
+            }
+        };
 
     // Abort body pump if still running (free the connection)
     if let Some(handle) = pump_handle {
@@ -779,6 +746,37 @@ fn forwarded_scheme(headers: &hyper::HeaderMap) -> &str {
 
 /// Answer without running the worker, counting the refusal under `reason`. Taking
 /// the timer by value is what keeps a refusal from escaping uncounted.
+/// The answer for a worker that produced no response, with the reason on a header.
+fn terminated_response(
+    result: Result<(), openworkers_core::TerminationReason>,
+) -> (Response<HyperBody>, Outcome) {
+    match result {
+        Ok(()) => {
+            error!("worker completed but did not send response");
+            (
+                error_response(
+                    500,
+                    "Worker completed but did not send a response (missing fetch event listener?)",
+                ),
+                Outcome::Failed("no_response"),
+            )
+        }
+        Err(reason) => {
+            error!("worker terminated without sending response: {:?}", reason);
+            let mut resp = error_response(reason.http_status(), &reason.to_string());
+            *resp.headers_mut() = {
+                let mut headers = resp.headers().clone();
+                headers.insert(
+                    "x-termination-reason",
+                    format!("{:?}", reason).parse().unwrap(),
+                );
+                headers
+            };
+            (resp, Outcome::terminated(&reason))
+        }
+    }
+}
+
 fn refuse(
     timer: MetricsTimer,
     span: &tracing::Span,

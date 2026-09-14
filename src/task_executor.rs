@@ -203,6 +203,7 @@ pub async fn execute_task_await_v8_pooled(
     let execute_mode = V8ExecuteMode::get();
     let external_timeout_ms = config.external_timeout_ms;
     let abort = config.abort.clone();
+    let abort_for_task = abort.clone();
     let span = config.span.clone();
 
     // Held here rather than in the pooled task, so the timeout below can release it
@@ -242,7 +243,7 @@ pub async fn execute_task_await_v8_pooled(
                             task,
                             on_warm_hit: Some(on_warm_hit),
                             env_updated_at: config.worker_data.env_updated_at,
-                            abort,
+                            abort: abort_for_task,
                         },
                     )
                     .await
@@ -323,6 +324,11 @@ pub async fn execute_task_await_v8_pooled(
                         "Task execution timeout after {}ms (external timeout), releasing pool permit",
                         timeout_ms
                     );
+
+                    // The task runs on; cancelling its scope settles the op it waits on.
+                    if let Some(abort) = &abort {
+                        abort.cancel();
+                    }
 
                     return Err(TerminationReason::WallClockTimeout);
                 }
