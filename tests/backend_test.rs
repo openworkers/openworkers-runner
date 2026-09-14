@@ -3,6 +3,7 @@
 
 use openworkers_core::BindingType;
 use openworkers_runner::runtime;
+use openworkers_runner::store::WorkerSource;
 use openworkers_runner::store::{Binding, CodeType, StorageConfig, WorkerWithBindings};
 use openworkers_runner::worker::prepare_script;
 use std::collections::HashMap;
@@ -12,7 +13,7 @@ fn worker(code: &str, code_type: CodeType, bindings: Vec<Binding>) -> WorkerWith
         id: "test-worker".to_string(),
         name: Some("test".to_string()),
         user_id: "test-user".to_string(),
-        code: code.as_bytes().to_vec(),
+        code: WorkerSource::Bytes(code.as_bytes().to_vec()),
         code_type,
         version: 1,
         env: HashMap::new(),

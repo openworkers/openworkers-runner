@@ -9,7 +9,10 @@ use crate::runtime::Backend;
 use crate::runtime::JsWorker;
 #[cfg(feature = "wasm")]
 use crate::runtime::WasmWorker;
-use crate::store::{CodeType, WorkerWithBindings, bindings_to_infos};
+use crate::store::CodeType;
+use crate::store::WorkerSource;
+use crate::store::WorkerWithBindings;
+use crate::store::bindings_to_infos;
 
 use openworkers_core::{
     BindingInfo, Event, OperationsHandle, RuntimeLimits, Script, TerminationReason, WorkerCode,
@@ -116,49 +119,36 @@ pub async fn create_cached_worker(
 
 /// Parse worker code based on code type, naming the backend that will run it.
 ///
-/// For JS/TS workers on v8: checks the code cache (fast path) and returns cached
-/// bytecode. On cache miss, transpiles the source and returns JS - a code cache
-/// entry is created in the background after first successful execution.
+/// For JS/TS workers on v8: the store already asked the code cache, so a cached
+/// entry is returned as bytecode and the deployment's bytes are transpiled
+/// otherwise; a code cache entry is created in the background after the first
+/// successful execution.
 fn parse_code(data: &WorkerWithBindings) -> Result<(Backend, WorkerCode), TerminationReason> {
     match data.code_type {
         CodeType::Javascript | CodeType::Typescript => {
             #[cfg(feature = "_js")]
             {
-                #[cfg(feature = "v8")]
-                if let Some(snapshot) = crate::code_cache::get(&data.id, data.version) {
-                    tracing::debug!(
-                        "code cache HIT: worker={}, version={}, size={}",
-                        crate::utils::short_id(&data.id),
-                        data.version,
-                        snapshot.len()
-                    );
-                    return Ok((Backend::Js, WorkerCode::snapshot(snapshot)));
-                }
-
-                #[cfg(feature = "v8")]
-                tracing::debug!(
-                    "code cache MISS: worker={}, version={}",
-                    crate::utils::short_id(&data.id),
-                    data.version
-                );
-
-                // A backend with no code cache of its own still pays the SWC
-                // pass on every cold start, which is the larger half of a
-                // megabyte bundle's cost. The lowered source is the same for
-                // every one of them.
-                #[cfg(not(feature = "v8"))]
-                if let Some(lowered) = crate::code_cache::get(&data.id, data.version)
-                    && let Ok(lowered) = String::from_utf8(lowered)
-                {
-                    tracing::debug!(
-                        "lowered code HIT: worker={}, version={}, size={}",
-                        crate::utils::short_id(&data.id),
-                        data.version,
-                        lowered.len()
-                    );
-
-                    return Ok((Backend::Js, WorkerCode::js(lowered)));
-                }
+                let source = match &data.code {
+                    #[cfg(feature = "v8")]
+                    WorkerSource::Cached(snapshot) => {
+                        return Ok((Backend::Js, WorkerCode::snapshot(snapshot.clone())));
+                    }
+                    // A backend with no code cache of its own still pays the SWC
+                    // pass on every cold start, which is the larger half of a
+                    // megabyte bundle's cost. The lowered source is the same for
+                    // every one of them.
+                    #[cfg(not(feature = "v8"))]
+                    WorkerSource::Cached(lowered) => {
+                        return String::from_utf8(lowered.clone())
+                            .map(|lowered| (Backend::Js, WorkerCode::js(lowered)))
+                            .map_err(|e| {
+                                TerminationReason::InitializationError(format!(
+                                    "cached lowered code is not UTF-8: {e}"
+                                ))
+                            });
+                    }
+                    WorkerSource::Bytes(source) => source,
+                };
 
                 let language = match data.code_type {
                     CodeType::Javascript => openworkers_transform::CodeLanguage::JavaScript,
@@ -166,7 +156,7 @@ fn parse_code(data: &WorkerWithBindings) -> Result<(Backend, WorkerCode), Termin
                     _ => unreachable!(),
                 };
 
-                let transpiled = openworkers_transform::parse_worker_code(&data.code, language)
+                let transpiled = openworkers_transform::parse_worker_code(source, language)
                     .map_err(|e| {
                         TerminationReason::InitializationError(format!(
                             "Failed to parse worker code: {}",
@@ -188,7 +178,7 @@ fn parse_code(data: &WorkerWithBindings) -> Result<(Backend, WorkerCode), Termin
         CodeType::Wasm => {
             #[cfg(feature = "wasm")]
             {
-                Ok((Backend::Wasm, WorkerCode::wasm(data.code.clone())))
+                Ok((Backend::Wasm, WorkerCode::wasm(data.code.bytes().to_vec())))
             }
 
             #[cfg(not(feature = "wasm"))]
@@ -199,7 +189,10 @@ fn parse_code(data: &WorkerWithBindings) -> Result<(Backend, WorkerCode), Termin
         CodeType::Snapshot => {
             #[cfg(feature = "v8")]
             {
-                Ok((Backend::Js, WorkerCode::snapshot(data.code.clone())))
+                Ok((
+                    Backend::Js,
+                    WorkerCode::snapshot(data.code.bytes().to_vec()),
+                ))
             }
 
             #[cfg(not(feature = "v8"))]

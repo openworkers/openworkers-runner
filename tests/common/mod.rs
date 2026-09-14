@@ -15,6 +15,7 @@ use openworkers_runner::store::DatabaseConfig;
 use openworkers_runner::store::DatabaseProvider;
 use openworkers_runner::store::KvConfig;
 use openworkers_runner::store::StorageConfig;
+use openworkers_runner::store::WorkerSource;
 use openworkers_runner::store::WorkerWithBindings;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -63,7 +64,7 @@ pub fn probe_worker(id: &str, code: Vec<u8>) -> WorkerWithBindings {
         id: id.to_string(),
         name: Some("test".to_string()),
         user_id: "test-user".to_string(),
-        code,
+        code: WorkerSource::Bytes(code),
         code_type: CodeType::Wasm,
         version: 1,
         env: HashMap::new(),

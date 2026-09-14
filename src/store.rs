@@ -169,6 +169,26 @@ pub struct WorkerData {
     pub version: i32,
 }
 
+/// The code the store hands the parser.
+#[derive(Debug)]
+pub enum WorkerSource {
+    /// The deployment's bytes, still to be lowered or loaded.
+    Bytes(Vec<u8>),
+    /// The code cache's entry for this worker and version. The deployment's
+    /// bytes were not fetched: the entry makes them redundant, and they are
+    /// the weight of the worker row.
+    Cached(Vec<u8>),
+}
+
+impl WorkerSource {
+    /// The bytes either way, for the backends that take them as they are.
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Bytes(bytes) | Self::Cached(bytes) => bytes,
+        }
+    }
+}
+
 /// Extended worker data with binding configs
 #[derive(Debug)]
 pub struct WorkerWithBindings {
@@ -176,7 +196,7 @@ pub struct WorkerWithBindings {
     pub name: Option<String>,
     /// Owner/tenant ID for isolate pool isolation
     pub user_id: String,
-    pub code: Vec<u8>,
+    pub code: WorkerSource,
     pub code_type: CodeType,
     pub version: i32,
     /// Simple env vars (for backwards compatibility)
@@ -201,16 +221,80 @@ impl From<WorkerData> for WorkerWithBindings {
             })
             .collect();
 
+        let code = match cached_code(&data.id, data.version, &data.code_type) {
+            Some(blob) => WorkerSource::Cached(blob),
+            None => WorkerSource::Bytes(data.code),
+        };
+
         Self {
             id: data.id,
             name: data.name,
             user_id: data.user_id,
-            code: data.code,
+            code,
             code_type: data.code_type,
             version: data.version,
             env,
             bindings,
             env_updated_at: None,
+        }
+    }
+}
+
+/// The code cache's entry for a JavaScript worker, which stands in for the
+/// deployment's bytes. Every other kind keeps its bytes.
+fn cached_code(id: &str, version: i32, code_type: &CodeType) -> Option<Vec<u8>> {
+    if !matches!(*code_type, CodeType::Javascript | CodeType::Typescript) {
+        return None;
+    }
+
+    let entry = crate::code_cache::get(id, version);
+
+    match &entry {
+        Some(blob) => tracing::debug!(
+            "code cache HIT: worker={}, version={}, size={}",
+            short_id(id),
+            version,
+            blob.len()
+        ),
+        None => tracing::debug!(
+            "code cache MISS: worker={}, version={}",
+            short_id(id),
+            version
+        ),
+    }
+
+    entry
+}
+
+/// The deployment's bytes, fetched apart from the worker row: a warm worker
+/// never reads them, and they are most of what the row weighs.
+async fn fetch_deployment_code(
+    conn: &mut sqlx::PgConnection,
+    worker_id: &str,
+    version: i32,
+) -> Option<Vec<u8>> {
+    let query = r#"
+        SELECT code
+        FROM worker_deployments
+        WHERE worker_id::text = $1 AND version = $2
+    "#;
+
+    match sqlx::query_scalar::<_, Vec<u8>>(query)
+        .bind(worker_id)
+        .bind(version)
+        .fetch_one(conn)
+        .instrument(db_span!("SELECT", "worker_deployments"))
+        .await
+    {
+        Ok(code) => Some(code),
+        Err(err) => {
+            tracing::warn!(
+                "deployment code not found: worker={}, version={}: {:?}",
+                short_id(worker_id),
+                version,
+                err
+            );
+            None
         }
     }
 }
@@ -288,14 +372,14 @@ pub async fn get_worker_with_bindings(
 ) -> Option<WorkerWithBindings> {
     tracing::debug!("get_worker_with_bindings: {:?}", identifier);
 
-    // First get the basic worker data with code from deployments
+    // The worker row without its code: the code comes apart, and only when the
+    // cache has nothing for this version.
     let worker_query = format!(
         r#"
         SELECT
             W.id::text,
             W.name,
             W.user_id::text,
-            D.code,
             D.code_type,
             W.current_version as version
         FROM workers AS W
@@ -318,7 +402,6 @@ pub async fn get_worker_with_bindings(
         id: String,
         name: Option<String>,
         user_id: String,
-        code: Vec<u8>,
         code_type: CodeType,
         version: i32,
     }
@@ -462,11 +545,16 @@ pub async fn get_worker_with_bindings(
         env_updated_at,
     );
 
+    let code = match cached_code(&basic.id, basic.version, &basic.code_type) {
+        Some(blob) => WorkerSource::Cached(blob),
+        None => WorkerSource::Bytes(fetch_deployment_code(conn, &basic.id, basic.version).await?),
+    };
+
     Some(WorkerWithBindings {
         id: basic.id,
         name: basic.name,
         user_id: basic.user_id,
-        code: basic.code,
+        code,
         code_type: basic.code_type,
         version: basic.version,
         env,

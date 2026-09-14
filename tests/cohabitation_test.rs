@@ -17,6 +17,7 @@ use openworkers_core::OperationsHandle;
 use openworkers_core::RequestBody;
 use openworkers_runner::ops::RunnerOperations;
 use openworkers_runner::store::CodeType;
+use openworkers_runner::store::WorkerSource;
 use openworkers_runner::store::WorkerWithBindings;
 use openworkers_runner::task_executor::TaskExecutionConfig;
 use openworkers_runner::worker::create_cached_worker;
@@ -29,8 +30,10 @@ fn js_worker() -> WorkerWithBindings {
         id: "cohabitation-js".to_string(),
         name: Some("js".to_string()),
         user_id: "test-user".to_string(),
-        code: b"addEventListener('fetch', (event) => event.respondWith(new Response('js')));"
-            .to_vec(),
+        code: WorkerSource::Bytes(
+            b"addEventListener('fetch', (event) => event.respondWith(new Response('js')));"
+                .to_vec(),
+        ),
         code_type: CodeType::Javascript,
         version: 1,
         env: HashMap::new(),

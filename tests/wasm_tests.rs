@@ -3,6 +3,7 @@
 //! Minimal tests for the WebAssembly runtime.
 
 use openworkers_core::{TerminationReason, WorkerCode};
+use openworkers_runner::store::WorkerSource;
 use openworkers_runner::store::{
     Binding, CodeType, DatabaseConfig, DatabaseProvider, KvConfig, StorageConfig,
     WorkerBindingConfig, WorkerWithBindings,
@@ -16,7 +17,7 @@ fn create_test_worker(code: Vec<u8>, code_type: CodeType) -> WorkerWithBindings 
         id: "test-worker".to_string(),
         name: Some("test".to_string()),
         user_id: "test-user".to_string(),
-        code,
+        code: WorkerSource::Bytes(code),
         code_type,
         version: 1,
         env: HashMap::new(),
