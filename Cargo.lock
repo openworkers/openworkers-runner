@@ -3834,21 +3834,24 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-boa"
-version = "0.15.2"
-source = "git+https://github.com/openworkers/openworkers-runtime-boa?tag=v0.15.2#9904524aa70b752745f21c8427d0867869fb321f"
+version = "0.15.3"
+source = "git+https://github.com/openworkers/openworkers-runtime-boa?tag=v0.15.3#9f469b2ee9ecf291c65ec5c3d4fe74c0212024ad"
 dependencies = [
  "boa_engine",
  "boa_gc",
  "boa_runtime",
  "bytes",
+ "encoding_rs",
  "getrandom 0.4.3",
  "http 1.5.0",
  "openworkers-core",
+ "openworkers-wintertc 0.1.6",
  "serde",
  "serde_json",
  "sha1 0.11.0",
  "sha2 0.11.0",
  "tokio",
+ "url",
  "uuid",
 ]
 
