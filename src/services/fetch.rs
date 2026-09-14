@@ -53,12 +53,18 @@ fn build_http_client(filtered: bool) -> reqwest::Client {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(100);
 
+    // A fetch that never settles parks the worker's event loop, so keep the cap tight.
+    let fetch_timeout_ms = std::env::var("FETCH_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(10_000);
+
     let mut builder = reqwest::Client::builder()
         .user_agent(format!("openworkers-runner/{}", env!("CARGO_PKG_VERSION")))
         .pool_max_idle_per_host(pool_size)
         .pool_idle_timeout(Duration::from_secs(90))
         .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_millis(fetch_timeout_ms))
         .redirect(reqwest::redirect::Policy::none());
 
     if filtered {
