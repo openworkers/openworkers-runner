@@ -70,6 +70,8 @@ pub struct TaskExecutionConfig {
     pub global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
     pub limits: RuntimeLimits,
     pub external_timeout_ms: Option<u64>,
+    /// Cancelled when the client goes away, to stop ops nobody will read.
+    pub abort: Option<tokio_util::sync::CancellationToken>,
     pub span: tracing::Span,
 }
 
@@ -200,6 +202,7 @@ pub async fn execute_task_await_v8_pooled(
     let limits = config.limits;
     let execute_mode = V8ExecuteMode::get();
     let external_timeout_ms = config.external_timeout_ms;
+    let abort = config.abort.clone();
     let span = config.span.clone();
 
     // Held here rather than in the pooled task, so the timeout below can release it
@@ -239,6 +242,7 @@ pub async fn execute_task_await_v8_pooled(
                             task,
                             on_warm_hit: Some(on_warm_hit),
                             env_updated_at: config.worker_data.env_updated_at,
+                            abort,
                         },
                     )
                     .await

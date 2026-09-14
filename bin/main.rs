@@ -662,7 +662,21 @@ async fn handle_worker_request(
         channel::<Result<(), openworkers_core::TerminationReason>>();
 
     // Create disconnect notification channel
-    let (disconnect_tx, _disconnect_rx) = channel::<()>();
+    let (disconnect_tx, disconnect_rx) = channel::<()>();
+
+    // The receiver resolves when the response body is dropped, whether the client
+    // read it or hung up, so cancelling here also clears ops left over by a
+    // request that ended without them.
+    let abort = tokio_util::sync::CancellationToken::new();
+
+    tokio::spawn({
+        let abort = abort.clone();
+
+        async move {
+            let _ = disconnect_rx.await;
+            abort.cancel();
+        }
+    });
 
     // Mark worker spawned (for queue time metric)
     metrics_timer.mark_worker_spawned();
@@ -676,10 +690,9 @@ async fn handle_worker_request(
         permit,
         state.db_worker.clone(),
         state.wall_clock_timeout_ms,
+        abort,
         span.clone(),
     );
-
-    // TODO: Pass disconnect_rx to the worker so it can stop processing
 
     let (response, outcome) = match res_rx.await {
         Ok(res) => {

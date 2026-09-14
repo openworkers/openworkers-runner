@@ -20,6 +20,7 @@ pub fn run_fetch(
     permit: tokio::sync::OwnedSemaphorePermit,
     db_pool: DbPool,
     wall_clock_timeout_ms: u64,
+    abort: tokio_util::sync::CancellationToken,
     span: tracing::Span,
 ) {
     // Parse script before spawning (fail fast)
@@ -48,6 +49,7 @@ pub fn run_fetch(
         global_log_tx,
         limits: task_executor::TaskExecutionConfig::default_limits(),
         external_timeout_ms: Some(wall_clock_timeout_ms),
+        abort: Some(abort),
         span: span.clone(),
     };
 
