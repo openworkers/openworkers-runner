@@ -80,6 +80,24 @@ impl SequentialWorkerPool {
                     // multiple Lockers coexist and IsolateGuard (enter/exit per
                     // V8 work block) ensures GetCurrent() returns the correct isolate.
                     rt.block_on(async {
+                        // Spawned onto the runtime, not the LocalSet, so it shares the
+                        // fate of every other spawned task here, the fetch body pump
+                        // included: if the runtime stops polling them, this stops too.
+                        tokio::spawn(async move {
+                            let mut interval = tokio::time::interval(Duration::from_secs(60));
+                            let mut tick = 0u64;
+
+                            loop {
+                                interval.tick().await;
+                                tick += 1;
+                                tracing::debug!(
+                                    "v8-worker-{} runtime alive, tick {}",
+                                    thread_idx,
+                                    tick
+                                );
+                            }
+                        });
+
                         let local = tokio::task::LocalSet::new();
 
                         local

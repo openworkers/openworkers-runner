@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing::Instrument;
 
 use crate::ops::OperationsStats;
 use crate::services::net_guard::EgressPolicy;
@@ -161,6 +162,12 @@ pub fn try_internal_worker_route(request: &HttpRequest) -> Option<HttpRequest> {
     })
 }
 
+/// Names the thread a fetch stage runs on, to tell the hyper handler's runtime
+/// from a v8-worker thread in the logs.
+fn thread_name() -> String {
+    std::thread::current().name().unwrap_or("?").to_string()
+}
+
 /// Optional worker context injected as headers on outgoing fetch requests.
 pub struct FetchContext<'a> {
     pub worker_id: Option<&'a str>,
@@ -245,6 +252,7 @@ pub async fn do_fetch(
         .map_err(|e| format!("Request failed: {}", e))?;
 
     let status = response.status().as_u16();
+    tracing::debug!("[fetch] headers status={} thread={}", status, thread_name());
 
     // Collect headers
     let mut headers = Vec::new();
@@ -267,28 +275,46 @@ pub async fn do_fetch(
 
     // spawn, not spawn_local: this same path runs on the hyper handler's runtime,
     // which has no LocalSet.
-    tokio::task::spawn(async move {
-        use futures::StreamExt;
-        let mut stream = response.bytes_stream();
+    tokio::task::spawn(
+        async move {
+            use futures::StreamExt;
+            let mut stream = response.bytes_stream();
+            let mut chunks = 0u64;
+            let mut bytes = 0u64;
 
-        while let Some(chunk_result) = stream.next().await {
-            match chunk_result {
-                Ok(chunk) => {
-                    stats_clone
-                        .fetch_bytes_in
-                        .fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            while let Some(chunk_result) = stream.next().await {
+                match chunk_result {
+                    Ok(chunk) => {
+                        if chunks == 0 {
+                            tracing::debug!("[fetch] body first chunk thread={}", thread_name());
+                        }
 
-                    if tx.send(Ok(chunk)).await.is_err() {
+                        chunks += 1;
+                        bytes += chunk.len() as u64;
+                        stats_clone
+                            .fetch_bytes_in
+                            .fetch_add(chunk.len() as u64, Ordering::Relaxed);
+
+                        if tx.send(Ok(chunk)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e.to_string())).await;
                         break;
                     }
                 }
-                Err(e) => {
-                    let _ = tx.send(Err(e.to_string())).await;
-                    break;
-                }
             }
+
+            tracing::debug!(
+                "[fetch] body done chunks={} bytes={} thread={}",
+                chunks,
+                bytes,
+                thread_name()
+            );
         }
-    });
+        .instrument(tracing::Span::current()),
+    );
 
     Ok(HttpResponse {
         status,
