@@ -265,9 +265,8 @@ pub async fn do_fetch(
         .fetch_bytes_in
         .store(fetch_bytes_in, Ordering::Relaxed);
 
-    // Use tokio::spawn() since worker threads now use multi_thread runtime.
-    // This allows the stream task to outlive the worker's LocalSet.
-    // The stream continues on the tokio runtime even after worker completes.
+    // spawn, not spawn_local: this same path runs on the hyper handler's runtime,
+    // which has no LocalSet.
     tokio::task::spawn(async move {
         use futures::StreamExt;
         let mut stream = response.bytes_stream();
