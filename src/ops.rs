@@ -561,12 +561,15 @@ impl OperationsHandler for RunnerOperations {
 
                 match op {
                     DatabaseOp::Query { sql, params } => {
+                        // The values are the guest's data and unbounded with it:
+                        // one worker writes a multi-megabyte JSON blob every
+                        // minute, which no OTLP record can carry.
                         tracing::debug!(
-                            "[ops] database {} ({:?}) query: {} (params: {:?})",
+                            "[ops] database {} ({:?}) query: {} ({} params)",
                             binding_name,
                             config.provider,
-                            sql,
-                            params
+                            crate::utils::truncated(&sql),
+                            params.len()
                         );
 
                         // Validate the SQL using postgate parser (allow all operations)
