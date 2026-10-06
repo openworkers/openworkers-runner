@@ -47,8 +47,7 @@ all Rust, which is what makes it the candidate for a target where a V8 build is
 not worth its size. It scores 429 of the 448 tests `openworkers-conformance`
 measures, against v8's 448, and serves the dashboard.
 
-Optional on top of a backend: `database` (default), `telemetry`, and
-`multiplexing` (v8 only, ignored elsewhere).
+Optional on top of a backend: `database` (default) and `telemetry`.
 
 ### Snapshot the runtime (V8 only)
 
@@ -107,6 +106,8 @@ compiled once instead of on every cold start.
 | `WORKER_POOL_SIZE`         | CPU cores   | Number of V8 worker threads                        |
 | `MAX_QUEUED_WORKERS`       | pool × 10   | Max queued tasks before backpressure               |
 | `WORKER_WAIT_TIMEOUT_MS`   | `10000`     | Timeout (ms) waiting for a worker slot             |
+| `ISOLATE_MAX_CONCURRENT`   | `1`         | Requests one isolate serves at once (images: 20)   |
+| `CONTEXT_MAX_REUSES`       | `1000`      | Requests a warm context serves before it ages out  |
 
 `V8_EXECUTE` modes:
 

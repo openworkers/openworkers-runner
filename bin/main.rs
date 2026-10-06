@@ -965,6 +965,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(100); // Default: 100ms
 
+        // Requests one isolate serves at once; above 1 they share it through
+        // the runtime's fair queue.
+        let max_concurrent_per_isolate = std::env::var("ISOLATE_MAX_CONCURRENT")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(1);
+
+        let max_context_reuses = std::env::var("CONTEXT_MAX_REUSES")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(1000);
+
         let pool_limits = RuntimeLimits {
             heap_initial_mb,
             heap_max_mb,
@@ -984,8 +996,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     openworkers_runtime_v8::PinnedPoolConfig {
                         max_per_thread: pool_max_size,
                         max_per_owner: None,
-                        max_concurrent_per_isolate: 20,
+                        max_concurrent_per_isolate,
                         max_cached_contexts: 10,
+                        overcommit: true,
+                        max_context_reuses,
                         limits: pool_limits,
                     },
                 );
