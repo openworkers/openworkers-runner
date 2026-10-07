@@ -5,6 +5,12 @@
 !/src
 !/bin
 
+# Cargo.toml declares the tests and the bench as targets, and cargo refuses a
+# manifest whose targets are missing
+!/tests
+!/benches
+/tests/**/target
+
 # Allow cargo files
 !Cargo.toml
 !Cargo.lock
