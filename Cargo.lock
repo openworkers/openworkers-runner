@@ -3914,8 +3914,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.15.13"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.13#3e54a4a45068112cda083cd52769a2e7970a74bd"
+version = "0.15.14"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.14#e9039798eeb1bdca31b6f8967fae14d09cac8406"
 dependencies = [
  "bytes",
  "encoding_rs",
@@ -3927,7 +3927,7 @@ dependencies = [
  "openworkers-runtime-v8-gc-derive",
  "openworkers-serde-v8",
  "openworkers-v8",
- "openworkers-wintertc 0.1.4",
+ "openworkers-wintertc 0.1.7",
  "ring",
  "serde",
  "serde_json",
@@ -3945,7 +3945,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.13#3e54a4a45068112cda083cd52769a2e7970a74bd"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.14#e9039798eeb1bdca31b6f8967fae14d09cac8406"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3954,8 +3954,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-wasm"
-version = "0.15.2"
-source = "git+https://github.com/openworkers/openworkers-runtime-wasm?tag=v0.15.2#38e59229a52cd05a4e6cfe1677e6a958b6fc7b9c"
+version = "0.15.4"
+source = "git+https://github.com/openworkers/openworkers-runtime-wasm?tag=v0.15.4#a526c3e62458b05600d37cacbe653b00975399a0"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -4015,13 +4015,13 @@ dependencies = [
 
 [[package]]
 name = "openworkers-wintertc"
-version = "0.1.4"
-source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.4#b8bcceb3e61f5c86c23aa1a69cb9ea2a7810d52f"
+version = "0.1.6"
+source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.6#e7825c2b8be933d54d206197822be00ee65e345f"
 
 [[package]]
 name = "openworkers-wintertc"
-version = "0.1.6"
-source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.6#e7825c2b8be933d54d206197822be00ee65e345f"
+version = "0.1.7"
+source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.7#1e71e5ccd91b79039d50eb06b513eaff22f17a75"
 
 [[package]]
 name = "outref"
