@@ -1,0 +1,38 @@
+name: Lint
+
+# The pre-commit hook checks --features v8 only. Each backend set below
+# compiles different code, so each one gets its own clippy run.
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    branches:
+      - main
+      - dev
+
+jobs:
+  clippy:
+    name: Clippy (${{ matrix.features }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ["v8,wasm", "wasm", "quickjs,wasm"]
+    steps:
+      - name: Check Out Repo
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.features }}
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --features "${{ matrix.features }}" --lib --tests --bins -- -D warnings
