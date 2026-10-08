@@ -67,8 +67,8 @@ impl OperationsStats {
     }
 }
 
-/// Log message sender (sends LogEvent to the log handler)
-pub type LogTx = std::sync::mpsc::Sender<LogEvent>;
+/// Log message sender (sends LogEvent to the global log publisher)
+pub type LogTx = crate::log::LogSender;
 
 /// Binding configs indexed by binding name
 #[derive(Debug, Default, Clone)]
@@ -914,7 +914,10 @@ mod tests {
     fn test_runner_operations_update_request() {
         let ops = RunnerOperations::new();
         let (tx, _rx) = std::sync::mpsc::channel();
-        ops.update_request(tx, tracing::Span::none());
+        ops.update_request(
+            crate::log::LogSender::new("worker".to_string(), tx),
+            tracing::Span::none(),
+        );
         assert!(ops.request_state.lock().unwrap().log_tx.is_some());
     }
 
@@ -946,8 +949,7 @@ mod tests {
     #[test]
     fn test_update_request_creates_fresh_limiters() {
         let ops = RunnerOperations::new();
-        let (_tx_a, _rx_a) = std::sync::mpsc::channel::<LogEvent>();
-        let (tx_b, _rx_b) = std::sync::mpsc::channel::<LogEvent>();
+        let (tx_b, _rx_b) = std::sync::mpsc::channel();
 
         // Request A grabs its limiters and simulates some usage
         let limiters_a = ops.limiters();
@@ -962,7 +964,10 @@ mod tests {
         assert_eq!(limiters_a.fetch.count(), 5);
 
         // Warm reuse: new request B arrives
-        ops.update_request(tx_b, tracing::Span::none());
+        ops.update_request(
+            crate::log::LogSender::new("worker".to_string(), tx_b),
+            tracing::Span::none(),
+        );
         let limiters_b = ops.limiters();
 
         // B must have fresh counters

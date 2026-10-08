@@ -162,8 +162,32 @@ async fn flush_worker(nc: &async_nats::Client, batch: &mut Vec<LogMessage>, work
     *batch = remaining;
 }
 
+/// Sends one worker's log events to the global publisher. Events and the
+/// final FlushWorker go through the same channel, so the publisher gets
+/// every event of a request before its flush.
+#[derive(Clone)]
+pub struct LogSender {
+    worker_id: String,
+    global_tx: std::sync::mpsc::Sender<LogMessage>,
+}
+
+impl LogSender {
+    pub fn new(worker_id: String, global_tx: std::sync::mpsc::Sender<LogMessage>) -> Self {
+        Self {
+            worker_id,
+            global_tx,
+        }
+    }
+
+    pub fn send(&self, event: LogEvent) -> Result<(), std::sync::mpsc::SendError<LogMessage>> {
+        self.global_tx.send(LogMessage::Log {
+            worker_id: self.worker_id.clone(),
+            event,
+        })
+    }
+}
+
 pub struct WorkerLogHandler {
-    tx: std::sync::mpsc::Sender<LogEvent>,
     worker_id: String,
     global_tx: std::sync::mpsc::Sender<LogMessage>,
 }
@@ -175,43 +199,63 @@ impl WorkerLogHandler {
             "Flushing logs for worker: {}",
             crate::utils::short_id(&self.worker_id)
         );
-        // Drop tx first to close the channel
-        drop(self.tx);
-        // Then send flush signal
+
         let _ = self.global_tx.send(LogMessage::FlushWorker {
             worker_id: self.worker_id,
         });
     }
 }
 
-// Create a worker-specific log handler that sends directly to global publisher
 pub fn create_log_handler(
     worker_id: String,
     global_tx: std::sync::mpsc::Sender<LogMessage>,
-) -> (std::sync::mpsc::Sender<LogEvent>, WorkerLogHandler) {
-    let (tx, rx) = std::sync::mpsc::channel::<LogEvent>();
-
-    let worker_id_clone = worker_id.clone();
-    let global_tx_clone = global_tx.clone();
-
-    // Simplified: no intermediate thread needed, just forward directly
-    std::thread::spawn(move || {
-        for event in rx {
-            if let Err(e) = global_tx_clone.send(LogMessage::Log {
-                worker_id: worker_id_clone.clone(),
-                event,
-            }) {
-                tracing::error!("Failed to send log to global publisher: {:?}", e);
-                break;
-            }
-        }
-    });
-
+) -> (LogSender, WorkerLogHandler) {
+    let sender = LogSender::new(worker_id.clone(), global_tx.clone());
     let handler = WorkerLogHandler {
-        tx: tx.clone(),
         worker_id,
         global_tx,
     };
 
-    (tx, handler)
+    (sender, handler)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openworkers_core::LogLevel;
+
+    #[test]
+    fn a_flush_comes_after_every_event_of_its_request() {
+        let (global_tx, global_rx) = std::sync::mpsc::channel();
+        let (sender, handler) = create_log_handler("worker".to_string(), global_tx);
+
+        for i in 0..1000 {
+            sender
+                .send(LogEvent {
+                    level: LogLevel::Log,
+                    message: i.to_string(),
+                })
+                .unwrap();
+        }
+
+        handler.flush();
+
+        let mut events = 0;
+
+        for message in global_rx.try_iter() {
+            match message {
+                LogMessage::Log { worker_id, event } => {
+                    assert_eq!(worker_id, "worker");
+                    assert_eq!(event.message, events.to_string());
+                    events += 1;
+                }
+                LogMessage::FlushWorker { .. } => {
+                    assert_eq!(events, 1000, "the flush came before every event");
+                    return;
+                }
+            }
+        }
+
+        panic!("no flush after {events} events");
+    }
 }
