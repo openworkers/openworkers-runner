@@ -230,10 +230,10 @@ async fn test_warm_reuse_state_persists() {
 // Response state isolation test
 // =============================================================================
 
-/// __lastResponse and __requestComplete must be clean on request 2.
+/// No per-request state is left on the guest's global object for request 2.
 ///
-/// Request 1 returns a custom response. Request 2 verifies that the per-request
-/// globals were properly reset (they should be undefined/false before the handler runs).
+/// The runtime keeps a request's response and completion in a handle the guest
+/// cannot reach, so neither request finds __lastResponse or __requestComplete.
 #[tokio::test]
 async fn test_warm_reuse_response_state_clean() {
     init_pool();
@@ -251,10 +251,7 @@ async fn test_warm_reuse_response_state_clean() {
                 if (reqNum === 1) {
                     event.respondWith(new Response('first'));
                 } else {
-                    // Check that per-request state was cleaned by reset()
-                    const lastResp = globalThis.__lastResponse;
-                    const reqComplete = globalThis.__requestComplete;
-                    const clean = lastResp === undefined && reqComplete === false;
+                    const clean = !('__lastResponse' in globalThis) && !('__requestComplete' in globalThis);
                     event.respondWith(new Response(clean ? 'clean' : 'dirty'));
                 }
             });
