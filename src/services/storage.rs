@@ -427,7 +427,7 @@ async fn sign_and_execute_raw(
     let (signed_headers, _) =
         compute_signature_headers(method, &uri, host, region, credentials, body_bytes)?;
 
-    let client = reqwest::Client::new();
+    let client = crate::services::fetch::binding_client();
     let mut request_builder = match method {
         "GET" => client.get(url),
         "PUT" => client.put(url),

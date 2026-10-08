@@ -1055,4 +1055,48 @@ mod tests {
 
         assert_eq!(most.load(Ordering::SeqCst), limit);
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn storage_gives_up_on_a_silent_endpoint() {
+        use tokio::io::AsyncReadExt;
+
+        // Accepts the connection, reads the request, never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _ = socket.read(&mut request).await;
+            std::future::pending::<()>().await;
+        });
+
+        let config = StorageConfig {
+            id: "storage".to_string(),
+            bucket: "bucket".to_string(),
+            prefix: None,
+            access_key_id: "key".to_string(),
+            secret_access_key: "secret".to_string(),
+            endpoint,
+            region: Some("auto".to_string()),
+            public_url: None,
+        };
+        let ops = RunnerOperations::new().with_bindings(vec![Binding::Storage {
+            key: "BUCKET".to_string(),
+            config,
+        }]);
+
+        let started = tokio::time::Instant::now();
+        let call = ops.handle_binding_storage(
+            "BUCKET",
+            StorageOp::Head {
+                key: "object".to_string(),
+            },
+        );
+        let result = tokio::time::timeout(std::time::Duration::from_secs(60), call)
+            .await
+            .expect("the storage call never gave up");
+
+        assert!(matches!(result, StorageResult::Error(_)), "{result:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    }
 }

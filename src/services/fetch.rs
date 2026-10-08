@@ -112,6 +112,12 @@ thread_local! {
         once_cell::unsync::Lazy::new(build_ws_client);
 }
 
+/// The client for operator-configured binding endpoints (S3/R2): no SSRF
+/// filter, and the same connect and stall timeouts as `fetch`.
+pub(crate) fn binding_client() -> reqwest::Client {
+    HTTP_CLIENT.with(|c| (**c).clone())
+}
+
 /// Filtered, HTTP/1.1-only client for WebSocket upgrade handshakes.
 ///
 /// The returned client applies the SSRF DNS guard, so the WebSocket path is
