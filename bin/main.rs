@@ -12,7 +12,6 @@ use tracing::{debug, error, info, warn};
 
 use openworkers_core::{HttpRequest, HttpResponse, HyperBody};
 use openworkers_runner::metrics::{MetricsTimer, Outcome};
-use openworkers_runner::store::WorkerIdentifier;
 
 use sqlx::postgres::PgPoolOptions;
 
@@ -232,26 +231,10 @@ async fn handle_worker_request(
         host, worker_id, worker_name, path
     );
 
-    // The internal connection covers resolution only: held across the worker's
-    // execution, five slow requests starve resolution for the whole runner
-    let mut conn: sqlx::pool::PoolConnection<sqlx::Postgres> =
-        match state.db_internal.acquire().await {
-            Ok(db) => db,
-            Err(err) => {
-                error!("Failed to acquire database connection: {}", err);
-                return Ok(refuse(
-                    metrics_timer,
-                    &span,
-                    500,
-                    "db_unavailable",
-                    "Failed to acquire database connection",
-                ));
-            }
-        };
-
-    // Resolve request in a single DB call (handles endpoint resolution + routing)
-    let resolution = openworkers_runner::store::resolve_worker_from_request(
-        &mut conn,
+    // Answered from memory when the cache can; a miss takes an internal
+    // connection for the resolution only, never across the worker's run
+    let resolution = openworkers_runner::resolve_cache::resolve(
+        &state.db_internal,
         host.as_deref(),
         worker_id.as_deref(),
         worker_name.as_deref(),
@@ -279,7 +262,6 @@ async fn handle_worker_request(
     let worker = match resolution {
         Some(res) => {
             use openworkers_runner::BackendType;
-            use openworkers_runner::store::get_worker_with_bindings;
 
             // Check if backend_type is None
             let backend_type = match res.backend_type {
@@ -315,15 +297,25 @@ async fn handle_worker_request(
                 match backend_type {
                     BackendType::Worker => {
                         if let Some(worker_id) = res.worker_id {
-                            let worker = get_worker_with_bindings(
-                                &mut conn,
-                                WorkerIdentifier::Id(worker_id),
+                            let worker = openworkers_runner::resolve_cache::worker(
+                                &state.db_internal,
+                                &worker_id,
                             )
                             .await;
 
                             match worker {
-                                Some(w) => w,
-                                None => {
+                                Ok(Some(w)) => w,
+                                Err(err) => {
+                                    error!("Failed to load worker: {}", err);
+                                    return Ok(refuse(
+                                        metrics_timer,
+                                        &span,
+                                        500,
+                                        "db_unavailable",
+                                        "Failed to load worker",
+                                    ));
+                                }
+                                Ok(None) => {
                                     return Ok(refuse(
                                         metrics_timer,
                                         &span,
@@ -362,7 +354,20 @@ async fn handle_worker_request(
                             }
                         };
 
-                        // Load storage config
+                        // Load storage config, on a connection held for this read only
+                        let mut conn = match state.db_internal.acquire().await {
+                            Ok(conn) => conn,
+                            Err(err) => {
+                                error!("Failed to acquire database connection: {}", err);
+                                return Ok(refuse(
+                                    metrics_timer,
+                                    &span,
+                                    500,
+                                    "db_unavailable",
+                                    "Failed to acquire database connection",
+                                ));
+                            }
+                        };
                         let storage_config = openworkers_runner::store::get_storage_config(
                             &mut conn,
                             storage_config_id,
@@ -458,11 +463,21 @@ async fn handle_worker_request(
                 // Record backend type for standalone workers
                 span.record("backend_type", tracing::field::display(BackendType::Worker));
                 let worker =
-                    get_worker_with_bindings(&mut conn, WorkerIdentifier::Id(worker_id)).await;
+                    openworkers_runner::resolve_cache::worker(&state.db_internal, &worker_id).await;
 
                 match worker {
-                    Some(w) => w,
-                    None => {
+                    Ok(Some(w)) => w,
+                    Err(err) => {
+                        error!("Failed to load worker: {}", err);
+                        return Ok(refuse(
+                            metrics_timer,
+                            &span,
+                            500,
+                            "db_unavailable",
+                            "Failed to load worker",
+                        ));
+                    }
+                    Ok(None) => {
                         return Ok(refuse(
                             metrics_timer,
                             &span,
@@ -492,9 +507,6 @@ async fn handle_worker_request(
             ));
         }
     };
-
-    // Connection is dropped here, returned to internal pool
-    drop(conn);
 
     // Record worker info in span now that we have it
     span.record("worker_id", tracing::field::display(&worker.id));
@@ -916,6 +928,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let db_internal =
         create_pool(&db_url, internal_pool_size, test_before_acquire, "internal").await;
     let db_worker = create_pool(&db_url, worker_pool_size, test_before_acquire, "worker").await;
+
+    // Keeps the resolution cache in step with the database; off until it listens
+    tokio::spawn(openworkers_runner::resolve_cache::listen(db_url.clone()));
 
     info!(
         "DB pools: internal={} worker={}",

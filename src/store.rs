@@ -365,12 +365,68 @@ struct BindingRow {
     updated_at_epoch: Option<i64>,
 }
 
+/// A worker and its bindings, without its code: the code cache usually
+/// holds the code, so this is what a request reads from the database.
+#[derive(Clone, Debug)]
+pub struct WorkerMeta {
+    pub id: String,
+    pub name: Option<String>,
+    pub user_id: String,
+    pub code_type: CodeType,
+    pub version: i32,
+    pub env: HashMap<String, String>,
+    pub bindings: Vec<Binding>,
+    pub env_updated_at: Option<i64>,
+}
+
+impl WorkerMeta {
+    /// The code cache's entry for this worker's version.
+    pub fn cached_code(&self) -> Option<WorkerSource> {
+        cached_code(&self.id, self.version, &self.code_type).map(WorkerSource::Cached)
+    }
+
+    /// The worker with its code, from the code cache or else from `conn`.
+    pub async fn with_code(self, conn: &mut sqlx::PgConnection) -> Option<WorkerWithBindings> {
+        let code = match self.cached_code() {
+            Some(code) => code,
+            None => WorkerSource::Bytes(fetch_deployment_code(conn, &self.id, self.version).await?),
+        };
+
+        Some(self.into_worker(code))
+    }
+
+    pub fn into_worker(self, code: WorkerSource) -> WorkerWithBindings {
+        WorkerWithBindings {
+            id: self.id,
+            name: self.name,
+            user_id: self.user_id,
+            code,
+            code_type: self.code_type,
+            version: self.version,
+            env: self.env,
+            bindings: self.bindings,
+            env_updated_at: self.env_updated_at,
+        }
+    }
+}
+
 /// Get worker with full binding configs
 pub async fn get_worker_with_bindings(
     conn: &mut sqlx::PgConnection,
     identifier: WorkerIdentifier,
 ) -> Option<WorkerWithBindings> {
-    tracing::debug!("get_worker_with_bindings: {:?}", identifier);
+    get_worker_meta(conn, identifier)
+        .await?
+        .with_code(conn)
+        .await
+}
+
+/// Get a worker and its binding configs, without its code
+pub async fn get_worker_meta(
+    conn: &mut sqlx::PgConnection,
+    identifier: WorkerIdentifier,
+) -> Option<WorkerMeta> {
+    tracing::debug!("get_worker_meta: {:?}", identifier);
 
     // The worker row without its code: the code comes apart, and only when the
     // cache has nothing for this version.
@@ -545,16 +601,10 @@ pub async fn get_worker_with_bindings(
         env_updated_at,
     );
 
-    let code = match cached_code(&basic.id, basic.version, &basic.code_type) {
-        Some(blob) => WorkerSource::Cached(blob),
-        None => WorkerSource::Bytes(fetch_deployment_code(conn, &basic.id, basic.version).await?),
-    };
-
-    Some(WorkerWithBindings {
+    Some(WorkerMeta {
         id: basic.id,
         name: basic.name,
         user_id: basic.user_id,
-        code,
         code_type: basic.code_type,
         version: basic.version,
         env,
