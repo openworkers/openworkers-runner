@@ -10,6 +10,7 @@ use crate::runtime::JsWorker;
 #[cfg(feature = "wasm")]
 use crate::runtime::WasmWorker;
 use crate::store::CodeType;
+#[cfg(feature = "_js")]
 use crate::store::WorkerSource;
 use crate::store::WorkerWithBindings;
 use crate::store::bindings_to_infos;
@@ -21,9 +22,9 @@ use openworkers_core::{
 /// A live worker, on the backend its code selected.
 pub enum Worker {
     #[cfg(feature = "_js")]
-    Js(JsWorker),
+    Js(Box<JsWorker>),
     #[cfg(feature = "wasm")]
-    Wasm(WasmWorker),
+    Wasm(Box<WasmWorker>),
 }
 
 impl Worker {
@@ -46,14 +47,14 @@ pub async fn create_worker(
     if script.code.is_wasm() {
         let worker = WasmWorker::new_with_ops(script, Some(limits), ops).await?;
 
-        return Ok(Worker::Wasm(worker));
+        return Ok(Worker::Wasm(Box::new(worker)));
     }
 
     #[cfg(feature = "_js")]
     {
         let worker = JsWorker::new_with_ops(script, Some(limits), ops).await?;
 
-        Ok(Worker::Js(worker))
+        Ok(Worker::Js(Box::new(worker)))
     }
 
     // A build without a JavaScript engine has the wasm one, which took the

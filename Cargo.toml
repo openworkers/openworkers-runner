@@ -156,6 +156,10 @@ required-features = ["v8", "wasm"]
 
 # The rest drive openworkers-runtime-v8 directly
 [[test]]
+name = "abort_scope_test"
+required-features = ["v8"]
+
+[[test]]
 name = "fetch_streaming_test"
 required-features = ["v8"]
 

@@ -141,7 +141,7 @@ pub async fn create_worker(
 
         let worker = WasmWorker::from_prepared(&component, script, Some(limits), Some(ops)).await?;
 
-        return Ok(Worker::Wasm(worker));
+        return Ok(Worker::Wasm(Box::new(worker)));
     }
 
     let engine_key = openworkers_runtime_wasm::compatibility_key(Some(limits.clone()))?;
@@ -185,5 +185,5 @@ pub async fn create_worker(
 
     let worker = WasmWorker::from_prepared(&component, script, Some(limits), Some(ops)).await?;
 
-    Ok(Worker::Wasm(worker))
+    Ok(Worker::Wasm(Box::new(worker)))
 }

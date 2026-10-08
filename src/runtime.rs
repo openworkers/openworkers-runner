@@ -34,7 +34,7 @@ const JS_ENGINES: usize = cfg!(feature = "v8") as usize
     + cfg!(feature = "nova") as usize;
 
 const _: () = assert!(
-    JS_ENGINES <= 1,
+    matches!(JS_ENGINES, 0 | 1),
     "JavaScript engines are mutually exclusive: select at most one of v8|jsc|quickjs|boa|nova"
 );
 
