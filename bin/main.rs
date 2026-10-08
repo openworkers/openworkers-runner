@@ -806,6 +806,13 @@ fn refuse(
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     dotenvy::dotenv().ok();
+
+    // Before any TLS client: with ring and aws-lc-rs both in the build,
+    // the first one to ask for the default provider panics.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("no other crypto provider is installed before main");
+
     openworkers_runner::telemetry::init();
 
     debug!("start main (hyper)");

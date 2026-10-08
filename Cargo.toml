@@ -57,6 +57,9 @@ tracing-opentelemetry = { version = "0.33", optional = true }
 opentelemetry-appender-tracing = { version = "0.32", optional = true }
 sqlx = { version = "0.9.0", features = [ "runtime-tokio", "postgres", "uuid", "bigdecimal", "rust_decimal", "tls-rustls" ] }
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls", "json", "stream"] }
+# Both ring and aws-lc-rs reach rustls through the dependencies, so rustls
+# cannot pick a process-wide provider by itself; main installs this one.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 
 # Core types
