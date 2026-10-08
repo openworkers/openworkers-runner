@@ -266,8 +266,21 @@ pub fn notify_task_completed() {
 ///
 /// Maps worker IDs to their semaphores, ensuring a single hot worker
 /// cannot monopolize the global worker pool or DB connections.
-static WORKER_LIMITERS: Lazy<Mutex<HashMap<String, Arc<Semaphore>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static WORKER_LIMITERS: Lazy<Mutex<WorkerLimiters>> = Lazy::new(|| {
+    Mutex::new(WorkerLimiters {
+        semaphores: HashMap::new(),
+        prune_at: MIN_PRUNE_AT,
+    })
+});
+
+/// The size at which the first prune runs. Each prune sets the next one at
+/// twice the size it leaves, so its cost spreads over the inserts.
+const MIN_PRUNE_AT: usize = 1024;
+
+struct WorkerLimiters {
+    semaphores: HashMap<String, Arc<Semaphore>>,
+    prune_at: usize,
+}
 
 /// Max concurrent requests per worker (from MAX_CONCURRENT_PER_WORKER env)
 static MAX_CONCURRENT_PER_WORKER: Lazy<usize> = Lazy::new(|| {
@@ -279,8 +292,20 @@ static MAX_CONCURRENT_PER_WORKER: Lazy<usize> = Lazy::new(|| {
 
 /// Get or create a semaphore for a specific worker
 pub fn get_worker_semaphore(worker_id: &str) -> Arc<Semaphore> {
-    let mut map = WORKER_LIMITERS.lock().unwrap();
-    map.entry(worker_id.to_string())
+    let mut limiters = WORKER_LIMITERS.lock().unwrap();
+
+    // A semaphore only the map holds has no waiter and no permit out, so a
+    // new one is the same: drop it, or the map keeps every worker ever seen.
+    if limiters.semaphores.len() >= limiters.prune_at {
+        limiters
+            .semaphores
+            .retain(|_, semaphore| Arc::strong_count(semaphore) > 1);
+        limiters.prune_at = (limiters.semaphores.len() * 2).max(MIN_PRUNE_AT);
+    }
+
+    limiters
+        .semaphores
+        .entry(worker_id.to_string())
         .or_insert_with(|| Arc::new(Semaphore::new(*MAX_CONCURRENT_PER_WORKER)))
         .clone()
 }
@@ -458,5 +483,31 @@ mod tests {
     #[test]
     fn active_tasks_does_not_underflow() {
         assert!(get_active_tasks() <= *MAX_QUEUED_WORKERS);
+    }
+
+    #[test]
+    fn idle_worker_semaphores_do_not_pile_up() {
+        let held = get_worker_semaphore("held-worker")
+            .try_acquire_owned()
+            .unwrap();
+
+        for i in 0..10 * MIN_PRUNE_AT {
+            get_worker_semaphore(&format!("idle-worker-{i}"));
+        }
+
+        let limiters = WORKER_LIMITERS.lock().unwrap();
+        assert!(
+            limiters.semaphores.len() <= 2 * MIN_PRUNE_AT,
+            "{} semaphores kept",
+            limiters.semaphores.len()
+        );
+
+        // The worker with a permit out keeps its semaphore, and its count
+        let semaphore = &limiters.semaphores["held-worker"];
+        assert_eq!(
+            semaphore.available_permits(),
+            *MAX_CONCURRENT_PER_WORKER - 1
+        );
+        drop(held);
     }
 }
