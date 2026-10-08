@@ -259,6 +259,20 @@ async fn handle_worker_request(
     )
     .await;
 
+    let resolution = match resolution {
+        Ok(resolution) => resolution,
+        Err(err) => {
+            error!("Failed to resolve request: {}", err);
+            return Ok(refuse(
+                metrics_timer,
+                &span,
+                500,
+                "db_unavailable",
+                "Failed to resolve request",
+            ));
+        }
+    };
+
     debug!("Request resolved: {:?}", resolution);
 
     // Handle resolution result

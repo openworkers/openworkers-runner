@@ -883,16 +883,7 @@ pub async fn resolve_worker_from_request(
     worker_id: Option<&str>,
     worker_name: Option<&str>,
     path: &str,
-) -> Option<RequestResolution> {
-    #[derive(sqlx::FromRow)]
-    struct ResolutionRow {
-        worker_id: Option<String>,
-        project_id: Option<String>,
-        backend_type: Option<BackendType>,
-        assets_storage_id: Option<String>,
-        priority: Option<i32>,
-    }
-
+) -> Result<Option<RequestResolution>, sqlx::Error> {
     let result = sqlx::query_as::<_, ResolutionRow>(
         "SELECT worker_id::text, project_id::text, backend_type, assets_storage_id::text, priority
          FROM resolve_worker_from_request($1, $2::uuid, $3, $4)",
@@ -905,18 +896,37 @@ pub async fn resolve_worker_from_request(
     .instrument(db_span!("SELECT", "resolve_worker_from_request"))
     .await;
 
+    resolution_from(result)
+}
+
+#[derive(sqlx::FromRow)]
+struct ResolutionRow {
+    worker_id: Option<String>,
+    project_id: Option<String>,
+    backend_type: Option<BackendType>,
+    assets_storage_id: Option<String>,
+    priority: Option<i32>,
+}
+
+/// No row, or an x-worker-id that is not a UUID, is a request for no worker.
+/// Any other error is the database's, and the caller has to say so.
+fn resolution_from(
+    result: Result<ResolutionRow, sqlx::Error>,
+) -> Result<Option<RequestResolution>, sqlx::Error> {
+    /// invalid_text_representation, raised by the `$2::uuid` cast
+    const NOT_A_UUID: &str = "22P02";
+
     match result {
-        Ok(row) => Some(RequestResolution {
+        Ok(row) => Ok(Some(RequestResolution {
             worker_id: row.worker_id,
             project_id: row.project_id,
             backend_type: row.backend_type,
             assets_storage_id: row.assets_storage_id,
             asset_type: row.priority.and_then(AssetType::from_priority),
-        }),
-        Err(err) => {
-            tracing::debug!("Failed to resolve request: {:?}", err);
-            None
-        }
+        })),
+        Err(sqlx::Error::RowNotFound) => Ok(None),
+        Err(sqlx::Error::Database(err)) if err.code().as_deref() == Some(NOT_A_UUID) => Ok(None),
+        Err(err) => Err(err),
     }
 }
 
@@ -978,5 +988,78 @@ pub async fn get_worker_id_from_domain(
     match get_endpoint_from_domain(conn, &domain).await {
         Some(Endpoint::Worker { worker_id }) => Some(worker_id),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::borrow::Cow;
+
+    /// A Postgres error with only an SQLSTATE code.
+    #[derive(Debug)]
+    struct PgError(&'static str);
+
+    impl std::fmt::Display for PgError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "SQLSTATE {}", self.0)
+        }
+    }
+
+    impl std::error::Error for PgError {}
+
+    impl sqlx::error::DatabaseError for PgError {
+        fn message(&self) -> &str {
+            self.0
+        }
+
+        fn code(&self) -> Option<Cow<'_, str>> {
+            Some(Cow::Borrowed(self.0))
+        }
+
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    #[test]
+    fn no_row_is_no_worker() {
+        assert!(matches!(
+            resolution_from(Err(sqlx::Error::RowNotFound)),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn a_worker_id_that_is_not_a_uuid_is_no_worker() {
+        let error = sqlx::Error::Database(Box::new(PgError("22P02")));
+
+        assert!(matches!(resolution_from(Err(error)), Ok(None)));
+    }
+
+    #[test]
+    fn a_database_failure_is_an_error() {
+        let failures = [
+            sqlx::Error::PoolTimedOut,
+            sqlx::Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionReset)),
+            // undefined_function: the resolve function is missing
+            sqlx::Error::Database(Box::new(PgError("42883"))),
+        ];
+
+        for failure in failures {
+            assert!(resolution_from(Err(failure)).is_err());
+        }
     }
 }
