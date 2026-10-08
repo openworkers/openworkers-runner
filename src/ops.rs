@@ -418,12 +418,13 @@ impl OperationsHandler for RunnerOperations {
         let span = self.span();
         Box::pin(
             async move {
-                // Acquire storage limiter permit
+                // The guard holds the permit until the operation ends
                 let limiters = self.limiters();
 
-                if let Err(e) = limiters.storage.acquire().await {
-                    return StorageResult::Error(e.to_string());
-                }
+                let _guard = match limiters.storage.acquire().await {
+                    Ok(guard) => guard,
+                    Err(e) => return StorageResult::Error(e.to_string()),
+                };
 
                 match op {
                     StorageOp::Fetch { key } => {
@@ -491,12 +492,13 @@ impl OperationsHandler for RunnerOperations {
 
         Box::pin(
             async move {
-                // Acquire KV limiter permit
+                // The guard holds the permit until the operation ends
                 let limiters = self.limiters();
 
-                if let Err(e) = limiters.kv.acquire().await {
-                    return KvResult::Error(e.to_string());
-                }
+                let _guard = match limiters.kv.acquire().await {
+                    Ok(guard) => guard,
+                    Err(e) => return KvResult::Error(e.to_string()),
+                };
 
                 match op {
                     KvOp::Get { key } => kv_service::get(&pool, &namespace_id, &key).await,
@@ -976,5 +978,81 @@ mod tests {
             5,
             "request A's limiters should be unaffected"
         );
+    }
+
+    /// A fake S3 endpoint that answers every request after `delay` and
+    /// records the most requests it held at once.
+    async fn slow_s3(delay: std::time::Duration) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::AtomicUsize;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let active = Arc::new(AtomicUsize::new(0));
+        let most = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&most);
+
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let active = Arc::clone(&active);
+                let most = Arc::clone(&most);
+
+                tokio::spawn(async move {
+                    let mut request = [0u8; 4096];
+                    let _ = socket.read(&mut request).await;
+
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    most.fetch_max(now, Ordering::SeqCst);
+                    tokio::time::sleep(delay).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+
+                    let _ = socket
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        )
+                        .await;
+                });
+            }
+        });
+
+        (format!("http://{address}"), seen)
+    }
+
+    #[tokio::test]
+    async fn storage_holds_its_concurrency_limit() {
+        let (endpoint, most) = slow_s3(std::time::Duration::from_millis(100)).await;
+        let config = StorageConfig {
+            id: "storage".to_string(),
+            bucket: "bucket".to_string(),
+            prefix: None,
+            access_key_id: "key".to_string(),
+            secret_access_key: "secret".to_string(),
+            endpoint,
+            region: Some("auto".to_string()),
+            public_url: None,
+        };
+        let ops = RunnerOperations::new().with_bindings(vec![Binding::Storage {
+            key: "BUCKET".to_string(),
+            config,
+        }]);
+        let limit = openworkers_core::RuntimeLimits::default()
+            .storage_limit
+            .max_concurrent as usize;
+
+        let calls = (0..limit * 3).map(|i| {
+            ops.handle_binding_storage(
+                "BUCKET",
+                StorageOp::Head {
+                    key: format!("object-{i}"),
+                },
+            )
+        });
+
+        for result in futures::future::join_all(calls).await {
+            assert!(!matches!(result, StorageResult::Error(_)), "{result:?}");
+        }
+
+        assert_eq!(most.load(Ordering::SeqCst), limit);
     }
 }
