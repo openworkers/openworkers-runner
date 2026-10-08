@@ -14,7 +14,7 @@ use crate::store::CodeType;
 use crate::store::WorkerWithBindings;
 #[cfg(feature = "v8")]
 use crate::worker::create_worker;
-use crate::worker::{PreparedWorker, Worker, create_cached_worker, prepare_worker};
+use crate::worker::{PreparedWorker, Worker, create_cached_worker};
 use crate::worker_pool::{TaskPermit, WORKER_POOL};
 
 use openworkers_core::{Event, RuntimeLimits, TerminationReason};
@@ -98,18 +98,8 @@ struct TaskComponents {
     span: tracing::Span,
 }
 
-/// Prepare task components: parse script, setup logging, and create operations handle.
-///
-/// Returns None if script preparation fails (error is logged).
-fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponents> {
-    let prepared = match prepare_worker(&config.worker_data, &config.limits) {
-        Ok(prepared) => prepared,
-        Err(err) => {
-            tracing::error!("Failed to prepare script: {err:?}");
-            return None;
-        }
-    };
-
+/// Set up logging and the operations handle around a prepared script.
+fn task_components(config: &TaskExecutionConfig, prepared: PreparedWorker) -> TaskComponents {
     let (log_tx, log_handler) =
         crate::log::create_log_handler(config.worker_data.id.clone(), config.global_log_tx.clone());
 
@@ -122,7 +112,7 @@ fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponent
             .with_span(config.span.clone()),
     );
 
-    Some(TaskComponents {
+    TaskComponents {
         prepared,
         ops,
         log_handler,
@@ -130,7 +120,7 @@ fn prepare_task_components(config: &TaskExecutionConfig) -> Option<TaskComponent
         log_tx,
         #[cfg(feature = "v8")]
         span: config.span.clone(),
-    })
+    }
 }
 
 /// Execute a task with optional external timeout (Worker-based)
@@ -171,19 +161,18 @@ async fn run_task_with_timeout_worker(
 /// - ONESHOT: Fresh isolate per request (no caching)
 ///
 /// Execution steps:
-/// 1. Parse script (fail fast)
-/// 2. Setup logging
-/// 3. Round-robin thread selection (WORKER_POOL)
-/// 4. Acquire/create isolate based on V8_EXECUTE mode
-/// 5. Execute task with v8::Locker
-/// 6. Release/drop isolate
-/// 7. Flush logs
+/// 1. Setup logging around the script the caller prepared
+/// 2. Round-robin thread selection (WORKER_POOL)
+/// 3. Acquire/create isolate based on V8_EXECUTE mode
+/// 4. Execute task with v8::Locker
+/// 5. Release/drop isolate
+/// 6. Flush logs
 #[cfg(feature = "v8")]
 pub async fn execute_task_await_v8_pooled(
     config: TaskExecutionConfig,
+    prepared: PreparedWorker,
 ) -> Result<(), TerminationReason> {
-    let components = prepare_task_components(&config)
-        .ok_or_else(|| TerminationReason::Other("Failed to prepare script".to_string()))?;
+    let components = task_components(&config, prepared);
 
     // Capture JS code for background code cache creation (before script is moved)
     let js_code_for_snapshot = components
@@ -353,21 +342,22 @@ pub async fn execute_task_await_v8_pooled(
 /// own, which for v8 would cost the ~3-5ms an isolate takes to create.
 ///
 /// Execution steps:
-/// 1. Parse script (fail fast)
-/// 2. Setup logging
-/// 3. Create the worker with runtime limits
-/// 4. Execute task
-/// 5. Flush logs
-/// 6. Auto-release permit and notify drain monitor
-pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), TerminationReason> {
+/// 1. Setup logging around the script the caller prepared
+/// 2. Create the worker with runtime limits
+/// 3. Execute task
+/// 4. Flush logs
+/// 5. Auto-release permit and notify drain monitor
+pub async fn execute_task_await(
+    config: TaskExecutionConfig,
+    prepared: PreparedWorker,
+) -> Result<(), TerminationReason> {
     // Only v8 has an isolate pool to reuse, and only its own guests reach it
     #[cfg(feature = "v8")]
     if config.worker_data.code_type != CodeType::Wasm {
-        return execute_task_await_v8_pooled(config).await;
+        return execute_task_await_v8_pooled(config, prepared).await;
     }
 
-    let components = prepare_task_components(&config)
-        .ok_or_else(|| TerminationReason::Other("Failed to prepare script".to_string()))?;
+    let components = task_components(&config, prepared);
 
     let limits = config.limits;
     let task = config.task;
@@ -416,56 +406,4 @@ pub async fn execute_task_await(config: TaskExecutionConfig) -> Result<(), Termi
                 "Worker pool channel closed".to_string(),
             ))
         })
-}
-
-/// Execute a task in the worker pool without waiting for completion (fire-and-forget).
-///
-/// Used when the task handles its own response channels.
-pub fn execute_task(config: TaskExecutionConfig) {
-    let components = match prepare_task_components(&config) {
-        Some(c) => c,
-        None => return,
-    };
-
-    let limits = config.limits;
-    let task = config.task;
-    let external_timeout_ms = config.external_timeout_ms;
-    let permit = config.permit;
-    let worker_id = config.worker_data.id.clone();
-    let version = config.worker_data.version;
-
-    WORKER_POOL.spawn(move || async move {
-        // Wrap permit to automatically notify drain monitor on drop
-        let _permit = TaskPermit::new(permit);
-
-        let mut worker = match create_cached_worker(
-            components.prepared,
-            limits,
-            components.ops,
-            &worker_id,
-            version,
-        )
-        .await
-        {
-            Ok(w) => w,
-            Err(err) => {
-                tracing::error!("Failed to create worker: {err:?}");
-                components.log_handler.flush();
-                return;
-            }
-        };
-
-        let result = run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
-
-        match result {
-            Ok(()) => tracing::debug!("Task completed successfully"),
-            Err(reason) => tracing::error!("Task failed: {:?}", reason),
-        }
-
-        // CRITICAL: Flush logs before worker is dropped to prevent log loss
-        components.log_handler.flush();
-
-        // TaskPermit is automatically dropped here, releasing the semaphore
-        // and notifying the drain monitor
-    });
 }

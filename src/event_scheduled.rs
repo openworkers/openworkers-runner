@@ -4,7 +4,7 @@ use crate::metrics::Outcome;
 use crate::ops::DbPool;
 use crate::store::{self, WorkerWithBindings};
 use crate::task_executor::{self, TaskExecutionConfig};
-use crate::worker::prepare_script;
+use crate::worker::prepare_worker;
 
 use openworkers_core::Event;
 use openworkers_core::TaskSource;
@@ -103,12 +103,17 @@ fn run_scheduled(
     span: tracing::Span,
     mut metrics_timer: crate::metrics::MetricsTimer,
 ) {
-    // Parse script before spawning (fail fast)
-    if let Err(err) = prepare_script(&worker_data) {
-        tracing::error!("Failed to prepare script for scheduled task: {err:?}");
-        metrics_timer.record_scheduled_task(Outcome::Failed("script_invalid"));
-        return;
-    }
+    let limits = task_executor::TaskExecutionConfig::default_limits();
+
+    // Prepared once, before spawning: a script that does not parse fails fast
+    let prepared = match prepare_worker(&worker_data, &limits) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            tracing::error!("Failed to prepare script for scheduled task: {err:?}");
+            metrics_timer.record_scheduled_task(Outcome::Failed("script_invalid"));
+            return;
+        }
+    };
 
     // Try to acquire a worker slot
     let permit = match crate::worker_pool::WORKER_SEMAPHORE
@@ -149,7 +154,7 @@ fn run_scheduled(
                 task: event,
                 db_pool,
                 global_log_tx,
-                limits: task_executor::TaskExecutionConfig::default_limits(),
+                limits,
                 // A task that never ends holds its pool permit for the life of
                 // the process. Nothing else releases it, and the pool climbed to
                 // saturation over sixteen hours on the back of that.
@@ -159,7 +164,7 @@ fn run_scheduled(
             };
 
             // Execute the task
-            let result = task_executor::execute_task_await(config).await;
+            let result = task_executor::execute_task_await(config, prepared).await;
 
             // Log the execution result and track the outcome
             let outcome = match result {
