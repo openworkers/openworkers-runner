@@ -175,6 +175,10 @@ name = "pinned_pool_test"
 required-features = ["v8"]
 
 [[test]]
+name = "slot_timeout_test"
+required-features = ["v8"]
+
+[[test]]
 name = "request_body_streaming_test"
 required-features = ["v8"]
 

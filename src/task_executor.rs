@@ -223,13 +223,15 @@ pub async fn execute_task_await_v8_pooled(
     let abort_for_task = abort.clone();
     let span = config.span.clone();
 
-    // Held here rather than in the pooled task, so the timeout below can release it
-    // without cancelling: cancelling would drop V8 objects outside the Locker.
-    let _permit = TaskPermit::new(config.permit);
+    // The pooled task holds the slot until its JS ends: after the timeout
+    // below the JS still runs, and its slot must stay taken
+    let permit = config.permit;
 
     // Round-robin dispatch across V8 threads for better parallelism under load
     let execution = WORKER_POOL.spawn_await(move || {
         async move {
+            let _permit = TaskPermit::new(permit);
+
             let result = match execute_mode {
                 V8ExecuteMode::Pinned => {
                     // Thread-pinned pool (default, best performance)
@@ -344,7 +346,7 @@ pub async fn execute_task_await_v8_pooled(
                 Ok(joined) => joined,
                 Err(_) => {
                     tracing::error!(
-                        "Task execution timeout after {}ms (external timeout), releasing pool permit",
+                        "Task execution timeout after {}ms (external timeout); its slot stays taken until its JS ends",
                         timeout_ms
                     );
 
