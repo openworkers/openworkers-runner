@@ -561,6 +561,18 @@ async fn handle_worker_request(
 
     let start = tokio::time::Instant::now();
 
+    let max_body = *openworkers_runner::request_body::MAX_REQUEST_BODY_BYTES;
+
+    if openworkers_runner::request_body::announces_more_than(&headers, max_body) {
+        return Ok(refuse(
+            metrics_timer,
+            &span,
+            413,
+            "body_too_large",
+            "Request body too large",
+        ));
+    }
+
     let scheme = forwarded_scheme(&headers);
     let is_streaming = headers.contains_key("x-request-body-stream");
 
@@ -568,9 +580,8 @@ async fn handle_worker_request(
 
     let mut request = if is_streaming {
         // Streaming path: pipe body chunks to the worker via mpsc channel.
-        // Guards: 30s idle timeout per chunk, 10MB max total body size.
+        // Guards: an idle timeout per chunk, and the body size limit.
         const CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-        const MAX_BODY_SIZE: usize = 1024 * 1024;
 
         let (req_obj, body_tx) =
             HttpRequest::from_hyper_parts_streaming(&method, &uri, &headers, scheme, 16);
@@ -597,7 +608,7 @@ async fn handle_worker_request(
                 if let Some(data) = frame.data_ref() {
                     total += data.len();
 
-                    if total > MAX_BODY_SIZE {
+                    if total > max_body {
                         let _ = body_tx
                             .send(Err::<bytes::Bytes, String>(
                                 "Request body too large".to_string(),
@@ -616,11 +627,20 @@ async fn handle_worker_request(
         req_obj
     } else {
         // Buffered path: collect entire body before processing.
-        use http_body_util::BodyExt;
+        use openworkers_runner::request_body::{BodyError, read};
 
-        let body_bytes = match req.into_body().collect().await {
-            Ok(collected) => collected.to_bytes(),
-            Err(e) => {
+        let body_bytes = match read(req.into_body(), max_body).await {
+            Ok(bytes) => bytes,
+            Err(BodyError::TooLarge) => {
+                return Ok(refuse(
+                    metrics_timer,
+                    &span,
+                    413,
+                    "body_too_large",
+                    "Request body too large",
+                ));
+            }
+            Err(BodyError::Read(e)) => {
                 error!("Failed to read request body: {}", e);
                 return Ok(refuse(
                     metrics_timer,

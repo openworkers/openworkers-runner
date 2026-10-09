@@ -9,6 +9,7 @@ pub mod log;
 pub mod metrics;
 pub mod nats;
 pub mod ops;
+pub mod request_body;
 pub mod resolve_cache;
 pub mod runtime;
 pub mod services;
