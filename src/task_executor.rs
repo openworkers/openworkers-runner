@@ -96,6 +96,9 @@ struct TaskComponents {
     /// Tracing span for warm hit callback
     #[cfg(feature = "v8")]
     span: tracing::Span,
+    /// Worker-to-worker depth for warm hit callback
+    #[cfg(feature = "v8")]
+    depth: u32,
 }
 
 /// Set up logging and the operations handle around a prepared script.
@@ -103,13 +106,19 @@ fn task_components(config: &TaskExecutionConfig, prepared: PreparedWorker) -> Ta
     let (log_tx, log_handler) =
         crate::log::create_log_handler(config.worker_data.id.clone(), config.global_log_tx.clone());
 
+    let depth = match &config.task {
+        Event::Fetch(Some(init)) => crate::services::fetch::call_depth(&init.req.headers),
+        _ => 0,
+    };
+
     let ops = Arc::new(
         RunnerOperations::new()
             .with_worker_id(config.worker_data.id.clone())
             .with_log_tx(log_tx.clone())
             .with_bindings(config.worker_data.bindings.clone())
             .with_db_pool(config.db_pool.clone())
-            .with_span(config.span.clone()),
+            .with_span(config.span.clone())
+            .with_depth(depth),
     );
 
     TaskComponents {
@@ -120,6 +129,8 @@ fn task_components(config: &TaskExecutionConfig, prepared: PreparedWorker) -> Ta
         log_tx,
         #[cfg(feature = "v8")]
         span: config.span.clone(),
+        #[cfg(feature = "v8")]
+        depth,
     }
 }
 
@@ -240,6 +251,7 @@ pub async fn execute_task_await_v8_pooled(
                     // so the existing event loop sends logs to the new handler.
                     let warm_log_tx = components.log_tx.clone();
                     let warm_span = components.span.clone();
+                    let warm_depth = components.depth;
                     let on_warm_hit: openworkers_runtime_v8::WarmHitCallback =
                         Box::new(move |cached_ops| {
                             // Downcast to RunnerOperations to call update_request.
@@ -248,7 +260,7 @@ pub async fn execute_task_await_v8_pooled(
                             if let Some(runner_ops) =
                                 cached_ops.as_any().downcast_ref::<RunnerOperations>()
                             {
-                                runner_ops.update_request(warm_log_tx, warm_span);
+                                runner_ops.update_request(warm_log_tx, warm_span, warm_depth);
                             }
                         });
 

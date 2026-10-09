@@ -670,8 +670,28 @@ async fn handle_worker_request(
             .insert("x-worker-name".to_string(), name.clone());
     }
 
-    // Acquire worker slot with timeout
-    let timeout = openworkers_runner::worker_pool::get_worker_wait_timeout();
+    use openworkers_runner::services::fetch::{MAX_CALL_DEPTH, call_depth};
+
+    let depth = call_depth(&request.headers);
+
+    if depth > MAX_CALL_DEPTH {
+        return Ok(refuse(
+            metrics_timer,
+            &span,
+            508,
+            "call_depth",
+            "Too many nested worker-to-worker calls",
+        ));
+    }
+
+    // A worker-to-worker call takes a free slot or none: its caller holds a
+    // slot while it waits, so waiting here can hold every slot at once
+    let timeout = if depth > 0 {
+        Duration::ZERO
+    } else {
+        openworkers_runner::worker_pool::get_worker_wait_timeout()
+    };
+
     let permit = match tokio::time::timeout(
         timeout,
         openworkers_runner::worker_pool::WORKER_SEMAPHORE

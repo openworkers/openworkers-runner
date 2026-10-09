@@ -125,6 +125,8 @@ pub struct RequestState {
     pub log_tx: Option<LogTx>,
     pub span: tracing::Span,
     pub limiters: Arc<BindingLimiters>,
+    /// The worker-to-worker calls that led to this request
+    pub depth: u32,
 }
 
 /// Runner's implementation of OperationsHandler
@@ -158,6 +160,7 @@ impl RunnerOperations {
                 log_tx: None,
                 span: tracing::Span::none(),
                 limiters: Arc::new(BindingLimiters::default()),
+                depth: 0,
             }),
             bindings: BindingConfigs::new(),
             db_pool: None,
@@ -190,6 +193,11 @@ impl RunnerOperations {
         self
     }
 
+    pub fn with_depth(self, depth: u32) -> Self {
+        self.request_state.lock().unwrap().depth = depth;
+        self
+    }
+
     pub fn with_db_pool(mut self, pool: DbPool) -> Self {
         self.db_pool = Some(pool);
         self
@@ -199,11 +207,17 @@ impl RunnerOperations {
     ///
     /// Called when an existing ops handle is reused for a new request.
     /// Creates fresh limiters so each request has its own counters.
-    pub fn update_request(&self, log_tx: LogTx, span: tracing::Span) {
+    pub fn update_request(&self, log_tx: LogTx, span: tracing::Span, depth: u32) {
         let mut state = self.request_state.lock().unwrap();
         state.log_tx = Some(log_tx);
         state.span = span;
         state.limiters = Arc::new(BindingLimiters::default());
+        state.depth = depth;
+    }
+
+    /// The depth of a worker-to-worker call this request makes.
+    fn next_depth(&self) -> u32 {
+        self.request_state.lock().unwrap().depth + 1
     }
 
     /// Get a clone of the current span
@@ -329,7 +343,9 @@ impl OperationsHandler for RunnerOperations {
                 };
 
                 // Check if this is an internal worker URL that should be routed directly
-                if let Some(internal_request) = try_internal_worker_route(&request) {
+                if let Some(internal_request) =
+                    try_internal_worker_route(&request, self.next_depth())
+                {
                     tracing::debug!(
                         "[ops] fetch shortcut: {} -> internal routing via x-worker-name",
                         request.url
@@ -659,7 +675,11 @@ impl OperationsHandler for RunnerOperations {
                     config.id
                 );
 
-                let internal_request = binding_request(&config.id, request);
+                // A binding call is a subrequest, as a fetch is
+                let limiters = self.limiters();
+                let _guard = limiters.fetch.acquire().await.map_err(|e| e.to_string())?;
+
+                let internal_request = binding_request(&config.id, request, self.next_depth());
 
                 // Execute the request through the runner
                 do_fetch(
@@ -891,6 +911,7 @@ mod tests {
         ops.update_request(
             crate::log::LogSender::new("worker".to_string(), tx),
             tracing::Span::none(),
+            0,
         );
         assert!(ops.request_state.lock().unwrap().log_tx.is_some());
     }
@@ -941,6 +962,7 @@ mod tests {
         ops.update_request(
             crate::log::LogSender::new("worker".to_string(), tx_b),
             tracing::Span::none(),
+            0,
         );
         let limiters_b = ops.limiters();
 

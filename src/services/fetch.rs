@@ -47,6 +47,27 @@ const RUNNER_URL: &str = "http://127.0.0.1:8080";
 /// runner sets it after the guest's headers, so a guest cannot remove it.
 pub const INTERNAL_ROUTE_HEADER: &str = "x-openworkers-internal";
 
+/// How many worker-to-worker calls led to a request routed for a worker.
+pub const CALL_DEPTH_HEADER: &str = "x-openworkers-depth";
+
+/// The longest chain of worker-to-worker calls; a call past it is refused,
+/// so a worker that calls itself cannot take every slot.
+pub const MAX_CALL_DEPTH: u32 = 16;
+
+/// The depth of a request: what CALL_DEPTH_HEADER says when the runner
+/// routed the request for a worker, else 0. A client that sets the headers
+/// itself can only make its own chain shorter.
+pub fn call_depth(headers: &HashMap<String, String>) -> u32 {
+    if !headers.contains_key(INTERNAL_ROUTE_HEADER) {
+        return 0;
+    }
+
+    headers
+        .get(CALL_DEPTH_HEADER)
+        .and_then(|depth| depth.parse().ok())
+        .unwrap_or(0)
+}
+
 /// Generate a unique request ID (32 chars total): `{prefix}_{uuid_truncated}`
 pub fn generate_request_id(prefix: &str) -> String {
     let uuid = uuid::Uuid::new_v4().simple().to_string();
@@ -141,7 +162,7 @@ pub fn ws_client() -> reqwest::Client {
 /// URLs matching `*.{domain}` will be routed internally.
 ///
 /// Returns a modified request with internal routing if matched.
-pub fn try_internal_worker_route(request: &HttpRequest) -> Option<HttpRequest> {
+pub fn try_internal_worker_route(request: &HttpRequest, depth: u32) -> Option<HttpRequest> {
     let url = url::Url::parse(&request.url).ok()?;
     let host = url.host_str()?;
 
@@ -163,6 +184,7 @@ pub fn try_internal_worker_route(request: &HttpRequest) -> Option<HttpRequest> {
     headers.insert("x-worker-name".to_string(), worker_name.to_string());
     headers.insert("x-request-id".to_string(), generate_request_id("internal"));
     headers.insert(INTERNAL_ROUTE_HEADER.to_string(), "1".to_string());
+    headers.insert(CALL_DEPTH_HEADER.to_string(), depth.to_string());
 
     // Can't clone a streaming body, so internal routing is not supported for streams
     let body = match &request.body {
@@ -180,8 +202,9 @@ pub fn try_internal_worker_route(request: &HttpRequest) -> Option<HttpRequest> {
 }
 
 /// The request a service binding sends, through this runner, to the worker
-/// `worker_id`: the path and query of `request`, routed by `x-worker-id`.
-pub fn binding_request(worker_id: &str, request: HttpRequest) -> HttpRequest {
+/// `worker_id`: the path and query of `request`, routed by `x-worker-id`, at
+/// call depth `depth`.
+pub fn binding_request(worker_id: &str, request: HttpRequest, depth: u32) -> HttpRequest {
     let path_and_query = if let Ok(url) = url::Url::parse(&request.url) {
         match url.query() {
             Some(q) => format!("{}?{}", url.path(), q),
@@ -197,6 +220,7 @@ pub fn binding_request(worker_id: &str, request: HttpRequest) -> HttpRequest {
     headers.insert("x-worker-id".to_string(), worker_id.to_string());
     headers.insert("x-request-id".to_string(), generate_request_id("binding"));
     headers.insert(INTERNAL_ROUTE_HEADER.to_string(), "1".to_string());
+    headers.insert(CALL_DEPTH_HEADER.to_string(), depth.to_string());
 
     HttpRequest {
         url: format!("{RUNNER_URL}{path_and_query}"),
@@ -504,7 +528,7 @@ mod tests {
             body: RequestBody::None,
         };
 
-        let routed = binding_request("worker-id", request);
+        let routed = binding_request("worker-id", request, 1);
 
         assert_eq!(routed.url, "http://127.0.0.1:8080/admin/drain");
         assert_eq!(
@@ -514,6 +538,33 @@ mod tests {
                 .map(String::as_str),
             Some("1")
         );
+    }
+
+    #[test]
+    fn a_call_depth_counts_only_on_a_request_the_runner_routed() {
+        let mut headers = HashMap::new();
+        headers.insert(CALL_DEPTH_HEADER.to_string(), "7".to_string());
+        assert_eq!(call_depth(&headers), 0, "a client's own header");
+
+        headers.insert(INTERNAL_ROUTE_HEADER.to_string(), "1".to_string());
+        assert_eq!(call_depth(&headers), 7);
+
+        headers.insert(CALL_DEPTH_HEADER.to_string(), "-1".to_string());
+        assert_eq!(call_depth(&headers), 0);
+    }
+
+    #[test]
+    fn a_binding_request_carries_its_depth() {
+        let request = HttpRequest {
+            method: HttpMethod::Get,
+            url: "/".to_string(),
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+
+        let routed = binding_request("worker-id", request, 3);
+
+        assert_eq!(call_depth(&routed.headers), 3);
     }
 
     #[test]
@@ -543,7 +594,7 @@ mod tests {
             body: RequestBody::None,
         };
 
-        let routed = try_internal_worker_route(&request);
+        let routed = try_internal_worker_route(&request, 1);
         assert!(routed.is_none(), "Should not route external URLs");
     }
 
@@ -562,7 +613,7 @@ mod tests {
             body: RequestBody::None,
         };
 
-        let routed = try_internal_worker_route(&request);
+        let routed = try_internal_worker_route(&request, 1);
         assert!(routed.is_some(), "Should route configured domain");
 
         let routed = routed.unwrap();
@@ -590,13 +641,33 @@ mod tests {
             body: RequestBody::Bytes(body_data.clone().into()),
         };
 
-        let routed = try_internal_worker_route(&request).unwrap();
+        let routed = try_internal_worker_route(&request, 1).unwrap();
         assert_eq!(routed.method, HttpMethod::Post);
 
         match routed.body {
             RequestBody::Bytes(b) => assert_eq!(b.as_ref(), body_data.as_slice()),
             _ => panic!("Expected Bytes body"),
         }
+    }
+
+    #[test]
+    fn test_internal_route_carries_the_internal_mark_and_depth() {
+        if WORKER_DOMAINS.is_empty() {
+            eprintln!("Skipping: WORKER_DOMAINS not set");
+            return;
+        }
+
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            url: format!("https://api.{}/admin/drain", WORKER_DOMAINS[0]),
+            headers: HashMap::new(),
+            body: RequestBody::None,
+        };
+
+        let routed = try_internal_worker_route(&request, 4).unwrap();
+
+        assert!(routed.headers.contains_key(INTERNAL_ROUTE_HEADER));
+        assert_eq!(call_depth(&routed.headers), 4);
     }
 
     #[test]
@@ -614,7 +685,7 @@ mod tests {
             body: RequestBody::None,
         };
 
-        let routed = try_internal_worker_route(&request);
+        let routed = try_internal_worker_route(&request, 1);
         assert!(routed.is_none(), "Should not route bare domain");
     }
 
@@ -634,7 +705,7 @@ mod tests {
             body: RequestBody::Stream(rx),
         };
 
-        let routed = try_internal_worker_route(&request);
+        let routed = try_internal_worker_route(&request, 1);
         assert!(routed.is_none(), "Should not route streaming bodies");
     }
 }
