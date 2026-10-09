@@ -150,6 +150,29 @@ pub fn guard_url_host(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Reject a TCP target whose host is, or resolves to, a non-public address.
+///
+/// For a connection the runner opens without its HTTP client, such as a
+/// guest's own database. The check runs before the connection, so a name
+/// that changes its address between the two is not covered.
+pub async fn guard_tcp_host(host: &str, port: u16) -> Result<(), String> {
+    if *ALLOW_PRIVATE_NETWORK {
+        return Ok(());
+    }
+
+    let addrs = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| format!("cannot resolve {host}: {e}"))?;
+
+    for addr in addrs {
+        if !ip_is_public(addr.ip()) {
+            return Err(blocked_msg(&addr.ip().to_string()));
+        }
+    }
+
+    Ok(())
+}
+
 /// DNS resolver that rejects any hostname resolving to a non-public address.
 ///
 /// The whole resolution is rejected if any returned address is non-public: a

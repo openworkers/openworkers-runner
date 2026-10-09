@@ -55,6 +55,61 @@ fn sql_operation(sql: &str) -> String {
         .to_ascii_uppercase()
 }
 
+/// Pools for the databases guests reach by connection string, so that a
+/// query reuses an open connection. When the cache is full, the least
+/// recently used pool closes.
+const MAX_GUEST_POOLS: usize = 256;
+
+/// Connections a pool keeps to one guest database.
+const GUEST_POOL_CONNECTIONS: u32 = 4;
+
+static GUEST_POOLS: std::sync::LazyLock<std::sync::Mutex<lru::LruCache<String, PgPool>>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Mutex::new(lru::LruCache::new(
+            std::num::NonZeroUsize::new(MAX_GUEST_POOLS).unwrap(),
+        ))
+    });
+
+/// The pool for a guest's connection string. A new pool is refused for a
+/// Unix socket or a host that is not public, as for a guest's fetch.
+async fn guest_pool(connection_string: &str) -> Result<PgPool, String> {
+    if let Some(pool) = GUEST_POOLS.lock().unwrap().get(connection_string) {
+        return Ok(pool.clone());
+    }
+
+    let options: sqlx::postgres::PgConnectOptions = connection_string
+        .parse()
+        .map_err(|e| format!("Invalid connection string: {e}"))?;
+
+    if options.get_socket().is_some() {
+        return Err("Database connection failed: a Unix socket is not allowed".to_string());
+    }
+
+    crate::services::net_guard::guard_tcp_host(options.get_host(), options.get_port())
+        .await
+        .map_err(|e| format!("Database connection failed: {e}"))?;
+
+    let mut pools = GUEST_POOLS.lock().unwrap();
+
+    // Another query may have made the pool during the check
+    if let Some(pool) = pools.get(connection_string) {
+        return Ok(pool.clone());
+    }
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(GUEST_POOL_CONNECTIONS)
+        .min_connections(0)
+        .idle_timeout(std::time::Duration::from_secs(60))
+        .acquire_timeout(std::time::Duration::from_secs(5))
+        .connect_lazy_with(options);
+
+    if let Some((_, evicted)) = pools.push(connection_string.to_string(), pool.clone()) {
+        tokio::spawn(async move { evicted.close().await });
+    }
+
+    Ok(pool)
+}
+
 /// Execute query with direct connection string.
 #[tracing::instrument(
     name = "guest query",
@@ -71,11 +126,7 @@ pub async fn execute_with_connection_string(
     params: &[SqlParam],
     mode: QueryMode,
 ) -> Result<String, String> {
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(connection_string)
-        .await
-        .map_err(|e| format!("Database connection failed: {}", e))?;
+    let pool = guest_pool(connection_string).await?;
 
     match mode {
         QueryMode::Mutation => execute_mutation(&pool, sql, params).await,
@@ -421,5 +472,48 @@ mod tests {
     fn test_wrap_mutation_panics() {
         let sql = "DELETE FROM users WHERE id = 1";
         wrap_query_as_json(sql, QueryMode::Mutation);
+    }
+}
+
+#[cfg(test)]
+mod guest_pool_tests {
+    use super::guest_pool;
+
+    #[tokio::test]
+    async fn a_connection_string_reuses_its_pool() {
+        // A public address; the pool is lazy, so nothing connects
+        let url = "postgres://user:secret@8.8.8.8:5432/reuse";
+
+        let first = guest_pool(url).await.unwrap();
+        let second = guest_pool(url).await.unwrap();
+        first.close().await;
+
+        assert!(second.is_closed(), "both are the same pool");
+    }
+
+    #[tokio::test]
+    async fn a_private_host_is_refused() {
+        for url in [
+            "postgres://user:secret@127.0.0.1:5432/db",
+            "postgres://user:secret@10.0.0.5:5432/db",
+            "postgres://user:secret@169.254.169.254:5432/db",
+            "postgres://user:secret@localhost:5432/db",
+        ] {
+            let refused = guest_pool(url).await.unwrap_err();
+
+            assert!(
+                refused.starts_with("Database connection failed"),
+                "{url}: {refused}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_unix_socket_is_refused() {
+        let refused = guest_pool("postgres://user@localhost/db?host=/var/run/postgresql")
+            .await
+            .unwrap_err();
+
+        assert!(refused.contains("Unix socket"), "{refused}");
     }
 }
