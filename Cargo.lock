@@ -3915,8 +3915,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.15.18"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.18#e87fbaf5da2980d01d298bf5629d67dae7650b2a"
+version = "0.15.19"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.19#981c5e52ace9bd21e360e94c2b1ac55bb17e3c9d"
 dependencies = [
  "bytes",
  "encoding_rs",
@@ -3928,7 +3928,7 @@ dependencies = [
  "openworkers-runtime-v8-gc-derive",
  "openworkers-serde-v8",
  "openworkers-v8",
- "openworkers-wintertc 0.1.8",
+ "openworkers-wintertc 0.1.9",
  "ring",
  "serde",
  "serde_json",
@@ -3946,7 +3946,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.18#e87fbaf5da2980d01d298bf5629d67dae7650b2a"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.19#981c5e52ace9bd21e360e94c2b1ac55bb17e3c9d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4021,8 +4021,8 @@ source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.6#e78
 
 [[package]]
 name = "openworkers-wintertc"
-version = "0.1.8"
-source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.8#30841726d24916a74142a1acc602cf7943e7d3f6"
+version = "0.1.9"
+source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.9#b351464a93dc46429bfc8d2346b68a2dd9afa660"
 
 [[package]]
 name = "outref"
