@@ -44,9 +44,7 @@ use tracing::Instrument;
 use crate::limiter::BindingLimiters;
 #[cfg(feature = "database")]
 use crate::services::database::{self as db_service, QueryMode};
-use crate::services::fetch::{
-    FetchContext, do_fetch, generate_request_id, try_internal_worker_route,
-};
+use crate::services::fetch::{FetchContext, binding_request, do_fetch, try_internal_worker_route};
 use crate::services::kv as kv_service;
 use crate::services::net_guard::EgressPolicy;
 use crate::services::storage::{build_s3_url, execute_s3_operation, sign_s3_request};
@@ -661,31 +659,7 @@ impl OperationsHandler for RunnerOperations {
                     config.id
                 );
 
-                // Build the internal URL for the target worker
-                // Runner listens on port 8080
-                let path_and_query = if let Ok(url) = url::Url::parse(&request.url) {
-                    match url.query() {
-                        Some(q) => format!("{}?{}", url.path(), q),
-                        None => url.path().to_string(),
-                    }
-                } else if request.url.starts_with('/') {
-                    request.url.clone()
-                } else {
-                    format!("/{}", request.url)
-                };
-                let internal_url = format!("http://127.0.0.1:8080{}", path_and_query);
-
-                // Create the request with x-worker-id header to route to target
-                let mut headers = request.headers.clone();
-                headers.insert("x-worker-id".to_string(), config.id.clone());
-                headers.insert("x-request-id".to_string(), generate_request_id("binding"));
-
-                let internal_request = HttpRequest {
-                    url: internal_url,
-                    method: request.method,
-                    headers,
-                    body: request.body,
-                };
+                let internal_request = binding_request(&config.id, request);
 
                 // Execute the request through the runner
                 do_fetch(

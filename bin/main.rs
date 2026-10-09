@@ -23,19 +23,22 @@ struct AppState {
     wall_clock_timeout_ms: u64,
 }
 
+/// Whether a request may use the admin endpoints: it comes from this host,
+/// and the runner did not route it to itself for a worker. The Host header
+/// is the client's to set, so it does not decide.
+fn admin_allowed(peer: SocketAddr, headers: &hyper::HeaderMap) -> bool {
+    use openworkers_runner::services::fetch::INTERNAL_ROUTE_HEADER;
+
+    peer.ip().is_loopback() && !headers.contains_key(INTERNAL_ROUTE_HEADER)
+}
+
 async fn handle_request(
     state: &AppState,
+    peer: SocketAddr,
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<HyperBody>, std::convert::Infallible> {
-    let is_local = req
-        .headers()
-        .get("host")
-        .and_then(|h| h.to_str().ok())
-        .map(|h| h == "127.0.0.1:8080" || h.starts_with("localhost"))
-        .unwrap_or(false);
-
     // Admin endpoints (only for local requests)
-    if is_local {
+    if admin_allowed(peer, req.headers()) {
         let path = req.uri().path();
 
         // Health check endpoint
@@ -1163,7 +1166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             debug!("Listener {} started", i);
 
             loop {
-                let (stream, _) = match listener.accept().await {
+                let (stream, peer) = match listener.accept().await {
                     Ok(conn) => conn,
                     Err(e) => {
                         error!("Accept error on listener {}: {:?}", i, e);
@@ -1177,7 +1180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 tokio::spawn(async move {
                     let service = service_fn(move |req| {
                         let state = state.clone();
-                        async move { handle_request(&state, req).await }
+                        async move { handle_request(&state, peer, req).await }
                     });
 
                     if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
@@ -1195,4 +1198,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!("Shutdown signal received - exiting");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::admin_allowed;
+    use openworkers_runner::services::fetch::INTERNAL_ROUTE_HEADER;
+    use std::net::SocketAddr;
+
+    fn peer(address: &str) -> SocketAddr {
+        address.parse().unwrap()
+    }
+
+    #[test]
+    fn the_admin_endpoints_answer_a_loopback_peer_only() {
+        let headers = hyper::HeaderMap::new();
+
+        assert!(admin_allowed(peer("127.0.0.1:50000"), &headers));
+        assert!(admin_allowed(peer("[::1]:50000"), &headers));
+        assert!(!admin_allowed(peer("10.0.0.7:50000"), &headers));
+    }
+
+    #[test]
+    fn the_admin_endpoints_refuse_a_request_routed_for_a_worker() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(INTERNAL_ROUTE_HEADER, "1".parse().unwrap());
+
+        assert!(!admin_allowed(peer("127.0.0.1:50000"), &headers));
+    }
 }

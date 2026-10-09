@@ -38,6 +38,15 @@ pub static WORKER_DOMAINS: Lazy<Vec<String>> = Lazy::new(|| {
         .unwrap_or_else(|_| Vec::new())
 });
 
+/// Where this runner listens, for the requests it routes to itself.
+const RUNNER_URL: &str = "http://127.0.0.1:8080";
+
+/// Set by the runner on each request it routes to itself for a worker: a
+/// `fetch` to a worker domain, and a service binding. The admin endpoints
+/// refuse a request that carries it, so a worker cannot reach them. The
+/// runner sets it after the guest's headers, so a guest cannot remove it.
+pub const INTERNAL_ROUTE_HEADER: &str = "x-openworkers-internal";
+
 /// Generate a unique request ID (32 chars total): `{prefix}_{uuid_truncated}`
 pub fn generate_request_id(prefix: &str) -> String {
     let uuid = uuid::Uuid::new_v4().simple().to_string();
@@ -147,12 +156,13 @@ pub fn try_internal_worker_route(request: &HttpRequest) -> Option<HttpRequest> {
         Some(q) => format!("{}?{}", url.path(), q),
         None => url.path().to_string(),
     };
-    let internal_url = format!("http://127.0.0.1:8080{}", path_and_query);
+    let internal_url = format!("{RUNNER_URL}{path_and_query}");
 
     // Create request with x-worker-name header
     let mut headers = request.headers.clone();
     headers.insert("x-worker-name".to_string(), worker_name.to_string());
     headers.insert("x-request-id".to_string(), generate_request_id("internal"));
+    headers.insert(INTERNAL_ROUTE_HEADER.to_string(), "1".to_string());
 
     // Can't clone a streaming body, so internal routing is not supported for streams
     let body = match &request.body {
@@ -167,6 +177,33 @@ pub fn try_internal_worker_route(request: &HttpRequest) -> Option<HttpRequest> {
         headers,
         body,
     })
+}
+
+/// The request a service binding sends, through this runner, to the worker
+/// `worker_id`: the path and query of `request`, routed by `x-worker-id`.
+pub fn binding_request(worker_id: &str, request: HttpRequest) -> HttpRequest {
+    let path_and_query = if let Ok(url) = url::Url::parse(&request.url) {
+        match url.query() {
+            Some(q) => format!("{}?{}", url.path(), q),
+            None => url.path().to_string(),
+        }
+    } else if request.url.starts_with('/') {
+        request.url.clone()
+    } else {
+        format!("/{}", request.url)
+    };
+
+    let mut headers = request.headers;
+    headers.insert("x-worker-id".to_string(), worker_id.to_string());
+    headers.insert("x-request-id".to_string(), generate_request_id("binding"));
+    headers.insert(INTERNAL_ROUTE_HEADER.to_string(), "1".to_string());
+
+    HttpRequest {
+        url: format!("{RUNNER_URL}{path_and_query}"),
+        method: request.method,
+        headers,
+        body: request.body,
+    }
 }
 
 /// Names the thread a fetch stage runs on, to tell the hyper handler's runtime
@@ -451,6 +488,32 @@ mod tests {
             .expect("the stall cap must fire long before this");
 
         assert!(result.is_err(), "an upstream that goes quiet must be cut");
+    }
+
+    /// A guest that calls the runner's admin path through a binding or a
+    /// worker domain carries the mark the admin endpoints refuse, whatever
+    /// headers it sets.
+    #[test]
+    fn a_request_routed_for_a_worker_carries_the_internal_mark() {
+        let mut headers = HashMap::new();
+        headers.insert("host".to_string(), "localhost".to_string());
+        let request = HttpRequest {
+            method: HttpMethod::Post,
+            url: "http://anything/admin/drain".to_string(),
+            headers,
+            body: RequestBody::None,
+        };
+
+        let routed = binding_request("worker-id", request);
+
+        assert_eq!(routed.url, "http://127.0.0.1:8080/admin/drain");
+        assert_eq!(
+            routed
+                .headers
+                .get(INTERNAL_ROUTE_HEADER)
+                .map(String::as_str),
+            Some("1")
+        );
     }
 
     #[test]
