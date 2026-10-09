@@ -65,6 +65,9 @@ pub struct Metrics {
 
     // Error metrics
     pub errors_total: Counter<u64>,
+
+    // Fetch listeners that called respondWith after they returned
+    pub late_respond_with_total: Counter<u64>,
 }
 
 #[cfg(feature = "telemetry")]
@@ -117,6 +120,13 @@ impl Metrics {
             errors_total: meter
                 .u64_counter("errors.total")
                 .with_description("Total number of errors")
+                .build(),
+
+            late_respond_with_total: meter
+                .u64_counter("listener.late_respond_with.total")
+                .with_description(
+                    "Fetch events whose listener called respondWith after it returned",
+                )
                 .build(),
         }
     }
@@ -279,6 +289,25 @@ impl MetricsTimer {
     #[cfg(not(feature = "telemetry"))]
     pub fn record_scheduled_task(self, _outcome: Outcome) {}
 }
+
+/// Counts a fetch event whose listener called respondWith after it returned,
+/// which the Service Worker spec refuses. The worker id is the label: the
+/// count is for finding those workers.
+#[cfg(feature = "telemetry")]
+pub fn record_late_respond_with(worker_id: &str, after_settle: bool) {
+    if let Some(m) = metrics() {
+        m.late_respond_with_total.add(
+            1,
+            &[
+                KeyValue::new("worker_id", worker_id.to_string()),
+                KeyValue::new("after_settle", after_settle),
+            ],
+        );
+    }
+}
+
+#[cfg(not(feature = "telemetry"))]
+pub fn record_late_respond_with(_worker_id: &str, _after_settle: bool) {}
 
 /// The reason rides on `errors.total` alone: on a duration histogram it would
 /// multiply every bucket.

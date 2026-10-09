@@ -67,6 +67,7 @@ async fn test_pinned_simple_response() {
             on_warm_hit: None,
             env_updated_at: None,
             abort: None,
+            on_marks: None,
         })
         .await;
         assert!(
@@ -127,6 +128,7 @@ async fn test_pinned_html_response() {
             on_warm_hit: None,
             env_updated_at: None,
             abort: None,
+            on_marks: None,
         })
         .await;
         assert!(
@@ -185,6 +187,7 @@ async fn test_pinned_json_response() {
             on_warm_hit: None,
             env_updated_at: None,
             abort: None,
+            on_marks: None,
         })
         .await;
         assert!(
@@ -249,6 +252,7 @@ async fn test_pinned_global_default_fetch() {
             on_warm_hit: None,
             env_updated_at: None,
             abort: None,
+            on_marks: None,
         })
         .await;
         assert!(
@@ -316,6 +320,7 @@ async fn test_pinned_global_default_async_fetch() {
             on_warm_hit: None,
             env_updated_at: None,
             abort: None,
+            on_marks: None,
         })
         .await;
         assert!(
@@ -405,6 +410,7 @@ async fn test_buffered_response_body_not_empty_production_scenario() {
                 on_warm_hit: None,
                 env_updated_at: None,
                 abort: None,
+                on_marks: None,
             }))
             .await
         // LocalSet DROPPED here! Any spawn_local tasks are aborted!
@@ -479,6 +485,7 @@ async fn test_json_response_body_not_empty_production_scenario() {
                 on_warm_hit: None,
                 env_updated_at: None,
                 abort: None,
+                on_marks: None,
             }))
             .await
     };
@@ -565,6 +572,7 @@ async fn test_streaming_response_with_localset_alive() {
             on_warm_hit: None,
             env_updated_at: None,
             abort: None,
+            on_marks: None,
         })
         .await;
         assert!(

@@ -148,6 +148,34 @@ async fn run_task_with_timeout_worker(
     }
 }
 
+/// Workers already warned about, for a warning once per worker and process.
+#[cfg(feature = "v8")]
+static LATE_RESPOND_WITH_WARNED: once_cell::sync::Lazy<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = once_cell::sync::Lazy::new(Default::default);
+
+/// A fetch listener called respondWith after it returned: counted on every
+/// event, logged once per worker. Answers whether it logged.
+#[cfg(feature = "v8")]
+fn report_late_respond_with(worker_id: &str, marks: openworkers_runtime_v8::ListenerMarks) -> bool {
+    crate::metrics::record_late_respond_with(worker_id, marks.after_settle);
+
+    let first = LATE_RESPOND_WITH_WARNED
+        .lock()
+        .unwrap()
+        .insert(worker_id.to_string());
+
+    if first {
+        tracing::warn!(
+            worker_id,
+            after_settle = marks.after_settle,
+            "fetch listener called respondWith after it returned; the Service Worker spec and Cloudflare refuse this"
+        );
+    }
+
+    first
+}
+
 /// Execute a task using the thread-pinned isolate pool (recommended for V8 workloads)
 ///
 /// This version uses thread-pinned pools from openworkers-runtime-v8, which provides:
@@ -222,6 +250,11 @@ pub async fn execute_task_await_v8_pooled(
                             }
                         });
 
+                    let marked_worker = worker_id_for_snapshot.clone();
+                    let on_marks: openworkers_runtime_v8::MarksCallback = Box::new(move |marks| {
+                        report_late_respond_with(&marked_worker, marks);
+                    });
+
                     openworkers_runtime_v8::execute_pinned(
                         openworkers_runtime_v8::PinnedExecuteRequest {
                             owner_id,
@@ -233,6 +266,7 @@ pub async fn execute_task_await_v8_pooled(
                             on_warm_hit: Some(on_warm_hit),
                             env_updated_at: config.worker_data.env_updated_at,
                             abort: abort_for_task,
+                            on_marks: Some(on_marks),
                         },
                     )
                     .await
@@ -406,4 +440,22 @@ pub async fn execute_task_await(
                 "Worker pool channel closed".to_string(),
             ))
         })
+}
+
+#[cfg(all(test, feature = "v8"))]
+mod late_respond_with_tests {
+    use super::report_late_respond_with;
+    use openworkers_runtime_v8::ListenerMarks;
+
+    #[test]
+    fn a_worker_is_logged_once_and_counted_each_time() {
+        let marks = ListenerMarks {
+            late: true,
+            after_settle: false,
+        };
+
+        assert!(report_late_respond_with("late-worker-a", marks));
+        assert!(!report_late_respond_with("late-worker-a", marks));
+        assert!(report_late_respond_with("late-worker-b", marks));
+    }
 }

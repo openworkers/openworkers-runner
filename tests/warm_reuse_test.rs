@@ -70,6 +70,7 @@ async fn pinned_fetch(worker_id: &str, version: i32, script: Script) -> (u16, St
         on_warm_hit: None,
         env_updated_at: None,
         abort: None,
+        on_marks: None,
     })
     .await;
 
@@ -482,6 +483,7 @@ async fn pinned_fetch_with_ops(
         on_warm_hit: None,
         env_updated_at: None,
         abort: None,
+        on_marks: None,
     })
     .await;
 
