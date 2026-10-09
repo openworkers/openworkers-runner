@@ -125,7 +125,7 @@ impl Metrics {
             late_respond_with_total: meter
                 .u64_counter("listener.late_respond_with.total")
                 .with_description(
-                    "Fetch events whose listener called respondWith after it returned",
+                    "Fetch events whose listener called respondWith after the dispatch",
                 )
                 .build(),
         }
@@ -290,7 +290,7 @@ impl MetricsTimer {
     pub fn record_scheduled_task(self, _outcome: Outcome) {}
 }
 
-/// Counts a fetch event whose listener called respondWith after it returned,
+/// Counts a fetch event whose listener called respondWith after the dispatch,
 /// which the Service Worker spec refuses. The worker id is the label: the
 /// count is for finding those workers.
 #[cfg(feature = "telemetry")]

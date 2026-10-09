@@ -830,6 +830,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     debug!("start main (hyper)");
     info!("{}", openworkers_runner::runtime::capabilities());
 
+    let strict =
+        openworkers_runner::runtime::configure_strict(std::env::var("STRICT_SPEC").ok().as_deref());
+
+    if strict {
+        info!("strict mode: respondWith and response body chunks follow the specs");
+    } else {
+        warn!(
+            "lax mode: a fetch listener may call respondWith after the dispatch, and a response \
+             body chunk may be a string; the specs and Cloudflare refuse both; STRICT_SPEC=true \
+             refuses them"
+        );
+    }
+
     let wall_clock_timeout_ms = std::env::var("WALL_CLOCK_TIMEOUT_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())

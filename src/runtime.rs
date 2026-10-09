@@ -175,6 +175,21 @@ pub fn binding_type_name(binding_type: BindingType) -> &'static str {
     }
 }
 
+/// Sets the strict mode from the STRICT_SPEC value ("1" or "true" for
+/// strict), and answers whether it is on. Strict follows the specs where the
+/// runtime is lax by default: respondWith after the dispatch gets
+/// InvalidStateError, and a response body chunk that is not a Uint8Array
+/// errors the body. The v8 backend is the one with the switch; it reads it
+/// when it creates a context, so call this before the first worker.
+pub fn configure_strict(value: Option<&str>) -> bool {
+    let strict = matches!(value.map(str::trim), Some("1" | "true"));
+
+    #[cfg(feature = "v8")]
+    openworkers_runtime_v8::set_strict(strict);
+
+    strict
+}
+
 /// One line naming the backends in this build and what each of them serves.
 pub fn capabilities() -> String {
     let mut backends: Vec<String> = Vec::new();
@@ -188,4 +203,18 @@ pub fn capabilities() -> String {
     }
 
     format!("runtime backends: {}", backends.join(", "))
+}
+
+#[cfg(test)]
+mod strict_tests {
+    use super::configure_strict;
+
+    #[test]
+    fn only_1_and_true_are_strict() {
+        assert!(configure_strict(Some("true")));
+        assert!(configure_strict(Some(" 1 ")));
+        assert!(!configure_strict(Some("false")));
+        assert!(!configure_strict(Some("yes")));
+        assert!(!configure_strict(None));
+    }
 }

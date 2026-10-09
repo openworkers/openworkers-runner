@@ -154,7 +154,7 @@ static LATE_RESPOND_WITH_WARNED: once_cell::sync::Lazy<
     std::sync::Mutex<std::collections::HashSet<String>>,
 > = once_cell::sync::Lazy::new(Default::default);
 
-/// A fetch listener called respondWith after it returned: counted on every
+/// A fetch listener called respondWith after the dispatch: counted on every
 /// event, logged once per worker. Answers whether it logged.
 #[cfg(feature = "v8")]
 fn report_late_respond_with(worker_id: &str, marks: openworkers_runtime_v8::ListenerMarks) -> bool {
@@ -169,7 +169,7 @@ fn report_late_respond_with(worker_id: &str, marks: openworkers_runtime_v8::List
         tracing::warn!(
             worker_id,
             after_settle = marks.after_settle,
-            "fetch listener called respondWith after it returned; the Service Worker spec and Cloudflare refuse this"
+            "fetch listener called respondWith after the dispatch ended; the Service Worker spec and Cloudflare refuse this"
         );
     }
 
