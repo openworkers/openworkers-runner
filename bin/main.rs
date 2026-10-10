@@ -4,7 +4,6 @@ use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::oneshot::channel;
 use tracing::{debug, error, info, warn};
@@ -24,22 +23,34 @@ struct AppState {
     logs: std::sync::Arc<openworkers_runner::logs::Logs>,
 }
 
-/// Whether a request may use the admin endpoints: it comes from this host,
-/// and the runner did not route it to itself for a worker. The Host header
-/// is the client's to set, so it does not decide.
-fn admin_allowed(peer: SocketAddr, headers: &hyper::HeaderMap) -> bool {
+/// The listener a request came in on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Listener {
+    /// 127.0.0.1:8080: bindings, worker domains and administration.
+    Internal,
+    /// The public HTTP and HTTPS listeners.
+    Public,
+}
+
+/// Whether a request may use the admin endpoints: it comes from this host to
+/// the internal listener, and the runner did not route it to itself for a
+/// worker. The Host header is the client's to set, so it does not decide.
+fn admin_allowed(listener: Listener, peer: SocketAddr, headers: &hyper::HeaderMap) -> bool {
     use openworkers_runner::services::fetch::INTERNAL_ROUTE_HEADER;
 
-    peer.ip().is_loopback() && !headers.contains_key(INTERNAL_ROUTE_HEADER)
+    listener == Listener::Internal
+        && peer.ip().is_loopback()
+        && !headers.contains_key(INTERNAL_ROUTE_HEADER)
 }
 
 async fn handle_request(
     state: &AppState,
     peer: SocketAddr,
+    listener: Listener,
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<HyperBody>, std::convert::Infallible> {
     // Admin endpoints (only for local requests)
-    if admin_allowed(peer, req.headers()) {
+    if admin_allowed(listener, peer, req.headers()) {
         let path = req.uri().path();
 
         // Health check endpoint
@@ -184,42 +195,29 @@ async fn handle_request(
         .await
 }
 
-// Public headers cannot select internal routes.
+/// Serves a request of the public listeners, after `ingress::prepare`
+/// replaced the headers that only the runner sets.
 async fn public_request(
     state: &AppState,
     peer: SocketAddr,
     mut req: Request<hyper::body::Incoming>,
     tls: bool,
 ) -> Result<Response<HyperBody>, std::convert::Infallible> {
-    use openworkers_runner::ingress;
-    ingress::normalize(&mut req, peer, tls);
-    let rid = req.headers()["x-request-id"].clone();
-    let Some(host) = ingress::host(req.headers()) else {
-        return Ok(error_response(400, "Invalid Host"));
+    use openworkers_runner::ingress::{self, Route};
+
+    let route = ingress::prepare(&state.ingress, &mut req, peer, tls);
+    let request_id = req.headers()["x-request-id"].clone();
+
+    let mut response = match route {
+        Route::Worker => handle_request(state, peer, Listener::Public, req).await?,
+        Route::Logs(worker_id, stream) => state.logs.serve(req, worker_id, stream).await,
+        Route::Latency => Response::new(full_body("OK")),
+        Route::Probe => error_response(404, "Not Found"),
+        Route::BadHost => error_response(400, "Invalid Host"),
     };
-    let mut response = {
-        if state.ingress.dashboard_hosts.contains(&host) {
-            if let Some((worker_id, stream)) = openworkers_runner::logs::route(req.uri().path()) {
-                return Ok(state.logs.serve(req, worker_id, stream).await);
-            }
-            if req.uri().path() == "/api/health/latency/proxy" {
-                return Ok(Response::new(full_body("OK")));
-            }
-            req.headers_mut()
-                .insert("x-worker-name", state.ingress.api_worker.parse().unwrap());
-        } else if let Some((header, name)) =
-            ingress::worker_route(&host, &openworkers_runner::services::fetch::WORKER_DOMAINS)
-        {
-            req.headers_mut().insert(header, name.parse().unwrap());
-        }
-        // Loopback clients on the public port must not get admin access.
-        req.headers_mut().insert(
-            openworkers_runner::services::fetch::INTERNAL_ROUTE_HEADER,
-            "1".parse().unwrap(),
-        );
-        handle_request(state, peer, req).await?
-    };
-    response.headers_mut().insert("x-request-id", rid);
+
+    response.headers_mut().insert("x-request-id", request_id);
+
     Ok(response)
 }
 
@@ -227,39 +225,45 @@ async fn serve_socket<S>(
     stream: S,
     peer: SocketAddr,
     state: std::sync::Arc<AppState>,
-    public: bool,
+    listener: Listener,
     tls: bool,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let service = service_fn(move |mut req: Request<hyper::body::Incoming>| {
         let state = state.clone();
+
         async move {
-            if public {
-                public_request(&state, peer, req, tls).await
-            } else {
-                if !req.headers().contains_key("x-request-id") {
-                    req.headers_mut().insert(
-                        "x-request-id",
-                        uuid::Uuid::new_v4().to_string().parse().unwrap(),
-                    );
+            match listener {
+                Listener::Public => public_request(&state, peer, req, tls).await,
+                Listener::Internal => {
+                    if !req.headers().contains_key("x-request-id") {
+                        let id = uuid::Uuid::new_v4().to_string();
+                        req.headers_mut().insert(
+                            "x-request-id",
+                            id.parse().expect("a UUID is a header value"),
+                        );
+                    }
+
+                    handle_request(&state, peer, Listener::Internal, req).await
                 }
-                handle_request(&state, peer, req).await
             }
         }
     });
-    if !tls {
-        if let Err(error) = hyper::server::conn::http1::Builder::new()
-            .serve_connection(TokioIo::new(stream), service)
-            .with_upgrades()
-            .await
-        {
-            debug!(%error, "connection closed");
-        }
-        return;
-    }
-    let builder =
+
+    let mut builder =
         hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+
+    builder
+        .http1()
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(openworkers_runner::ingress::HEADER_READ_TIMEOUT);
+
+    // HTTP/2 comes through ALPN only, so a cleartext listener is HTTP/1.1
+    if !tls {
+        builder = builder.http1_only();
+    }
+
     if let Err(error) = builder
         .serve_connection_with_upgrades(TokioIo::new(stream), service)
         .await
@@ -943,6 +947,76 @@ fn refuse(
     error_response(status, message)
 }
 
+/// Binds the internal and public listeners and starts their accept loops.
+fn serve(state: std::sync::Arc<AppState>) -> std::io::Result<Vec<tokio::task::JoinHandle<()>>> {
+    use openworkers_runner::ingress;
+
+    let config = &state.ingress;
+    let allowlist: Option<std::sync::Arc<[ipnet::IpNet]>> =
+        config.allowlist.as_deref().map(std::sync::Arc::from);
+    let mut tasks = Vec::new();
+
+    let internal = ingress::bind(SocketAddr::from(([127, 0, 0, 1], 8080)), config.listeners)?;
+    let public = ingress::bind(config.http_addr, config.listeners)?;
+
+    info!(
+        address = "127.0.0.1:8080",
+        listeners = config.listeners,
+        "internal listener ready"
+    );
+    info!(address = %config.http_addr, listeners = config.listeners, "HTTP listener ready");
+
+    for (listeners, listener, allowlist) in [
+        (internal, Listener::Internal, None),
+        (public, Listener::Public, allowlist.clone()),
+    ] {
+        for socket in listeners {
+            let state = state.clone();
+
+            tasks.push(tokio::spawn(ingress::accept(
+                socket,
+                allowlist.clone(),
+                move |stream, peer| {
+                    tokio::spawn(serve_socket(stream, peer, state.clone(), listener, false));
+                },
+            )));
+        }
+    }
+
+    if let Some(tls) = &config.tls {
+        let acceptor = tokio_rustls::TlsAcceptor::from(tls.clone());
+
+        info!(address = %config.https_addr, listeners = config.listeners, "HTTPS listener ready");
+
+        for socket in ingress::bind(config.https_addr, config.listeners)? {
+            let state = state.clone();
+            let acceptor = acceptor.clone();
+
+            tasks.push(tokio::spawn(ingress::accept(
+                socket,
+                allowlist.clone(),
+                move |stream, peer| {
+                    let state = state.clone();
+                    let handshake = acceptor.accept(stream);
+
+                    tokio::spawn(async move {
+                        match tokio::time::timeout(ingress::TLS_HANDSHAKE_TIMEOUT, handshake).await
+                        {
+                            Ok(Ok(stream)) => {
+                                serve_socket(stream, peer, state, Listener::Public, true).await
+                            }
+                            Ok(Err(error)) => debug!(%peer, %error, "TLS handshake failed"),
+                            Err(_) => debug!(%peer, "TLS handshake timed out"),
+                        }
+                    });
+                },
+            )));
+        }
+    }
+
+    Ok(tasks)
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     dotenvy::dotenv().ok();
@@ -1092,7 +1166,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ingress.api_worker.clone(),
         stop.clone(),
     ));
-    let tls = openworkers_runner::ingress::tls_config()?;
 
     // Keeps the resolution cache in step with the database; off until it listens
     tokio::spawn(openworkers_runner::resolve_cache::listen(db_url.clone()));
@@ -1256,65 +1329,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     });
 
-    let internal = TcpListener::bind("127.0.0.1:8080").await?;
-    let public_addr = std::env::var("HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".into());
-    let public = TcpListener::bind(&public_addr).await?;
-    let mut listeners = Vec::new();
-    for (listener, is_public) in [(internal, false), (public, true)] {
-        info!(address = %listener.local_addr()?, public = is_public, "HTTP listener ready");
-        let state = state.clone();
-        listeners.push(tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((stream, peer)) => {
-                        if is_public
-                            && !openworkers_runner::ingress::allowed(
-                                state.ingress.allowlist.as_deref(),
-                                peer.ip(),
-                            )
-                        {
-                            continue;
-                        }
-                        tokio::spawn(serve_socket(stream, peer, state.clone(), is_public, false));
-                    }
-                    Err(error) => {
-                        error!(%error, "accept failed");
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                }
-            }
-        }));
-    }
-    if let Some(config) = tls {
-        let addr = std::env::var("HTTPS_ADDR").unwrap_or_else(|_| "0.0.0.0:8443".into());
-        let listener = TcpListener::bind(&addr).await?;
-        let acceptor = tokio_rustls::TlsAcceptor::from(config);
-        info!(address = %addr, "HTTPS listener ready");
-        let state = state.clone();
-        listeners.push(tokio::spawn(async move {
-            loop {
-                let (stream, peer) = match listener.accept().await {
-                    Ok(pair) => pair,
-                    Err(_) => continue,
-                };
-                if !openworkers_runner::ingress::allowed(
-                    state.ingress.allowlist.as_deref(),
-                    peer.ip(),
-                ) {
-                    continue;
-                }
-                let acceptor = acceptor.clone();
-                let state = state.clone();
-                tokio::spawn(async move {
-                    if let Ok(Ok(stream)) =
-                        tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream)).await
-                    {
-                        serve_socket(stream, peer, state, true, true).await;
-                    }
-                });
-            }
-        }));
-    }
+    let listeners = serve(state.clone())?;
 
     // Wait for graceful shutdown signal
     shutdown_rx.recv().await;
@@ -1341,7 +1356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 #[cfg(test)]
 mod tests {
-    use super::admin_allowed;
+    use super::{Listener, admin_allowed};
     use openworkers_runner::services::fetch::INTERNAL_ROUTE_HEADER;
     use std::net::SocketAddr;
 
@@ -1353,9 +1368,21 @@ mod tests {
     fn the_admin_endpoints_answer_a_loopback_peer_only() {
         let headers = hyper::HeaderMap::new();
 
-        assert!(admin_allowed(peer("127.0.0.1:50000"), &headers));
-        assert!(admin_allowed(peer("[::1]:50000"), &headers));
-        assert!(!admin_allowed(peer("10.0.0.7:50000"), &headers));
+        assert!(admin_allowed(
+            Listener::Internal,
+            peer("127.0.0.1:50000"),
+            &headers
+        ));
+        assert!(admin_allowed(
+            Listener::Internal,
+            peer("[::1]:50000"),
+            &headers
+        ));
+        assert!(!admin_allowed(
+            Listener::Internal,
+            peer("10.0.0.7:50000"),
+            &headers
+        ));
     }
 
     #[test]
@@ -1363,6 +1390,21 @@ mod tests {
         let mut headers = hyper::HeaderMap::new();
         headers.insert(INTERNAL_ROUTE_HEADER, "1".parse().unwrap());
 
-        assert!(!admin_allowed(peer("127.0.0.1:50000"), &headers));
+        assert!(!admin_allowed(
+            Listener::Internal,
+            peer("127.0.0.1:50000"),
+            &headers
+        ));
+    }
+
+    #[test]
+    fn the_admin_endpoints_refuse_the_public_listeners() {
+        let headers = hyper::HeaderMap::new();
+
+        assert!(!admin_allowed(
+            Listener::Public,
+            peer("127.0.0.1:50000"),
+            &headers
+        ));
     }
 }

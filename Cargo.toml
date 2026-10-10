@@ -124,6 +124,7 @@ opt-level = 3
 criterion = { version = "0.8.1", features = ["async_tokio"] }
 wat = "1.0"
 serial_test = "4.0"
+tempfile = "3"
 # Reads what the metrics record, in memory
 opentelemetry_sdk = { version = "0.32", features = ["testing"] }
 # Not every backend pulls the full tokio, but every test harness needs these

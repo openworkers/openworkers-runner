@@ -6,34 +6,47 @@ This runner manages instances of [OpenWorkers Runtime](https://github.com/openwo
 
 ## Single-runner deployment
 
-Run one runner per platform database. It serves public HTTP and TLS, executes
-workers and cron events, and stores and streams console logs. Do not start the
-standalone logs or scheduler services with it. Nginx is not required.
+Run one runner per platform database. The runner serves public HTTP and
+HTTPS, runs the workers and their crons, and stores and streams the console
+logs. It does not use nginx, NATS, openworkers-logs or openworkers-scheduler.
 
-| Setting                                | Default                                                                      | Purpose                                        |
-| -------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------- |
-| `HTTP_ADDR`                            | `0.0.0.0:8081`                                                               | Public HTTP listener                           |
-| `HTTPS_ADDR`                           | `0.0.0.0:8443`                                                               | Public TLS listener                            |
-| `HTTP_TLS_CERTIFICATE`, `HTTP_TLS_KEY` | unset                                                                        | PEM files; set both to enable HTTPS and HTTP/2 |
-| `INBOUND_ALLOWLIST_FILE`               | unset                                                                        | Public peer IP/CIDR allowlist                  |
-| `DASHBOARD_HOSTS`                      | `dash.openworkers.com,dash.openworkers.dev,dash.dev.localhost,dash.dev.kube` | Hosts served by the API worker                 |
-| `API_WORKER_NAME`                      | `openworkers-api`                                                            | Dashboard and API worker                       |
-| `WORKER_DOMAINS`                       | unset                                                                        | Worker name or UUID subdomains                 |
+| Setting                                | Default                                                                      | Purpose                                                    |
+| -------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `HTTP_ADDR`                            | `0.0.0.0:8081`                                                               | Public HTTP listener (HTTP/1.1)                            |
+| `HTTPS_ADDR`                           | `0.0.0.0:8443`                                                               | Public HTTPS listener (HTTP/2 and HTTP/1.1, through ALPN)  |
+| `HTTP_TLS_CERTIFICATE`, `HTTP_TLS_KEY` | unset                                                                        | PEM files; set both to start the HTTPS listener            |
+| `HTTP_LISTENERS`                       | CPU count                                                                    | Accept loops per address, with `SO_REUSEPORT`              |
+| `INBOUND_ALLOWLIST_FILE`               | unset                                                                        | The peers that can connect to the public listeners         |
+| `CLIENT_IP_HEADER`                     | unset                                                                        | The header that gives the client address (needs allowlist) |
+| `DASHBOARD_HOSTS`                      | `dash.openworkers.com,dash.openworkers.dev,dash.dev.localhost,dash.dev.kube` | Hosts of the API worker                                    |
+| `API_WORKER_NAME`                      | `openworkers-api`                                                            | The dashboard and API worker                               |
+| `WORKER_DOMAINS`                       | unset                                                                        | Domains of `{name}.{domain}` and `{uuid}.{domain}` hosts   |
 
-Other hosts use the database domain and project routes. Public requests cannot
-set the worker selector or internal routing headers. The internal listener
-`127.0.0.1:8080` serves bindings and local administration; do not publish it.
-Client IP headers reflect the TCP peer. Forwarded headers from external proxies
-are not trusted. HTTP serves requests directly; it does not redirect to HTTPS.
-HTTP/2 uses TLS with ALPN; cleartext listeners only accept HTTP/1.1.
-Certificate and allowlist changes require a restart. There is no certificate provisioning.
+A dashboard host goes to the API worker. A host under a worker domain goes to
+the worker that its first label names. Other hosts go to the domain and project
+routes of the database. A public request cannot set `x-worker-id`,
+`x-worker-name`, `x-request-id` or the `x-openworkers-*` headers.
 
-The optional allowlist contains one IPv4/IPv6 address or CIDR per line; blank
-lines and `#` comments are accepted. An unset file allows all peers, an empty
-file denies all public peers, and an unreadable or invalid file prevents startup.
-Filtering uses the TCP peer before TLS or HTTP parsing. The internal loopback
-listener is exempt. The infra production overlay supplies Cloudflare ranges;
-maintain that file when the permitted networks change.
+The internal listener is `127.0.0.1:8080`. It serves the worker-to-worker calls
+and the admin endpoints. Do not publish it. The admin endpoints answer only on
+this listener.
+
+The runner sets `x-real-ip`, `x-forwarded-for` and `cf-connecting-ip` to the
+client address, and `x-forwarded-proto` to the scheme of the client. The client
+is the TCP peer. When `CLIENT_IP_HEADER` is set and the peer is in the
+allowlist, the client address comes from that header and the scheme from
+`x-forwarded-proto`. Behind Cloudflare, set `CLIENT_IP_HEADER=cf-connecting-ip`
+and put the Cloudflare ranges in the allowlist.
+
+The allowlist has one IPv4 or IPv6 address or network per line; `#` starts a
+comment. Without a file, all peers can connect. An empty file refuses all peers.
+A file that cannot be read or parsed stops the start. The runner closes a
+refused connection before it reads a byte.
+
+A client must send its request headers in 30 s, and end the TLS handshake in
+10 s. A path that only a scanner asks for (`/.env`, `/.git/`, `id_rsa`,
+`/etc/passwd`, `*.php`) gets a 404, and no worker runs. The runner reads the
+certificate, the key and the allowlist at start.
 
 The runner holds a PostgreSQL advisory lock on a connection of its own, and a
 second runner on the same database does not start. Stop the runner before you
