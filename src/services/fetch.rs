@@ -38,8 +38,25 @@ pub static WORKER_DOMAINS: Lazy<Vec<String>> = Lazy::new(|| {
         .unwrap_or_else(|_| Vec::new())
 });
 
+pub const DEFAULT_INTERNAL_PORT: u16 = 8080;
+
+static INTERNAL_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+/// Sets the port of the internal listener, before the runner serves.
+pub fn set_internal_port(port: u16) {
+    INTERNAL_PORT
+        .set(port)
+        .expect("the internal port is set once, at start");
+}
+
 /// Where this runner listens, for the requests it routes to itself.
-pub const RUNNER_URL: &str = "http://127.0.0.1:8080";
+pub fn runner_url() -> String {
+    let port = INTERNAL_PORT
+        .get()
+        .copied()
+        .unwrap_or(DEFAULT_INTERNAL_PORT);
+    format!("http://127.0.0.1:{port}")
+}
 
 /// Set by the runner on each request it routes to itself for a worker: a
 /// `fetch` to a worker domain, and a service binding. The admin endpoints
@@ -177,7 +194,7 @@ pub fn try_internal_worker_route(request: &HttpRequest, depth: u32) -> Option<Ht
         Some(q) => format!("{}?{}", url.path(), q),
         None => url.path().to_string(),
     };
-    let internal_url = format!("{RUNNER_URL}{path_and_query}");
+    let internal_url = format!("{}{path_and_query}", runner_url());
 
     // Create request with x-worker-name header
     let mut headers = request.headers.clone();
@@ -223,7 +240,7 @@ pub fn binding_request(worker_id: &str, request: HttpRequest, depth: u32) -> Htt
     headers.insert(CALL_DEPTH_HEADER.to_string(), depth.to_string());
 
     HttpRequest {
-        url: format!("{RUNNER_URL}{path_and_query}"),
+        url: format!("{}{path_and_query}", runner_url()),
         method: request.method,
         headers,
         body: request.body,

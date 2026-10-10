@@ -238,11 +238,11 @@ impl Logs {
         headers: &HeaderMap,
         worker_id: Uuid,
     ) -> Result<Vec<HeaderValue>, (u16, &'static str)> {
-        use crate::services::fetch::{INTERNAL_ROUTE_HEADER, RUNNER_URL};
+        use crate::services::fetch::{INTERNAL_ROUTE_HEADER, runner_url};
 
         let mut check = self
             .client
-            .get(format!("{RUNNER_URL}/api/v1/workers/{worker_id}"))
+            .get(format!("{}/api/v1/workers/{worker_id}", runner_url()))
             .header("x-worker-name", &self.api_worker)
             .header(INTERNAL_ROUTE_HEADER, "1")
             .header("x-request-id", Uuid::new_v4().to_string());

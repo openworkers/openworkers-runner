@@ -27,7 +27,7 @@ struct AppState {
 /// The listener a request came in on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Listener {
-    /// 127.0.0.1:8080: bindings, worker domains and administration.
+    /// 127.0.0.1:INTERNAL_PORT: bindings, worker domains and administration.
     Internal,
     /// The public HTTP and HTTPS listeners.
     Public,
@@ -965,14 +965,11 @@ fn serve(state: std::sync::Arc<AppState>) -> std::io::Result<Vec<tokio::task::Jo
         config.allowlist.as_deref().map(std::sync::Arc::from);
     let mut tasks = Vec::new();
 
-    let internal = ingress::bind(SocketAddr::from(([127, 0, 0, 1], 8080)), config.listeners)?;
+    let internal_addr = SocketAddr::from(([127, 0, 0, 1], config.internal_port));
+    let internal = ingress::bind(internal_addr, config.listeners)?;
     let public = ingress::bind(config.http_addr, config.listeners)?;
 
-    info!(
-        address = "127.0.0.1:8080",
-        listeners = config.listeners,
-        "internal listener ready"
-    );
+    info!(address = %internal_addr, listeners = config.listeners, "internal listener ready");
     info!(address = %config.http_addr, listeners = config.listeners, "HTTP listener ready");
 
     for (listeners, listener, allowlist) in [
@@ -1190,6 +1187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     });
     let stop = tokio_util::sync::CancellationToken::new();
     let ingress = openworkers_runner::ingress::Config::from_env()?;
+    openworkers_runner::services::fetch::set_internal_port(ingress.internal_port);
 
     // Read here, so a value that is not valid stops the start, not a request
     let max_body = std::env::var("MAX_REQUEST_BODY_BYTES").ok();

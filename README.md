@@ -26,6 +26,7 @@ logs. It does not use nginx, NATS, openworkers-logs or openworkers-scheduler.
 | `HTTPS_CLIENT_CA_FILE`                 | unset                                                                        | PEM CA; HTTPS clients present a cert it signs |
 | `HTTPS_CLIENT_CERT_MODE`               | `require`                                                                    | `require` closes a client without a cert; `log` serves it and logs a warning |
 | `HTTP_LISTENERS`                       | CPU count                                                                    | Accept loops per address, with `SO_REUSEPORT`              |
+| `INTERNAL_PORT`                        | `8080`                                                                       | Port of the internal listener, on `127.0.0.1`              |
 | `INBOUND_ALLOWLIST_FILE`               | unset                                                                        | The peers that can connect to the public listeners         |
 | `CLIENT_IP_HEADER`                     | unset                                                                        | The header that gives the client address (needs allowlist) |
 | `DASHBOARD_HOSTS`                      | `dash.openworkers.com,dash.openworkers.dev,dash.dev.localhost,dash.dev.kube` | Hosts of the API worker                                    |
@@ -37,7 +38,7 @@ the worker that its first label names. Other hosts go to the domain and project
 routes of the database. A public request cannot set `x-worker-id`,
 `x-worker-name`, `x-request-id` or the `x-openworkers-*` headers.
 
-The internal listener is `127.0.0.1:8080`. It serves the worker-to-worker calls
+The internal listener is `127.0.0.1:8080` (`INTERNAL_PORT`). It serves the worker-to-worker calls
 and the admin endpoints. Do not publish it. The admin endpoints answer only on
 this listener.
 

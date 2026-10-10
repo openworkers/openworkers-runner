@@ -90,6 +90,9 @@ impl std::fmt::Display for Peer {
 
 #[derive(Debug)]
 pub struct Config {
+    /// INTERNAL_PORT, on 127.0.0.1: the admin endpoints answer only loopback
+    /// peers.
+    pub internal_port: u16,
     pub http_addr: SocketAddr,
     pub https_addr: HttpsAddr,
     /// Listeners per address, on one port with SO_REUSEPORT.
@@ -204,7 +207,16 @@ impl Config {
             return Err("HTTPS_SOCKET needs HTTP_TLS_CERTIFICATE and HTTP_TLS_KEY".into());
         }
 
+        let internal_port = match var("INTERNAL_PORT") {
+            Some(value) => match value.parse::<u16>() {
+                Ok(port) if port > 0 => port,
+                _ => return Err(format!("INTERNAL_PORT is not a port: {value}").into()),
+            },
+            None => crate::services::fetch::DEFAULT_INTERNAL_PORT,
+        };
+
         Ok(Self {
+            internal_port,
             http_addr: addr("HTTP_ADDR", "0.0.0.0:8081")?,
             https_addr,
             listeners,
@@ -677,6 +689,7 @@ mod tests {
     fn the_default_configuration_has_no_allowlist_tls_or_worker_domain() {
         let config = config(&[]).unwrap();
 
+        assert_eq!(config.internal_port, 8080);
         assert_eq!(config.http_addr, "0.0.0.0:8081".parse().unwrap());
         assert_eq!(
             config.https_addr,
@@ -702,6 +715,8 @@ mod tests {
         for vars in [
             vec![("HTTP_ADDR", "8081")],
             vec![("HTTP_LISTENERS", "0")],
+            vec![("INTERNAL_PORT", "0")],
+            vec![("INTERNAL_PORT", "http")],
             vec![("INBOUND_ALLOWLIST_FILE", "/nonexistent/allowlist")],
             vec![("CLIENT_IP_HEADER", "cf-connecting-ip")],
             vec![
@@ -729,6 +744,9 @@ mod tests {
             config.worker_domains,
             ["workers.rocks", "workers.dev.localhost"]
         );
+
+        let config = super::tests::config(&[("INTERNAL_PORT", "8090")]).unwrap();
+        assert_eq!(config.internal_port, 8090);
     }
 
     #[test]
