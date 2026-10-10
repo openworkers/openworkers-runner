@@ -4,7 +4,7 @@
 use chrono::{DateTime, Utc};
 use openworkers_core::{LogEvent, LogLevel};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use tokio::sync::{broadcast, mpsc};
 
 /// Lines a live stream can fall behind before the runner closes it.
@@ -40,6 +40,8 @@ pub struct LogSink {
     live: broadcast::Sender<LogEntry>,
     store: mpsc::Sender<LogEntry>,
     dropped: Arc<AtomicU64>,
+    /// The date of the last line, in microseconds, as the logs table keeps it.
+    last_date: Arc<AtomicI64>,
 }
 
 /// The lines for the logs table, and the count of lines the sink dropped
@@ -59,6 +61,7 @@ impl LogSink {
             live,
             store,
             dropped: dropped.clone(),
+            last_date: Arc::new(AtomicI64::new(0)),
         };
 
         (sink, LogStore { lines, dropped })
@@ -66,7 +69,7 @@ impl LogSink {
 
     pub fn send(&self, worker_id: &str, event: LogEvent) {
         let entry = LogEntry {
-            date: Utc::now(),
+            date: self.next_date(),
             worker_id: worker_id.to_string(),
             level: event.level,
             message: event.message,
@@ -83,6 +86,19 @@ impl LogSink {
 
     pub fn subscribe(&self) -> broadcast::Receiver<LogEntry> {
         self.live.subscribe()
+    }
+
+    /// Now, or 1 microsecond after the last line: the history sorts lines by
+    /// date, and lines of one microsecond would come out in any order.
+    fn next_date(&self) -> DateTime<Utc> {
+        let now = Utc::now().timestamp_micros();
+        let update = |last: i64| Some(now.max(last + 1));
+        let last = self
+            .last_date
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, update)
+            .expect("the update always gives a value");
+
+        DateTime::from_timestamp_micros(now.max(last + 1)).expect("a date near now is in range")
     }
 }
 
@@ -128,6 +144,31 @@ mod tests {
             assert_eq!(entry.worker_id, "worker");
             assert_eq!(entry.level, LogLevel::Warn);
             assert_eq!(entry.message, "hello");
+        }
+    }
+
+    #[test]
+    fn each_line_gets_a_later_date_than_the_line_before() {
+        let (sink, mut store) = LogSink::new();
+
+        for i in 0..5000 {
+            sink.send("worker", line(&i.to_string()));
+        }
+
+        let mut previous = None;
+
+        while let Ok(entry) = store.lines.try_recv() {
+            assert_eq!(
+                entry.date.timestamp_subsec_nanos() % 1000,
+                0,
+                "whole microseconds"
+            );
+            assert!(
+                previous < Some(entry.date),
+                "{previous:?} then {}",
+                entry.date
+            );
+            previous = Some(entry.date);
         }
     }
 
