@@ -98,7 +98,7 @@ async fn run(abort: CancellationToken, worker_id: &str) -> (u16, usize) {
                     on_warm_hit: None,
                     env_updated_at: None,
                     abort: Some(abort),
-                    on_marks: None,
+                    on_report: None,
                 }),
             )
             .await;

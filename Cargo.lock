@@ -3915,8 +3915,8 @@ dependencies = [
 
 [[package]]
 name = "openworkers-runtime-v8"
-version = "0.15.21"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.21#a9e6aca75c9b4c8f8af2d7238c16895f4fde5ea1"
+version = "0.15.22"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.22#fbc1cb52421f51425ac7eef081fad206b5ea7f13"
 dependencies = [
  "bytes",
  "encoding_rs",
@@ -3946,7 +3946,7 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.21#a9e6aca75c9b4c8f8af2d7238c16895f4fde5ea1"
+source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.15.22#fbc1cb52421f51425ac7eef081fad206b5ea7f13"
 dependencies = [
  "proc-macro2",
  "quote",

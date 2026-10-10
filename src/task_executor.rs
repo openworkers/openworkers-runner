@@ -264,10 +264,13 @@ pub async fn execute_task_await_v8_pooled(
                             }
                         });
 
-                    let marked_worker = worker_id_for_snapshot.clone();
-                    let on_marks: openworkers_runtime_v8::MarksCallback = Box::new(move |marks| {
-                        report_late_respond_with(&marked_worker, marks);
-                    });
+                    let reported_worker = worker_id_for_snapshot.clone();
+                    let on_report: openworkers_runtime_v8::ReportCallback =
+                        Box::new(move |report| {
+                            if report.marks.any() {
+                                report_late_respond_with(&reported_worker, report.marks);
+                            }
+                        });
 
                     openworkers_runtime_v8::execute_pinned(
                         openworkers_runtime_v8::PinnedExecuteRequest {
@@ -280,7 +283,7 @@ pub async fn execute_task_await_v8_pooled(
                             on_warm_hit: Some(on_warm_hit),
                             env_updated_at: config.worker_data.env_updated_at,
                             abort: abort_for_task,
-                            on_marks: Some(on_marks),
+                            on_report: Some(on_report),
                         },
                     )
                     .await
