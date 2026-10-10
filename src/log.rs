@@ -92,13 +92,23 @@ impl LogSink {
     /// date, and lines of one microsecond would come out in any order.
     fn next_date(&self) -> DateTime<Utc> {
         let now = Utc::now().timestamp_micros();
-        let update = |last: i64| Some(now.max(last + 1));
-        let last = self
-            .last_date
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, update)
-            .expect("the update always gives a value");
+        let mut last = self.last_date.load(Ordering::Relaxed);
 
-        DateTime::from_timestamp_micros(now.max(last + 1)).expect("a date near now is in range")
+        let date = loop {
+            let date = now.max(last + 1);
+
+            match self.last_date.compare_exchange_weak(
+                last,
+                date,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break date,
+                Err(current) => last = current,
+            }
+        };
+
+        DateTime::from_timestamp_micros(date).expect("a date near now is in range")
     }
 }
 
