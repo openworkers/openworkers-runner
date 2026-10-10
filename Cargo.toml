@@ -81,7 +81,7 @@ openworkers-runtime-wasm = { git = "https://github.com/openworkers/openworkers-r
 
 # Database bindings (optional)
 # postgate = { path = "../postgate", default-features = false, optional = true }
-postgate = { git = "https://github.com/openworkers/postgate", tag = "v0.1.7", default-features = false, optional = true }
+postgate = { git = "https://github.com/openworkers/postgate", tag = "v0.1.8", default-features = false, optional = true }
 
 futures = "0.3"
 serde_json = "1.0"
