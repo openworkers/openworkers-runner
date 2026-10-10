@@ -4,6 +4,52 @@ OpenWorkers is a runtime for running javascript code in a serverless environment
 
 This runner manages instances of [OpenWorkers Runtime](https://github.com/openworkers/openworkers-runtime-v8).
 
+## Single-runner deployment
+
+Run one runner per platform database. It serves public HTTP and TLS, executes
+workers and cron events, and stores and streams console logs. Do not start the
+standalone logs or scheduler services with it. Nginx is not required.
+
+| Setting                                | Default                                                                      | Purpose                                        |
+| -------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------- |
+| `HTTP_ADDR`                            | `0.0.0.0:8081`                                                               | Public HTTP listener                           |
+| `HTTPS_ADDR`                           | `0.0.0.0:8443`                                                               | Public TLS listener                            |
+| `HTTP_TLS_CERTIFICATE`, `HTTP_TLS_KEY` | unset                                                                        | PEM files; set both to enable HTTPS and HTTP/2 |
+| `INBOUND_ALLOWLIST_FILE`               | unset                                                                        | Public peer IP/CIDR allowlist                  |
+| `DASHBOARD_HOSTS`                      | `dash.openworkers.com,dash.openworkers.dev,dash.dev.localhost,dash.dev.kube` | Hosts served by the API worker                 |
+| `API_WORKER_NAME`                      | `openworkers-api`                                                            | Dashboard and API worker                       |
+| `WORKER_DOMAINS`                       | unset                                                                        | Worker name or UUID subdomains                 |
+
+Other hosts use the database domain and project routes. Public requests cannot
+set the worker selector or internal routing headers. The internal listener
+`127.0.0.1:8080` serves bindings and local administration; do not publish it.
+Client IP headers reflect the TCP peer. Forwarded headers from external proxies
+are not trusted. HTTP serves requests directly; it does not redirect to HTTPS.
+HTTP/2 uses TLS with ALPN; cleartext listeners only accept HTTP/1.1.
+Certificate and allowlist changes require a restart. There is no certificate provisioning.
+
+The optional allowlist contains one IPv4/IPv6 address or CIDR per line; blank
+lines and `#` comments are accepted. An unset file allows all peers, an empty
+file denies all public peers, and an unreadable or invalid file prevents startup.
+Filtering uses the TCP peer before TLS or HTTP parsing. The internal loopback
+listener is exempt. The infra production overlay supplies Cloudflare ranges;
+maintain that file when the permitted networks change.
+
+The runner holds a PostgreSQL advisory lock and refuses a second instance.
+Stop the current runner before replacing it; updates have downtime. Loss of the
+lock connection stops the process. This prevents accidental duplicate runners;
+it is not a distributed ownership or failover protocol.
+
+Cron schedules use UTC, with optional seconds. Overdue schedules run once, then
+advance to the next future occurrence. Dispatch is best effort: a crash after
+claiming an occurrence or a saturated worker pool can skip that occurrence.
+
+Console logs still use NATS. The runner persists messages in the existing
+`logs` table and serves the last ten plus live events at
+`/api/v1/workers/{id}/logs` (SSE) and `/ws-logs` (WebSocket) on dashboard hosts.
+Access uses the API worker's session and worker ownership check. Slow clients
+must reconnect. NATS and log delivery are not durable.
+
 ## Usage
 
 ### Build
@@ -29,14 +75,14 @@ Every backend serves `fetch` and, through `Event::Task` with a schedule source,
 declares a binding its backend cannot serve, naming the types, rather than
 handing the guest an undefined `env.ASSETS`.
 
-| Backend | Feature   | Code type            | Snapshot / code cache | env | Bindings | Known limitations |
-| ------- | --------- | -------------------- | --------------------- | --- | -------- | ----------------- |
-| V8      | `v8`      | javascript, snapshot | yes                   | yes | all but images | no images handler on any backend; the only backend with an isolate pool, warm reuse and websockets |
-| JSC     | `jsc`     | javascript           | no                    | yes | none     | links the system JavaScriptCore; no websockets; a fresh context per request |
-| QuickJS | `quickjs` | javascript           | no                    | no  | none     | no `env`, no websockets; a fresh runtime per request |
-| Boa     | `boa`     | javascript           | no                    | no  | none     | no `env`, no websockets; a fresh context per request |
-| Nova    | `nova`    | javascript           | no                    | yes | assets, database | pure Rust, no C; no `fetch()`, no WebAssembly; `crypto.subtle` stops at HMAC and AES-GCM; a fresh agent per request |
-| WASM    | `wasm`    | wasm                 | no                    | yes | kv, database, storage | `wasi:http/proxy` components only; env arrives as WASI vars, not `env`; no assets or worker bindings |
+| Backend | Feature   | Code type            | Snapshot / code cache | env | Bindings              | Known limitations                                                                                                   |
+| ------- | --------- | -------------------- | --------------------- | --- | --------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| V8      | `v8`      | javascript, snapshot | yes                   | yes | all but images        | no images handler on any backend; the only backend with an isolate pool, warm reuse and websockets                  |
+| JSC     | `jsc`     | javascript           | no                    | yes | none                  | links the system JavaScriptCore; no websockets; a fresh context per request                                         |
+| QuickJS | `quickjs` | javascript           | no                    | no  | none                  | no `env`, no websockets; a fresh runtime per request                                                                |
+| Boa     | `boa`     | javascript           | no                    | no  | none                  | no `env`, no websockets; a fresh context per request                                                                |
+| Nova    | `nova`    | javascript           | no                    | yes | assets, database      | pure Rust, no C; no `fetch()`, no WebAssembly; `crypto.subtle` stops at HMAC and AES-GCM; a fresh agent per request |
+| WASM    | `wasm`    | wasm                 | no                    | yes | kv, database, storage | `wasi:http/proxy` components only; env arrives as WASI vars, not `env`; no assets or worker bindings                |
 
 The wasm guest reaches its bindings through the `openworkers:bindings` WIT
 package rather than an `env` object: every call names its binding, and the
@@ -67,6 +113,7 @@ CREATE DATABASE openworkers WITH OWNER openworkers;
 ```bash
 DATABASE_URL='postgres://openworkers:password@localhost:5432/openworkers'
 NATS_SERVERS='nats://localhost:4222'
+WORKER_DOMAINS='workers.rocks,workers.dev.localhost'
 ```
 
 ### Environment Variables
@@ -80,10 +127,10 @@ NATS_SERVERS='nats://localhost:4222'
 
 #### Networking
 
-| Variable                      | Default         | Description                                                 |
-| ----------------------------- | --------------- | ----------------------------------------------------------- |
-| `WORKER_DOMAINS`              | `workers.rocks` | Comma-separated list of worker domains for internal routing |
-| `HTTP_POOL_MAX_IDLE_PER_HOST` | `100`           | Max idle HTTP connections per host (for worker `fetch()`)   |
+| Variable                      | Default | Description                                                            |
+| ----------------------------- | ------- | ---------------------------------------------------------------------- |
+| `WORKER_DOMAINS`              | unset   | Comma-separated list of worker domains for public and internal routing |
+| `HTTP_POOL_MAX_IDLE_PER_HOST` | `100`   | Max idle HTTP connections per host (for worker `fetch()`)              |
 
 #### Code cache
 
@@ -100,14 +147,14 @@ compiled once instead of on every cold start.
 
 #### V8 Runtime
 
-| Variable                   | Default     | Description                                        |
-| -------------------------- | ----------- | -------------------------------------------------- |
-| `V8_EXECUTE`               | `PINNED`    | Execution mode: `PINNED`, `POOLED`, or `ONESHOT`   |
-| `WORKER_POOL_SIZE`         | CPU cores   | Number of V8 worker threads                        |
-| `MAX_QUEUED_WORKERS`       | pool × 10   | Max queued tasks before backpressure               |
-| `WORKER_WAIT_TIMEOUT_MS`   | `10000`     | Timeout (ms) waiting for a worker slot             |
-| `ISOLATE_MAX_CONCURRENT`   | `1`         | Requests one isolate serves at once (images: 20)   |
-| `CONTEXT_MAX_REUSES`       | `1000`      | Requests a warm context serves before it ages out  |
+| Variable                 | Default   | Description                                       |
+| ------------------------ | --------- | ------------------------------------------------- |
+| `V8_EXECUTE`             | `PINNED`  | Execution mode: `PINNED`, `POOLED`, or `ONESHOT`  |
+| `WORKER_POOL_SIZE`       | CPU cores | Number of V8 worker threads                       |
+| `MAX_QUEUED_WORKERS`     | pool × 10 | Max queued tasks before backpressure              |
+| `WORKER_WAIT_TIMEOUT_MS` | `10000`   | Timeout (ms) waiting for a worker slot            |
+| `ISOLATE_MAX_CONCURRENT` | `1`       | Requests one isolate serves at once (images: 20)  |
+| `CONTEXT_MAX_REUSES`     | `1000`    | Requests a warm context serves before it ages out |
 
 `V8_EXECUTE` modes:
 

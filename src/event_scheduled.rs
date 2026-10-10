@@ -221,99 +221,18 @@ fn run_scheduled(
     );
 }
 
-pub fn handle_scheduled(
-    db_internal: sqlx::Pool<sqlx::Postgres>,
-    db_worker: sqlx::Pool<sqlx::Postgres>,
+pub async fn dispatch(
+    data: ScheduledData,
+    db_internal: sqlx::PgPool,
+    db_worker: sqlx::PgPool,
     global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
 ) {
-    std::thread::spawn(move || {
-        let local = tokio::task::LocalSet::new();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        let handle = local.spawn_local(async move {
-            use futures::StreamExt;
-
-            let nc = crate::nats::nats_connect().await;
-            let mut sub = nc
-                .queue_subscribe("scheduled".to_string(), "runner".to_string())
-                .await
-                .expect("failed to subscribe to scheduled");
-
-            tracing::debug!("listening for scheduled tasks");
-
-            let notify = crate::worker_pool::TASK_COMPLETION_NOTIFY.clone();
-
-            loop {
-                // Listen to both NATS messages and task completion events
-                // This allows immediate reaction to draining state changes:
-                // - If draining starts while waiting for NATS message, we stop listening immediately
-                // - Messages stay in NATS queue for other runners to process
-                // - No messages are lost or dequeued during shutdown
-                let msg = tokio::select! {
-                    Some(msg) = sub.next() => msg,
-                    _ = notify.notified() => {
-                        // Check if draining and stop listening
-                        if crate::worker_pool::is_draining() {
-                            tracing::info!("Runner is draining - stopping scheduled task listener");
-                            break;
-                        }
-                        continue;
-                    }
-                };
-
-                tracing::debug!("scheduled task received: {:?}", msg);
-
-                let data: ScheduledData =
-                    match serde_json::from_slice::<ScheduledData>(&msg.payload) {
-                        Ok(msg) => msg,
-                        Err(err) => {
-                            tracing::error!("failed to parse scheduled task: {:?}", err);
-                            continue;
-                        }
-                    };
-
-                tracing::debug!("scheduled task parsed: {:?}", data);
-
-                // Create span for this scheduled task early
-                let task_id = format!("scheduled-{}", data.id);
-                let cron = format!("\"{}\"", data.cron);
-                let span = tracing::info_span!(
-                    "scheduled_task",
-                    task_id = %task_id,
-                    cron = %cron,
-                    worker_id = tracing::field::Empty,
-                    worker_name = tracing::field::Empty,
-                    user_id = tracing::field::Empty,
-                );
-
-                // Use Instrument trait for async operations
-                use tracing::Instrument;
-
-                // Execute the task handler within the span context
-                handle_scheduled_task(
-                    span.clone(),
-                    task_id,
-                    data,
-                    db_internal.clone(),
-                    db_worker.clone(),
-                    global_log_tx.clone(),
-                )
-                .instrument(span)
-                .await;
-            }
-
-            tracing::debug!("scheduled task listener stopped");
-        });
-
-        tracing::debug!("subscribing to scheduled {:?}", handle);
-
-        match local.block_on(&rt, handle) {
-            Ok(()) => {}
-            Err(err) => tracing::error!("failed to wait for end: {err}"),
-        }
-    });
+    if crate::worker_pool::is_draining() {
+        return;
+    }
+    let task_id = format!("scheduled-{}", data.id);
+    let span = tracing::info_span!("scheduled_task", task_id = %task_id,
+        cron = %data.cron, worker_id = tracing::field::Empty,
+        worker_name = tracing::field::Empty, user_id = tracing::field::Empty);
+    handle_scheduled_task(span, task_id, data, db_internal, db_worker, global_log_tx).await;
 }

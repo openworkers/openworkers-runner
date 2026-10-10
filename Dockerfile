@@ -55,4 +55,4 @@ ENV ISOLATE_MAX_CONCURRENT=20
 
 CMD ["/usr/local/bin/openworkers-runner"]
 
-EXPOSE 8080
+EXPOSE 8081 8443

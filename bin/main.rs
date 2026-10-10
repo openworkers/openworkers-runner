@@ -1,11 +1,10 @@
 use bytes::Bytes;
-use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::net::TcpSocket;
+use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::oneshot::channel;
 use tracing::{debug, error, info, warn};
@@ -21,6 +20,8 @@ struct AppState {
     log_tx: std::sync::mpsc::Sender<openworkers_runner::log::LogMessage>,
     shutdown_tx: tokio::sync::mpsc::Sender<()>,
     wall_clock_timeout_ms: u64,
+    ingress: openworkers_runner::ingress::Config,
+    logs: std::sync::Arc<openworkers_runner::logs::Logs>,
 }
 
 /// Whether a request may use the admin endpoints: it comes from this host,
@@ -183,6 +184,96 @@ async fn handle_request(
         .await
 }
 
+// Public headers cannot select internal routes.
+async fn public_request(
+    state: &AppState,
+    peer: SocketAddr,
+    mut req: Request<hyper::body::Incoming>,
+    tls: bool,
+) -> Result<Response<HyperBody>, std::convert::Infallible> {
+    use openworkers_runner::ingress;
+    ingress::normalize(&mut req, peer, tls);
+    let rid = req.headers()["x-request-id"].clone();
+    let Some(host) = ingress::host(req.headers()) else {
+        return Ok(error_response(400, "Invalid Host"));
+    };
+    let mut response = {
+        if state.ingress.dashboard_hosts.contains(&host) {
+            if let Some((id, ws)) = ingress::log_route(req.uri().path()) {
+                if req.method() != hyper::Method::GET {
+                    return Ok(error_response(405, "GET required"));
+                }
+                return Ok(state
+                    .logs
+                    .serve(req, id, ws, &state.ingress.api_worker)
+                    .await);
+            }
+            if req.uri().path() == "/api/health/latency/proxy" {
+                return Ok(Response::new(full_body("OK")));
+            }
+            req.headers_mut()
+                .insert("x-worker-name", state.ingress.api_worker.parse().unwrap());
+        } else if let Some((header, name)) =
+            ingress::worker_route(&host, &openworkers_runner::services::fetch::WORKER_DOMAINS)
+        {
+            req.headers_mut().insert(header, name.parse().unwrap());
+        }
+        // Loopback clients on the public port must not get admin access.
+        req.headers_mut().insert(
+            openworkers_runner::services::fetch::INTERNAL_ROUTE_HEADER,
+            "1".parse().unwrap(),
+        );
+        handle_request(state, peer, req).await?
+    };
+    response.headers_mut().insert("x-request-id", rid);
+    Ok(response)
+}
+
+async fn serve_socket<S>(
+    stream: S,
+    peer: SocketAddr,
+    state: std::sync::Arc<AppState>,
+    public: bool,
+    tls: bool,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let service = service_fn(move |mut req: Request<hyper::body::Incoming>| {
+        let state = state.clone();
+        async move {
+            if public {
+                public_request(&state, peer, req, tls).await
+            } else {
+                if !req.headers().contains_key("x-request-id") {
+                    req.headers_mut().insert(
+                        "x-request-id",
+                        uuid::Uuid::new_v4().to_string().parse().unwrap(),
+                    );
+                }
+                handle_request(&state, peer, req).await
+            }
+        }
+    });
+    if !tls {
+        if let Err(error) = hyper::server::conn::http1::Builder::new()
+            .serve_connection(TokioIo::new(stream), service)
+            .with_upgrades()
+            .await
+        {
+            debug!(%error, "connection closed");
+        }
+        return;
+    }
+    let builder =
+        hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+    if let Err(error) = builder
+        .serve_connection_with_upgrades(TokioIo::new(stream), service)
+        .await
+    {
+        debug!(%error, "connection closed");
+    }
+}
+
 /// Inner handler that executes within the request span context
 async fn handle_worker_request(
     state: &AppState,
@@ -238,7 +329,7 @@ async fn handle_worker_request(
     // connection for the resolution only, never across the worker's run
     let resolution = openworkers_runner::resolve_cache::resolve(
         &state.db_internal,
-        host.as_deref(),
+        openworkers_runner::ingress::host(&headers).as_deref(),
         worker_id.as_deref(),
         worker_name.as_deref(),
         path,
@@ -985,6 +1076,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         create_pool(&db_url, internal_pool_size, test_before_acquire, "internal").await;
     let db_worker = create_pool(&db_url, worker_pool_size, test_before_acquire, "worker").await;
 
+    // A second runner against this platform is unsupported and fails startup.
+    let singleton = openworkers_runner::singleton::acquire(&db_url).await?;
+    let singleton_task = tokio::spawn(openworkers_runner::singleton::monitor(singleton));
+    let stop = tokio_util::sync::CancellationToken::new();
+    let logs = openworkers_runner::logs::Logs::start(db_internal.clone(), stop.clone()).await?;
+    let ingress = openworkers_runner::ingress::Config::from_env()?;
+    let tls = openworkers_runner::ingress::tls_config()?;
+
     // Keeps the resolution cache in step with the database; off until it listens
     tokio::spawn(openworkers_runner::resolve_cache::listen(db_url.clone()));
 
@@ -1106,11 +1205,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    openworkers_runner::event_scheduled::handle_scheduled(
+    let scheduler_task = tokio::spawn(openworkers_runner::scheduler::run(
         db_internal.clone(),
         db_worker.clone(),
         log_tx.clone(),
-    );
+        stop.clone(),
+    ));
 
     // Shutdown signal channel
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -1123,6 +1223,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         log_tx,
         shutdown_tx,
         wall_clock_timeout_ms,
+        ingress,
+        logs,
     });
 
     // Signal handler for SIGINT/SIGTERM - graceful on first, forced on second
@@ -1179,62 +1281,75 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     });
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let num_listeners = std::env::var("HTTP_LISTENERS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4)
-        });
-
-    info!(
-        "Listening on http://{} with {} listeners",
-        addr, num_listeners
-    );
-
-    for i in 0..num_listeners {
-        let socket = TcpSocket::new_v4()?;
-        socket.set_reuseport(true)?;
-        socket.bind(addr)?;
-
-        let listener = socket.listen(1024)?;
+    let internal = TcpListener::bind("127.0.0.1:8080").await?;
+    let public_addr = std::env::var("HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8081".into());
+    let public = TcpListener::bind(&public_addr).await?;
+    let mut listeners = Vec::new();
+    for (listener, is_public) in [(internal, false), (public, true)] {
+        info!(address = %listener.local_addr()?, public = is_public, "HTTP listener ready");
         let state = state.clone();
-
-        tokio::spawn(async move {
-            debug!("Listener {} started", i);
-
+        listeners.push(tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, peer)) => {
+                        if is_public
+                            && !openworkers_runner::ingress::allowed(
+                                state.ingress.allowlist.as_deref(),
+                                peer.ip(),
+                            )
+                        {
+                            continue;
+                        }
+                        tokio::spawn(serve_socket(stream, peer, state.clone(), is_public, false));
+                    }
+                    Err(error) => {
+                        error!(%error, "accept failed");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        }));
+    }
+    if let Some(config) = tls {
+        let addr = std::env::var("HTTPS_ADDR").unwrap_or_else(|_| "0.0.0.0:8443".into());
+        let listener = TcpListener::bind(&addr).await?;
+        let acceptor = tokio_rustls::TlsAcceptor::from(config);
+        info!(address = %addr, "HTTPS listener ready");
+        let state = state.clone();
+        listeners.push(tokio::spawn(async move {
             loop {
                 let (stream, peer) = match listener.accept().await {
-                    Ok(conn) => conn,
-                    Err(e) => {
-                        error!("Accept error on listener {}: {:?}", i, e);
-                        continue;
-                    }
+                    Ok(pair) => pair,
+                    Err(_) => continue,
                 };
-
-                let io = TokioIo::new(stream);
+                if !openworkers_runner::ingress::allowed(
+                    state.ingress.allowlist.as_deref(),
+                    peer.ip(),
+                ) {
+                    continue;
+                }
+                let acceptor = acceptor.clone();
                 let state = state.clone();
-
                 tokio::spawn(async move {
-                    let service = service_fn(move |req| {
-                        let state = state.clone();
-                        async move { handle_request(&state, peer, req).await }
-                    });
-
-                    if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
-                        // Connection errors are normal (client disconnect, etc.)
-                        debug!("Connection error: {:?}", err);
+                    if let Ok(Ok(stream)) =
+                        tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream)).await
+                    {
+                        serve_socket(stream, peer, state, true, true).await;
                     }
                 });
             }
-        });
+        }));
     }
 
     // Wait for graceful shutdown signal
     shutdown_rx.recv().await;
 
+    stop.cancel();
+    for listener in listeners {
+        listener.abort();
+    }
+    let _ = scheduler_task.await;
+    singleton_task.abort();
     tracing::info!("Shutdown signal received - exiting");
 
     Ok(())

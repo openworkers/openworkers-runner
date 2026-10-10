@@ -31,7 +31,7 @@ pub static WORKER_DOMAINS: Lazy<Vec<String>> = Lazy::new(|| {
     std::env::var("WORKER_DOMAINS")
         .map(|s| {
             s.split(',')
-                .map(|s| s.trim().to_string())
+                .map(|s| s.trim().trim_end_matches('.').to_ascii_lowercase())
                 .filter(|s| !s.is_empty())
                 .collect()
         })
