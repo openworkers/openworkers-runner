@@ -993,6 +993,7 @@ fn serve(state: std::sync::Arc<AppState>) -> std::io::Result<Vec<tokio::task::Jo
 
     if let Some(tls) = &config.tls {
         let acceptor = tokio_rustls::TlsAcceptor::from(tls.clone());
+        let client_cert = config.client_cert;
 
         info!(address = %config.https_addr, listeners = config.listeners, "HTTPS listener ready");
 
@@ -1011,7 +1012,13 @@ fn serve(state: std::sync::Arc<AppState>) -> std::io::Result<Vec<tokio::task::Jo
                         match tokio::time::timeout(ingress::TLS_HANDSHAKE_TIMEOUT, handshake).await
                         {
                             Ok(Ok(stream)) => {
-                                serve_socket(stream, peer, state, Listener::Public, true).await
+                                if ingress::client_cert_allowed(
+                                    client_cert,
+                                    stream.get_ref().1,
+                                    peer,
+                                ) {
+                                    serve_socket(stream, peer, state, Listener::Public, true).await
+                                }
                             }
                             Ok(Err(error)) => debug!(%peer, %error, "TLS handshake failed"),
                             Err(_) => debug!(%peer, "TLS handshake timed out"),

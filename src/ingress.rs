@@ -39,6 +39,18 @@ const RUNNER_HEADERS: [&str; 12] = [
     "cf-connecting-ip",
 ];
 
+/// What the HTTPS listener does with a client that sends no cert, when
+/// HTTPS_CLIENT_CA_FILE is set. A cert that the CA did not sign always fails
+/// the handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientCertMode {
+    /// Close the connection.
+    Require,
+    /// Serve it and log a warning, to find the hosts without the cert before
+    /// they are refused.
+    Log,
+}
+
 #[derive(Debug)]
 pub struct Config {
     pub http_addr: SocketAddr,
@@ -53,6 +65,9 @@ pub struct Config {
     /// The header in which an allowlisted proxy gives the client address.
     pub client_ip_header: Option<HeaderName>,
     pub tls: Option<Arc<rustls::ServerConfig>>,
+    /// Set with HTTPS_CLIENT_CA_FILE: the HTTPS clients present a cert that
+    /// this CA signs.
+    pub client_cert: Option<ClientCertMode>,
 }
 
 type ConfigError = Box<dyn std::error::Error + Send + Sync>;
@@ -115,9 +130,30 @@ impl Config {
             None => None,
         };
 
-        let tls = match (var("HTTP_TLS_CERTIFICATE"), var("HTTP_TLS_KEY")) {
+        let client_ca = var("HTTPS_CLIENT_CA_FILE");
+
+        let client_cert = match (&client_ca, var("HTTPS_CLIENT_CERT_MODE").as_deref()) {
             (None, None) => None,
-            (Some(certificate), Some(key)) => Some(tls_config(&certificate, &key)?),
+            (None, Some(_)) => {
+                return Err("HTTPS_CLIENT_CERT_MODE needs HTTPS_CLIENT_CA_FILE".into());
+            }
+            (Some(_), None | Some("require")) => Some(ClientCertMode::Require),
+            (Some(_), Some("log")) => Some(ClientCertMode::Log),
+            (Some(_), Some(mode)) => {
+                return Err(format!("HTTPS_CLIENT_CERT_MODE is require or log, not {mode}").into());
+            }
+        };
+
+        let tls = match (var("HTTP_TLS_CERTIFICATE"), var("HTTP_TLS_KEY")) {
+            (None, None) if client_ca.is_some() => {
+                return Err(
+                    "HTTPS_CLIENT_CA_FILE needs HTTP_TLS_CERTIFICATE and HTTP_TLS_KEY".into(),
+                );
+            }
+            (None, None) => None,
+            (Some(certificate), Some(key)) => {
+                Some(tls_config(&certificate, &key, client_ca.as_deref())?)
+            }
             _ => return Err("set both HTTP_TLS_CERTIFICATE and HTTP_TLS_KEY, or neither".into()),
         };
 
@@ -134,6 +170,7 @@ impl Config {
             allowlist,
             client_ip_header,
             tls,
+            client_cert,
         })
     }
 
@@ -169,7 +206,11 @@ pub fn allowed(allowlist: Option<&[IpNet]>, peer: IpAddr) -> bool {
     allowlist.is_none_or(|networks| networks.iter().any(|network| network.contains(&peer)))
 }
 
-fn tls_config(certificate: &str, key: &str) -> Result<Arc<rustls::ServerConfig>, ConfigError> {
+fn tls_config(
+    certificate: &str,
+    key: &str,
+    client_ca: Option<&str>,
+) -> Result<Arc<rustls::ServerConfig>, ConfigError> {
     use rustls::pki_types::pem::PemObject;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
@@ -180,13 +221,73 @@ fn tls_config(certificate: &str, key: &str) -> Result<Arc<rustls::ServerConfig>,
     let key = PrivateKeyDer::from_pem_file(key)
         .map_err(|error| format!("HTTP_TLS_KEY {key}: {error}"))?;
 
-    let mut config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(chain, key)?;
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let builder = rustls::ServerConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()?;
+
+    let builder = match client_ca {
+        None => builder.with_no_client_auth(),
+        Some(path) => {
+            let mut roots = rustls::RootCertStore::empty();
+            let certificates = CertificateDer::pem_file_iter(path)
+                .and_then(|certificates| certificates.collect::<Result<Vec<_>, _>>())
+                .map_err(|error| format!("HTTPS_CLIENT_CA_FILE {path}: {error}"))?;
+
+            for certificate in certificates {
+                roots.add(certificate)?;
+            }
+
+            if roots.is_empty() {
+                return Err(format!("HTTPS_CLIENT_CA_FILE {path}: no certificate").into());
+            }
+
+            // A client without a cert ends the handshake; client_cert_allowed decides
+            let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+                Arc::new(roots),
+                provider,
+            )
+            .allow_unauthenticated()
+            .build()?;
+
+            builder.with_client_cert_verifier(verifier)
+        }
+    };
+
+    let mut config = builder.with_single_cert(chain, key)?;
 
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(Arc::new(config))
+}
+
+/// Whether the HTTPS listener serves a connection after its handshake: rustls
+/// already refused a cert that the CA did not sign, so this decides on a
+/// connection without a cert.
+pub fn client_cert_allowed(
+    mode: Option<ClientCertMode>,
+    connection: &rustls::ServerConnection,
+    peer: SocketAddr,
+) -> bool {
+    let Some(mode) = mode else {
+        return true;
+    };
+
+    if connection.peer_certificates().is_some() {
+        return true;
+    }
+
+    let host = connection.server_name().unwrap_or("-");
+
+    match mode {
+        ClientCertMode::Require => {
+            tracing::warn!(%peer, %host, "no client cert; connection refused");
+            false
+        }
+        ClientCertMode::Log => {
+            tracing::warn!(%peer, %host, "no client cert; served, as HTTPS_CLIENT_CERT_MODE=log");
+            true
+        }
+    }
 }
 
 /// Binds `count` listeners to one address with SO_REUSEPORT, so the kernel
@@ -533,6 +634,47 @@ mod tests {
             config.worker_domains,
             ["workers.rocks", "workers.dev.localhost"]
         );
+    }
+
+    #[test]
+    fn the_client_ca_needs_tls_and_a_known_mode() {
+        let tls = [
+            (
+                "HTTP_TLS_CERTIFICATE",
+                "tests/fixtures/client_cert/server.pem",
+            ),
+            ("HTTP_TLS_KEY", "tests/fixtures/client_cert/server.key"),
+        ];
+        let ca = ("HTTPS_CLIENT_CA_FILE", "tests/fixtures/client_cert/ca.pem");
+        let with = |extra: &[(&'static str, &'static str)]| {
+            let mut vars = tls.to_vec();
+            vars.extend_from_slice(extra);
+            config(&vars)
+        };
+
+        assert_eq!(with(&[]).unwrap().client_cert, None);
+        assert_eq!(
+            with(&[ca]).unwrap().client_cert,
+            Some(ClientCertMode::Require)
+        );
+        assert_eq!(
+            with(&[ca, ("HTTPS_CLIENT_CERT_MODE", "log")])
+                .unwrap()
+                .client_cert,
+            Some(ClientCertMode::Log)
+        );
+
+        assert!(with(&[ca, ("HTTPS_CLIENT_CERT_MODE", "maybe")]).is_err());
+        assert!(with(&[("HTTPS_CLIENT_CERT_MODE", "log")]).is_err());
+        assert!(with(&[("HTTPS_CLIENT_CA_FILE", "/nonexistent/ca.pem")]).is_err());
+        assert!(
+            with(&[(
+                "HTTPS_CLIENT_CA_FILE",
+                "tests/fixtures/client_cert/server.key"
+            )])
+            .is_err()
+        );
+        assert!(config(&[ca]).is_err(), "a client CA without TLS");
     }
 
     #[test]

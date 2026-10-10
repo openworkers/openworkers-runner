@@ -22,6 +22,8 @@ logs. It does not use nginx, NATS, openworkers-logs or openworkers-scheduler.
 | `HTTP_ADDR`                            | `0.0.0.0:8081`                                                               | Public HTTP listener (HTTP/1.1)                            |
 | `HTTPS_ADDR`                           | `0.0.0.0:8443`                                                               | Public HTTPS listener (HTTP/2 and HTTP/1.1, through ALPN)  |
 | `HTTP_TLS_CERTIFICATE`, `HTTP_TLS_KEY` | unset                                                                        | PEM files; set both to start the HTTPS listener            |
+| `HTTPS_CLIENT_CA_FILE`                 | unset                                                                        | PEM CA; HTTPS clients present a cert it signs |
+| `HTTPS_CLIENT_CERT_MODE`               | `require`                                                                    | `require` closes a client without a cert; `log` serves it and logs a warning |
 | `HTTP_LISTENERS`                       | CPU count                                                                    | Accept loops per address, with `SO_REUSEPORT`              |
 | `INBOUND_ALLOWLIST_FILE`               | unset                                                                        | The peers that can connect to the public listeners         |
 | `CLIENT_IP_HEADER`                     | unset                                                                        | The header that gives the client address (needs allowlist) |
@@ -49,6 +51,13 @@ The allowlist has one IPv4 or IPv6 address or network per line; `#` starts a
 comment. Without a file, all peers can connect. An empty file refuses all peers.
 A file that cannot be read or parsed stops the start. The runner closes a
 refused connection before it reads a byte.
+
+With `HTTPS_CLIENT_CA_FILE`, the HTTPS listener asks each client for a cert that
+this CA signs. A cert of another CA fails the handshake. A client without a
+cert is closed (`require`), or served with a warning that names its host
+(`log`): use `log` to find the hosts that arrive without the cert before you
+refuse them. Behind a proxy that presents a client cert to the origin, only
+that proxy can then reach the listener and give the client address.
 
 A client must send its request headers in 30 s, and end the TLS handshake in
 10 s. The worker upload of the dashboard (`/api/v1/workers/{id}/upload` on a
