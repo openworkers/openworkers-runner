@@ -270,6 +270,11 @@ pub async fn execute_task_await_v8_pooled(
                             if report.marks.any() {
                                 report_late_respond_with(&reported_worker, report.marks);
                             }
+
+                            crate::metrics::record_isolate_heap(
+                                &reported_worker,
+                                report.heap_used_bytes,
+                            );
                         });
 
                     openworkers_runtime_v8::execute_pinned(

@@ -68,6 +68,9 @@ pub struct Metrics {
 
     // Fetch listeners that called respondWith after they returned
     pub late_respond_with_total: Counter<u64>,
+
+    // JS heap of the isolate when an event ends
+    pub isolate_heap_used: Histogram<u64>,
 }
 
 #[cfg(feature = "telemetry")]
@@ -126,6 +129,17 @@ impl Metrics {
                 .u64_counter("listener.late_respond_with.total")
                 .with_description(
                     "Fetch events whose listener called respondWith after the dispatch",
+                )
+                .build(),
+
+            isolate_heap_used: meter
+                .u64_histogram("isolate.heap.used")
+                .with_description("JS heap of the isolate when an event ends, garbage included")
+                .with_unit("By")
+                .with_boundaries(
+                    [16, 32, 64, 96, 128, 192, 256, 384, 512]
+                        .map(|mib| (mib * 1024 * 1024) as f64)
+                        .to_vec(),
                 )
                 .build(),
         }
@@ -308,6 +322,22 @@ pub fn record_late_respond_with(worker_id: &str, after_settle: bool) {
 
 #[cfg(not(feature = "telemetry"))]
 pub fn record_late_respond_with(_worker_id: &str, _after_settle: bool) {}
+
+/// Records the JS heap the isolate of `worker_id` uses when an event ends.
+/// The 128 MiB bucket boundary is the default heap limit: a worker with
+/// values above it gets MemoryLimit once that limit applies.
+#[cfg(feature = "telemetry")]
+pub fn record_isolate_heap(worker_id: &str, used_bytes: usize) {
+    if let Some(m) = metrics() {
+        m.isolate_heap_used.record(
+            used_bytes as u64,
+            &[KeyValue::new("worker_id", worker_id.to_string())],
+        );
+    }
+}
+
+#[cfg(not(feature = "telemetry"))]
+pub fn record_isolate_heap(_worker_id: &str, _used_bytes: usize) {}
 
 /// The reason rides on `errors.total` alone: on a duration histogram it would
 /// multiply every bucket.

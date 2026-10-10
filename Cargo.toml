@@ -122,6 +122,8 @@ opt-level = 3
 criterion = { version = "0.8.1", features = ["async_tokio"] }
 wat = "1.0"
 serial_test = "4.0"
+# Reads what the metrics record, in memory
+opentelemetry_sdk = { version = "0.32", features = ["testing"] }
 # Not every backend pulls the full tokio, but every test harness needs these
 tokio = { version = "1.49.0", features = ["macros", "rt", "time", "test-util"] }
 
@@ -177,6 +179,10 @@ required-features = ["v8"]
 [[test]]
 name = "slot_timeout_test"
 required-features = ["v8"]
+
+[[test]]
+name = "heap_metric_test"
+required-features = ["telemetry"]
 
 [[test]]
 name = "request_body_streaming_test"
