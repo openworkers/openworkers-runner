@@ -267,25 +267,3 @@ cargo install sqlx-cli --no-default-features --features rustls,postgres
 ```bash
 cargo sqlx prepare
 ```
-
-## Known Issues
-
-### temporal_rs build failure with Deno runtime
-
-When building with the `deno` feature (default), you may encounter a build error with `temporal_rs`:
-
-```
-error: unexpected end of macro invocation
-  --> temporal_rs-0.0.11/src/tzdb.rs:60:1
-   |
-60 | timezone_provider::iana_normalizer_singleton!();
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing tokens in macro arguments
-```
-
-**Workaround:** Pin `timezone_provider` to version 0.0.13:
-
-```bash
-cargo update -p timezone_provider@0.0.16 --precise 0.0.13
-```
-
-This is a known upstream issue with `temporal_rs` and newer versions of `timezone_provider`. The `Cargo.lock` file should preserve this fix for subsequent builds.
