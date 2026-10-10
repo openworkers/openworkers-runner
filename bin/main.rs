@@ -9,6 +9,7 @@ use tokio::sync::oneshot::channel;
 use tracing::{debug, error, info, warn};
 
 use openworkers_core::{HttpRequest, HttpResponse, HyperBody};
+use openworkers_runner::ingress::Peer;
 use openworkers_runner::metrics::{MetricsTimer, Outcome};
 
 use sqlx::postgres::PgPoolOptions;
@@ -35,17 +36,17 @@ enum Listener {
 /// Whether a request may use the admin endpoints: it comes from this host to
 /// the internal listener, and the runner did not route it to itself for a
 /// worker. The Host header is the client's to set, so it does not decide.
-fn admin_allowed(listener: Listener, peer: SocketAddr, headers: &hyper::HeaderMap) -> bool {
+fn admin_allowed(listener: Listener, peer: Peer, headers: &hyper::HeaderMap) -> bool {
     use openworkers_runner::services::fetch::INTERNAL_ROUTE_HEADER;
 
     listener == Listener::Internal
-        && peer.ip().is_loopback()
+        && peer.ip().is_some_and(|ip| ip.is_loopback())
         && !headers.contains_key(INTERNAL_ROUTE_HEADER)
 }
 
 async fn handle_request(
     state: &AppState,
-    peer: SocketAddr,
+    peer: Peer,
     listener: Listener,
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<HyperBody>, std::convert::Infallible> {
@@ -199,7 +200,7 @@ async fn handle_request(
 /// replaced the headers that only the runner sets.
 async fn public_request(
     state: &AppState,
-    peer: SocketAddr,
+    peer: Peer,
     mut req: Request<hyper::body::Incoming>,
     tls: bool,
 ) -> Result<Response<HyperBody>, std::convert::Infallible> {
@@ -223,7 +224,7 @@ async fn public_request(
 
 async fn serve_socket<S>(
     stream: S,
-    peer: SocketAddr,
+    peer: Peer,
     state: std::sync::Arc<AppState>,
     listener: Listener,
     tls: bool,
@@ -985,51 +986,72 @@ fn serve(state: std::sync::Arc<AppState>) -> std::io::Result<Vec<tokio::task::Jo
                 socket,
                 allowlist.clone(),
                 move |stream, peer| {
+                    let peer = Peer::Tcp(peer);
                     tokio::spawn(serve_socket(stream, peer, state.clone(), listener, false));
                 },
             )));
         }
     }
 
-    if let Some(tls) = &config.tls {
-        let acceptor = tokio_rustls::TlsAcceptor::from(tls.clone());
-        let client_cert = config.client_cert;
+    let Some(tls) = &config.tls else {
+        return Ok(tasks);
+    };
 
-        info!(address = %config.https_addr, listeners = config.listeners, "HTTPS listener ready");
+    let acceptor = tokio_rustls::TlsAcceptor::from(tls.clone());
 
-        for socket in ingress::bind(config.https_addr, config.listeners)? {
-            let state = state.clone();
-            let acceptor = acceptor.clone();
+    match &config.https_addr {
+        ingress::HttpsAddr::Tcp(address) => {
+            info!(%address, listeners = config.listeners, "HTTPS listener ready");
 
-            tasks.push(tokio::spawn(ingress::accept(
-                socket,
-                allowlist.clone(),
-                move |stream, peer| {
-                    let state = state.clone();
-                    let handshake = acceptor.accept(stream);
+            for socket in ingress::bind(*address, config.listeners)? {
+                let state = state.clone();
+                let acceptor = acceptor.clone();
 
-                    tokio::spawn(async move {
-                        match tokio::time::timeout(ingress::TLS_HANDSHAKE_TIMEOUT, handshake).await
-                        {
-                            Ok(Ok(stream)) => {
-                                if ingress::client_cert_allowed(
-                                    client_cert,
-                                    stream.get_ref().1,
-                                    peer,
-                                ) {
-                                    serve_socket(stream, peer, state, Listener::Public, true).await
-                                }
-                            }
-                            Ok(Err(error)) => debug!(%peer, %error, "TLS handshake failed"),
-                            Err(_) => debug!(%peer, "TLS handshake timed out"),
-                        }
-                    });
-                },
-            )));
+                tasks.push(tokio::spawn(ingress::accept(
+                    socket,
+                    allowlist.clone(),
+                    move |stream, peer| {
+                        let handshake = acceptor.accept(stream);
+                        tokio::spawn(serve_tls(handshake, Peer::Tcp(peer), state.clone()));
+                    },
+                )));
+            }
+        }
+        ingress::HttpsAddr::Unix(path) => {
+            let socket = ingress::bind_unix(path)?;
+
+            info!(socket = %path.display(), "HTTPS listener ready");
+
+            tasks.push(tokio::spawn(ingress::accept_unix(socket, move |stream| {
+                let handshake = acceptor.accept(stream);
+                tokio::spawn(serve_tls(handshake, Peer::Unix, state.clone()));
+            })));
         }
     }
 
     Ok(tasks)
+}
+
+/// Ends the TLS handshake of a public connection, checks its client cert, and
+/// serves it.
+async fn serve_tls<S>(
+    handshake: tokio_rustls::Accept<S>,
+    peer: Peer,
+    state: std::sync::Arc<AppState>,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    use openworkers_runner::ingress;
+
+    match tokio::time::timeout(ingress::TLS_HANDSHAKE_TIMEOUT, handshake).await {
+        Ok(Ok(stream)) => {
+            if ingress::client_cert_allowed(state.ingress.client_cert, stream.get_ref().1, peer) {
+                serve_socket(stream, peer, state, Listener::Public, true).await
+            }
+        }
+        Ok(Err(error)) => debug!(%peer, %error, "TLS handshake failed"),
+        Err(_) => debug!(%peer, "TLS handshake timed out"),
+    }
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
@@ -1376,12 +1398,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Listener, admin_allowed};
+    use super::{Listener, Peer, admin_allowed};
     use openworkers_runner::services::fetch::INTERNAL_ROUTE_HEADER;
-    use std::net::SocketAddr;
 
-    fn peer(address: &str) -> SocketAddr {
-        address.parse().unwrap()
+    fn peer(address: &str) -> Peer {
+        Peer::Tcp(address.parse().unwrap())
     }
 
     #[test]

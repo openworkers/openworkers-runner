@@ -5,9 +5,11 @@ use hyper::header::{HeaderName, HeaderValue};
 use hyper::{HeaderMap, Request};
 use ipnet::IpNet;
 use std::net::{IpAddr, SocketAddr};
+use std::os::unix::fs::FileTypeExt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream, UnixListener, UnixStream};
 use uuid::Uuid;
 
 use crate::logs::Stream;
@@ -51,10 +53,45 @@ pub enum ClientCertMode {
     Log,
 }
 
+/// Where the HTTPS listener accepts connections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpsAddr {
+    Tcp(SocketAddr),
+    /// HTTPS_SOCKET: a Unix socket for a proxy on the same host.
+    Unix(PathBuf),
+}
+
+/// The client of a public connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Peer {
+    Tcp(SocketAddr),
+    /// A client of HTTPS_SOCKET. The file permissions of the socket decide who
+    /// connects, so the runner trusts it as an allowlisted proxy.
+    Unix,
+}
+
+impl Peer {
+    pub fn ip(self) -> Option<IpAddr> {
+        match self {
+            Peer::Tcp(addr) => Some(addr.ip()),
+            Peer::Unix => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Peer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Peer::Tcp(addr) => addr.fmt(f),
+            Peer::Unix => f.write_str("unix"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Config {
     pub http_addr: SocketAddr,
-    pub https_addr: SocketAddr,
+    pub https_addr: HttpsAddr,
     /// Listeners per address, on one port with SO_REUSEPORT.
     pub listeners: usize,
     pub dashboard_hosts: Vec<String>,
@@ -130,6 +167,12 @@ impl Config {
             None => None,
         };
 
+        let https_addr = match (var("HTTPS_ADDR"), var("HTTPS_SOCKET")) {
+            (Some(_), Some(_)) => return Err("set HTTPS_ADDR or HTTPS_SOCKET, not both".into()),
+            (None, Some(path)) => HttpsAddr::Unix(PathBuf::from(path)),
+            (_, None) => HttpsAddr::Tcp(addr("HTTPS_ADDR", "0.0.0.0:8443")?),
+        };
+
         let client_ca = var("HTTPS_CLIENT_CA_FILE");
 
         let client_cert = match (&client_ca, var("HTTPS_CLIENT_CERT_MODE").as_deref()) {
@@ -157,9 +200,13 @@ impl Config {
             _ => return Err("set both HTTP_TLS_CERTIFICATE and HTTP_TLS_KEY, or neither".into()),
         };
 
+        if matches!(https_addr, HttpsAddr::Unix(_)) && tls.is_none() {
+            return Err("HTTPS_SOCKET needs HTTP_TLS_CERTIFICATE and HTTP_TLS_KEY".into());
+        }
+
         Ok(Self {
             http_addr: addr("HTTP_ADDR", "0.0.0.0:8081")?,
-            https_addr: addr("HTTPS_ADDR", "0.0.0.0:8443")?,
+            https_addr,
             listeners,
             dashboard_hosts: list(
                 var("DASHBOARD_HOSTS"),
@@ -266,7 +313,7 @@ fn tls_config(
 pub fn client_cert_allowed(
     mode: Option<ClientCertMode>,
     connection: &rustls::ServerConnection,
-    peer: SocketAddr,
+    peer: Peer,
 ) -> bool {
     let Some(mode) = mode else {
         return true;
@@ -316,6 +363,37 @@ pub fn bind(addr: SocketAddr, count: usize) -> std::io::Result<Vec<TcpListener>>
     Ok(listeners)
 }
 
+/// Binds a Unix socket at `path`. A socket file that a stopped runner left
+/// is removed; any other file stops the bind.
+pub fn bind_unix(path: &Path) -> std::io::Result<UnixListener> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => std::fs::remove_file(path)?,
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("{} is not a socket", path.display()),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    UnixListener::bind(path)
+}
+
+/// Accepts the connections of a Unix socket without end.
+pub async fn accept_unix(listener: UnixListener, mut serve: impl FnMut(UnixStream)) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => serve(stream),
+            Err(error) => {
+                tracing::error!(%error, "accept failed");
+                tokio::time::sleep(ACCEPT_ERROR_PAUSE).await;
+            }
+        }
+    }
+}
+
 /// Accepts connections without end. A peer that the allowlist refuses is
 /// closed before any byte is read.
 pub async fn accept(
@@ -355,7 +433,7 @@ pub enum Route {
 
 /// Replaces the headers that only the runner sets, and gives the route of a
 /// public request. `tls` tells how the client connected to the runner.
-pub fn prepare<B>(config: &Config, req: &mut Request<B>, peer: SocketAddr, tls: bool) -> Route {
+pub fn prepare<B>(config: &Config, req: &mut Request<B>, peer: Peer, tls: bool) -> Route {
     // HTTP/2 and absolute-form requests name the host in the target, which
     // takes precedence over a Host header
     if let Some(authority) = req.uri().authority().cloned() {
@@ -367,15 +445,13 @@ pub fn prepare<B>(config: &Config, req: &mut Request<B>, peer: SocketAddr, tls: 
         *req.uri_mut() = path.parse().expect("a path of a valid URI is a valid URI");
     }
 
-    let forwarded = forwarded_by_proxy(config, req.headers(), peer.ip());
+    let forwarded = forwarded_by_proxy(config, req.headers(), peer);
     let headers = req.headers_mut();
 
     for name in RUNNER_HEADERS {
         headers.remove(name);
     }
 
-    let client = forwarded.client.unwrap_or(peer.ip()).to_canonical();
-    let client = HeaderValue::from_str(&client.to_string()).expect("an address is a header value");
     let scheme = match forwarded.https.unwrap_or(tls) {
         true => "https",
         false => "http",
@@ -383,10 +459,17 @@ pub fn prepare<B>(config: &Config, req: &mut Request<B>, peer: SocketAddr, tls: 
 
     headers.insert("x-request-id", request_id());
     headers.insert("x-forwarded-proto", HeaderValue::from_static(scheme));
-    headers.insert("x-real-ip", client.clone());
-    headers.insert("x-forwarded-for", client.clone());
-    // Workers written for Cloudflare read the client address here
-    headers.insert("cf-connecting-ip", client);
+
+    // A Unix peer without the client header has no address to give
+    if let Some(client) = forwarded.client.or(peer.ip()) {
+        let client = HeaderValue::from_str(&client.to_canonical().to_string())
+            .expect("an address is a header value");
+
+        headers.insert("x-real-ip", client.clone());
+        headers.insert("x-forwarded-for", client.clone());
+        // Workers written for Cloudflare read the client address here
+        headers.insert("cf-connecting-ip", client);
+    }
 
     let Some(host) = host(headers) else {
         return Route::BadHost;
@@ -449,12 +532,17 @@ struct Forwarded {
     https: Option<bool>,
 }
 
-fn forwarded_by_proxy(config: &Config, headers: &HeaderMap, peer: IpAddr) -> Forwarded {
+fn forwarded_by_proxy(config: &Config, headers: &HeaderMap, peer: Peer) -> Forwarded {
     let Some(header) = &config.client_ip_header else {
         return Forwarded::default();
     };
 
-    if !config.allows(peer) {
+    let trusted = match peer {
+        Peer::Tcp(addr) => config.allows(addr.ip()),
+        Peer::Unix => true,
+    };
+
+    if !trusted {
         return Forwarded::default();
     }
 
@@ -581,12 +669,19 @@ mod tests {
 
     const PEER: &str = "192.0.2.1:4000";
 
+    fn peer() -> Peer {
+        Peer::Tcp(PEER.parse().unwrap())
+    }
+
     #[test]
     fn the_default_configuration_has_no_allowlist_tls_or_worker_domain() {
         let config = config(&[]).unwrap();
 
         assert_eq!(config.http_addr, "0.0.0.0:8081".parse().unwrap());
-        assert_eq!(config.https_addr, "0.0.0.0:8443".parse().unwrap());
+        assert_eq!(
+            config.https_addr,
+            HttpsAddr::Tcp("0.0.0.0:8443".parse().unwrap())
+        );
         assert!(config.listeners > 0);
         assert!(config.allowlist.is_none());
         assert!(config.client_ip_header.is_none());
@@ -678,6 +773,30 @@ mod tests {
     }
 
     #[test]
+    fn https_socket_replaces_https_addr_and_needs_tls() {
+        let tls = [
+            (
+                "HTTP_TLS_CERTIFICATE",
+                "tests/fixtures/client_cert/server.pem",
+            ),
+            ("HTTP_TLS_KEY", "tests/fixtures/client_cert/server.key"),
+        ];
+        let socket = ("HTTPS_SOCKET", "/run/openworkers/https.sock");
+        let with = |extra: &[(&'static str, &'static str)]| {
+            let mut vars = tls.to_vec();
+            vars.extend_from_slice(extra);
+            config(&vars)
+        };
+
+        assert_eq!(
+            with(&[socket]).unwrap().https_addr,
+            HttpsAddr::Unix("/run/openworkers/https.sock".into())
+        );
+        assert!(with(&[socket, ("HTTPS_ADDR", "0.0.0.0:8443")]).is_err());
+        assert!(config(&[socket]).is_err(), "a socket without TLS");
+    }
+
+    #[test]
     fn the_allowlist_takes_addresses_networks_and_comments() {
         let networks =
             parse_allowlist("# proxies\n192.0.2.0/24\n2001:db8::/32 # v6\n\n127.0.0.1\n").unwrap();
@@ -707,10 +826,7 @@ mod tests {
 
         let mut req = request(&forged, "/path?q=1");
 
-        assert_eq!(
-            prepare(&config, &mut req, PEER.parse().unwrap(), true),
-            Route::Worker
-        );
+        assert_eq!(prepare(&config, &mut req, peer(), true), Route::Worker);
 
         let headers = req.headers();
         assert_eq!(headers["x-worker-name"], "hello");
@@ -744,7 +860,7 @@ mod tests {
         ];
 
         let mut req = request(&forwarded, "/");
-        prepare(&config, &mut req, PEER.parse().unwrap(), false);
+        prepare(&config, &mut req, peer(), false);
         assert_eq!(req.headers()["x-real-ip"], "2001:db8::7");
         assert_eq!(req.headers()["cf-connecting-ip"], "2001:db8::7");
         assert_eq!(req.headers()["x-forwarded-proto"], "https");
@@ -755,7 +871,7 @@ mod tests {
         prepare(
             &config,
             &mut req,
-            "198.51.100.1:4000".parse().unwrap(),
+            Peer::Tcp("198.51.100.1:4000".parse().unwrap()),
             false,
         );
         assert_eq!(req.headers()["x-real-ip"], "198.51.100.1");
@@ -765,8 +881,40 @@ mod tests {
             &[("host", "example.com"), ("cf-connecting-ip", "not an ip")],
             "/",
         );
-        prepare(&config, &mut req, PEER.parse().unwrap(), true);
+        prepare(&config, &mut req, peer(), true);
         assert_eq!(req.headers()["x-real-ip"], "192.0.2.1");
+    }
+
+    #[test]
+    fn a_unix_peer_gives_the_client_address_or_none() {
+        let list = allowlist_file("192.0.2.0/24\n");
+        let trusting = config(&[
+            ("INBOUND_ALLOWLIST_FILE", list.path().to_str().unwrap()),
+            ("CLIENT_IP_HEADER", "cf-connecting-ip"),
+        ])
+        .unwrap();
+
+        let mut req = request(
+            &[("host", "example.com"), ("cf-connecting-ip", "203.0.113.9")],
+            "/",
+        );
+        prepare(&trusting, &mut req, Peer::Unix, true);
+        assert_eq!(req.headers()["x-real-ip"], "203.0.113.9");
+        assert_eq!(req.headers()["cf-connecting-ip"], "203.0.113.9");
+
+        let mut req = request(&[("host", "example.com")], "/");
+        prepare(&trusting, &mut req, Peer::Unix, true);
+        assert!(!req.headers().contains_key("x-real-ip"));
+
+        // Without CLIENT_IP_HEADER, forged addresses are removed and none is set
+        let mut req = request(
+            &[("host", "example.com"), ("x-real-ip", "203.0.113.9")],
+            "/",
+        );
+        prepare(&config(&[]).unwrap(), &mut req, Peer::Unix, true);
+        for name in ["x-real-ip", "x-forwarded-for", "cf-connecting-ip"] {
+            assert!(!req.headers().contains_key(name), "{name}");
+        }
     }
 
     #[test]
@@ -782,7 +930,7 @@ mod tests {
             ],
             "/",
         );
-        prepare(&config, &mut req, PEER.parse().unwrap(), false);
+        prepare(&config, &mut req, peer(), false);
 
         assert_eq!(req.headers()["x-real-ip"], "192.0.2.1");
         assert_eq!(req.headers()["x-forwarded-proto"], "http");
@@ -794,7 +942,7 @@ mod tests {
         let id = Uuid::new_v4();
         let route = |path: &str| {
             let mut req = request(&[("host", "Dash.OpenWorkers.com")], path);
-            let route = prepare(&config, &mut req, PEER.parse().unwrap(), true);
+            let route = prepare(&config, &mut req, peer(), true);
             (route, req.headers().get("x-worker-name").cloned())
         };
 
@@ -823,7 +971,7 @@ mod tests {
         let config = config(&[("WORKER_DOMAINS", "workers.rocks")]).unwrap();
         let limit = |host: &str, path: &str| {
             let mut req = request(&[("host", host)], path);
-            prepare(&config, &mut req, PEER.parse().unwrap(), true);
+            prepare(&config, &mut req, peer(), true);
             req.extensions().get::<BodyLimit>().copied()
         };
 
@@ -851,10 +999,7 @@ mod tests {
         let config = config(&[("WORKER_DOMAINS", "workers.rocks")]).unwrap();
         let mut req = request(&[("host", "www.example.com")], "/");
 
-        assert_eq!(
-            prepare(&config, &mut req, PEER.parse().unwrap(), true),
-            Route::Worker
-        );
+        assert_eq!(prepare(&config, &mut req, peer(), true), Route::Worker);
         assert!(!req.headers().contains_key("x-worker-name"));
         assert!(!req.headers().contains_key("x-worker-id"));
         assert_eq!(host(req.headers()).as_deref(), Some("www.example.com"));
@@ -868,7 +1013,7 @@ mod tests {
             "https://hello.example:8443/path?q=1",
         );
 
-        prepare(&config, &mut req, PEER.parse().unwrap(), true);
+        prepare(&config, &mut req, peer(), true);
 
         assert_eq!(host(req.headers()).as_deref(), Some("hello.example"));
         assert_eq!(req.uri().to_string(), "/path?q=1");
@@ -882,7 +1027,7 @@ mod tests {
         for headers in [vec![], vec![("host", "")], vec![("host", "bad host")]] {
             let mut req = request(&headers, "/");
             assert_eq!(
-                prepare(&config, &mut req, PEER.parse().unwrap(), false),
+                prepare(&config, &mut req, peer(), false),
                 Route::BadHost,
                 "{headers:?}"
             );
@@ -963,6 +1108,28 @@ mod tests {
                 .iter()
                 .all(|listener| listener.local_addr().unwrap().port() == port)
         );
+    }
+
+    #[tokio::test]
+    async fn bind_unix_replaces_a_stale_socket_but_not_another_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("https.sock");
+
+        drop(bind_unix(&path).unwrap());
+        let listener = bind_unix(&path).unwrap();
+        let (served, mut served_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        tokio::spawn(accept_unix(listener, move |_| served.send(()).unwrap()));
+        UnixStream::connect(&path).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), served_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let file = dir.path().join("file");
+        std::fs::write(&file, "data").unwrap();
+        assert!(bind_unix(&file).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "data");
     }
 
     #[tokio::test]

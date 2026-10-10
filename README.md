@@ -21,6 +21,7 @@ logs. It does not use nginx, NATS, openworkers-logs or openworkers-scheduler.
 | -------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------- |
 | `HTTP_ADDR`                            | `0.0.0.0:8081`                                                               | Public HTTP listener (HTTP/1.1)                            |
 | `HTTPS_ADDR`                           | `0.0.0.0:8443`                                                               | Public HTTPS listener (HTTP/2 and HTTP/1.1, through ALPN)  |
+| `HTTPS_SOCKET`                         | unset                                                                        | Unix socket of the HTTPS listener, in place of `HTTPS_ADDR` |
 | `HTTP_TLS_CERTIFICATE`, `HTTP_TLS_KEY` | unset                                                                        | PEM files; set both to start the HTTPS listener            |
 | `HTTPS_CLIENT_CA_FILE`                 | unset                                                                        | PEM CA; HTTPS clients present a cert it signs |
 | `HTTPS_CLIENT_CERT_MODE`               | `require`                                                                    | `require` closes a client without a cert; `log` serves it and logs a warning |
@@ -46,6 +47,13 @@ is the TCP peer. When `CLIENT_IP_HEADER` is set and the peer is in the
 allowlist, the client address comes from that header and the scheme from
 `x-forwarded-proto`. Behind Cloudflare, set `CLIENT_IP_HEADER=cf-connecting-ip`
 and put the Cloudflare ranges in the allowlist.
+
+`HTTPS_SOCKET` serves HTTPS on a Unix socket, for a proxy on the same host
+that passes TLS through. The file permissions of the socket decide who
+connects, and the allowlist does not apply. When `CLIENT_IP_HEADER` is set, the
+client address comes from that header; otherwise the runner sets no client
+address. A socket file at the path is replaced at start; another file stops the
+start.
 
 The allowlist has one IPv4 or IPv6 address or network per line; `#` starts a
 comment. Without a file, all peers can connect. An empty file refuses all peers.
