@@ -9,15 +9,11 @@ use crate::worker::prepare_worker;
 use openworkers_core::Event;
 use openworkers_core::TaskSource;
 
-use serde::Deserialize;
-use serde::Serialize;
-
 /// How long a scheduled task may hold a worker slot. A cron fires again whatever
 /// happens, so one that never ends would take a slot out of the pool for good.
 const SCHEDULED_TASK_TIMEOUT_MS: u64 = 60_000;
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub struct ScheduledData {
     pub id: String,
     pub cron: String,
@@ -32,7 +28,7 @@ async fn handle_scheduled_task(
     data: ScheduledData,
     db_internal: sqlx::Pool<sqlx::Postgres>,
     db_worker: sqlx::Pool<sqlx::Postgres>,
-    global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
+    log_sink: crate::log::LogSink,
 ) {
     // Start metrics timer
     #[cfg_attr(not(feature = "telemetry"), allow(unused_mut))]
@@ -88,7 +84,7 @@ async fn handle_scheduled_task(
         data,
         worker_data,
         db_worker,
-        global_log_tx,
+        log_sink,
         span,
         metrics_timer,
     );
@@ -99,7 +95,7 @@ fn run_scheduled(
     data: ScheduledData,
     worker_data: WorkerWithBindings,
     db_pool: DbPool,
-    global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
+    log_sink: crate::log::LogSink,
     span: tracing::Span,
     mut metrics_timer: crate::metrics::MetricsTimer,
 ) {
@@ -153,7 +149,7 @@ fn run_scheduled(
                 permit,
                 task: event,
                 db_pool,
-                global_log_tx,
+                log_sink,
                 limits,
                 // A task that never ends holds its pool permit for the life of
                 // the process. Nothing else releases it, and the pool climbed to
@@ -225,14 +221,33 @@ pub async fn dispatch(
     data: ScheduledData,
     db_internal: sqlx::PgPool,
     db_worker: sqlx::PgPool,
-    global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
+    log_sink: crate::log::LogSink,
 ) {
     if crate::worker_pool::is_draining() {
         return;
     }
+
     let task_id = format!("scheduled-{}", data.id);
-    let span = tracing::info_span!("scheduled_task", task_id = %task_id,
-        cron = %data.cron, worker_id = tracing::field::Empty,
-        worker_name = tracing::field::Empty, user_id = tracing::field::Empty);
-    handle_scheduled_task(span, task_id, data, db_internal, db_worker, global_log_tx).await;
+    let cron = format!("\"{}\"", data.cron);
+    let span = tracing::info_span!(
+        "scheduled_task",
+        task_id = %task_id,
+        cron = %cron,
+        worker_id = tracing::field::Empty,
+        worker_name = tracing::field::Empty,
+        user_id = tracing::field::Empty,
+    );
+
+    use tracing::Instrument;
+
+    handle_scheduled_task(
+        span.clone(),
+        task_id,
+        data,
+        db_internal,
+        db_worker,
+        log_sink,
+    )
+    .instrument(span)
+    .await;
 }

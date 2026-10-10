@@ -7,7 +7,6 @@ pub mod event_scheduled;
 pub mod limiter;
 pub mod log;
 pub mod metrics;
-pub mod nats;
 pub mod ops;
 pub mod request_body;
 pub mod resolve_cache;

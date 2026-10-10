@@ -16,7 +16,7 @@ pub fn run_fetch(
     req: HttpRequest,
     res_tx: ResponseSender,
     termination_tx: TerminationTx,
-    global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
+    log_sink: crate::log::LogSink,
     permit: tokio::sync::OwnedSemaphorePermit,
     db_pool: DbPool,
     wall_clock_timeout_ms: u64,
@@ -51,7 +51,7 @@ pub fn run_fetch(
         permit,
         task,
         db_pool,
-        global_log_tx,
+        log_sink,
         limits,
         external_timeout_ms: Some(wall_clock_timeout_ms),
         abort: Some(abort),
@@ -99,7 +99,7 @@ mod tests {
         };
         let (res_tx, res_rx) = tokio::sync::oneshot::channel();
         let (termination_tx, termination_rx) = tokio::sync::oneshot::channel();
-        let (global_log_tx, _global_log_rx) = std::sync::mpsc::channel();
+        let (log_sink, _log_store) = crate::log::LogSink::new();
         let permit = Arc::new(tokio::sync::Semaphore::new(1))
             .try_acquire_owned()
             .unwrap();
@@ -113,7 +113,7 @@ mod tests {
             request,
             res_tx,
             termination_tx,
-            global_log_tx,
+            log_sink,
             permit,
             db_pool,
             1_000,

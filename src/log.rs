@@ -1,261 +1,173 @@
-use openworkers_core::LogEvent;
-use std::time::Duration;
+//! The console lines of the workers. A live log stream gets each line when
+//! the worker writes it; the logs table gets the lines in batches.
 
-pub enum LogMessage {
-    Log { worker_id: String, event: LogEvent },
-    FlushWorker { worker_id: String }, // Signal to flush logs for a specific worker
+use chrono::{DateTime, Utc};
+use openworkers_core::{LogEvent, LogLevel};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::{broadcast, mpsc};
+
+/// Lines a live stream can fall behind before the runner closes it.
+const LIVE_CAPACITY: usize = 1024;
+
+/// Lines that wait for the logs table. When the table is slower than the
+/// workers, the runner drops new lines, so the queue cannot fill the memory.
+const STORE_CAPACITY: usize = 10_000;
+
+#[derive(Clone, Debug)]
+pub struct LogEntry {
+    pub date: DateTime<Utc>,
+    pub worker_id: String,
+    pub level: LogLevel,
+    pub message: String,
 }
 
-// Batching configuration
-const BATCH_SIZE: usize = 10; // Flush after 10 messages
-const BATCH_TIMEOUT_MS: u64 = 100; // Or flush every 100ms
-
-// Create a global log publisher that handles all NATS publishing with batching
-pub fn start_log_publisher() -> std::sync::mpsc::Sender<LogMessage> {
-    let (tx, rx) = std::sync::mpsc::channel::<LogMessage>();
-
-    std::thread::spawn(move || {
-        // Create a tokio runtime for this thread
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        rt.block_on(async {
-            let nc = crate::nats::nats_connect().await;
-            tracing::info!(
-                "Global log publisher started (batching: {}msg/{}ms)",
-                BATCH_SIZE,
-                BATCH_TIMEOUT_MS
-            );
-
-            let mut batch: Vec<LogMessage> = Vec::with_capacity(BATCH_SIZE);
-            let timeout = Duration::from_millis(BATCH_TIMEOUT_MS);
-
-            loop {
-                // Try to receive a message with timeout
-                match rx.recv_timeout(timeout) {
-                    Ok(log_msg) => {
-                        match log_msg {
-                            LogMessage::Log { .. } => {
-                                batch.push(log_msg);
-
-                                // Drain all immediately available messages
-                                while batch.len() < BATCH_SIZE {
-                                    match rx.try_recv() {
-                                        Ok(msg) => match msg {
-                                            LogMessage::Log { .. } => batch.push(msg),
-                                            LogMessage::FlushWorker { worker_id } => {
-                                                // Flush logs for this worker immediately
-                                                flush_worker(&nc, &mut batch, &worker_id).await;
-                                            }
-                                        },
-                                        Err(_) => break,
-                                    }
-                                }
-
-                                // Flush if batch is full
-                                if batch.len() >= BATCH_SIZE {
-                                    flush_batch(&nc, &mut batch).await;
-                                }
-                            }
-                            LogMessage::FlushWorker { worker_id } => {
-                                // Flush all pending logs for this specific worker
-                                flush_worker(&nc, &mut batch, &worker_id).await;
-                            }
-                        }
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        // Timeout: flush if we have any messages
-                        if !batch.is_empty() {
-                            flush_batch(&nc, &mut batch).await;
-                        }
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        // Channel closed, flush remaining and exit
-                        if !batch.is_empty() {
-                            flush_batch(&nc, &mut batch).await;
-                        }
-                        break;
-                    }
-                }
-            }
-
-            tracing::warn!("Global log publisher stopped");
-        });
-    });
-
-    tx
+/// The name of a level in the logs table and in the log streams.
+pub fn level_name(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Error => "error",
+        LogLevel::Warn => "warn",
+        LogLevel::Info => "info",
+        LogLevel::Log => "log",
+        LogLevel::Debug => "debug",
+        LogLevel::Trace => "trace",
+    }
 }
 
-async fn flush_batch(nc: &async_nats::Client, batch: &mut Vec<LogMessage>) {
-    if batch.is_empty() {
-        return;
+/// Takes the console lines of all workers.
+#[derive(Clone)]
+pub struct LogSink {
+    live: broadcast::Sender<LogEntry>,
+    store: mpsc::Sender<LogEntry>,
+    dropped: Arc<AtomicU64>,
+}
+
+/// The lines for the logs table, and the count of lines the sink dropped
+/// because the queue was full.
+pub struct LogStore {
+    pub lines: mpsc::Receiver<LogEntry>,
+    pub dropped: Arc<AtomicU64>,
+}
+
+impl LogSink {
+    pub fn new() -> (Self, LogStore) {
+        let (live, _) = broadcast::channel(LIVE_CAPACITY);
+        let (store, lines) = mpsc::channel(STORE_CAPACITY);
+        let dropped = Arc::new(AtomicU64::new(0));
+
+        let sink = Self {
+            live,
+            store,
+            dropped: dropped.clone(),
+        };
+
+        (sink, LogStore { lines, dropped })
     }
 
-    tracing::debug!("Flushing batch of {} log messages", batch.len());
+    pub fn send(&self, worker_id: &str, event: LogEvent) {
+        let entry = LogEntry {
+            date: Utc::now(),
+            worker_id: worker_id.to_string(),
+            level: event.level,
+            message: event.message,
+        };
 
-    for log_msg in batch.drain(..) {
-        if let LogMessage::Log { worker_id, event } = log_msg {
-            // Also log locally for debugging
-            tracing::debug!(
-                "[worker:{}] [{}] {}",
-                &worker_id[..8.min(worker_id.len())],
-                event.level,
-                event.message
-            );
+        if self.live.receiver_count() > 0 {
+            self.live.send(entry.clone()).ok();
+        }
 
-            let level = event.level.to_string();
-            let subject = format!("{}.console.{}", worker_id, level);
-
-            if let Err(err) = nc.publish(subject, event.message.into()).await {
-                tracing::error!("failed to publish log to NATS: {:?}", err);
-            }
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.store.try_send(entry) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    // Single flush for the entire batch instead of one per message
-    if let Err(err) = nc.flush().await {
-        tracing::error!("failed to flush NATS batch: {:?}", err);
+    pub fn subscribe(&self) -> broadcast::Receiver<LogEntry> {
+        self.live.subscribe()
     }
 }
 
-async fn flush_worker(nc: &async_nats::Client, batch: &mut Vec<LogMessage>, worker_id: &str) {
-    // Extract and flush only logs from this specific worker
-    let (worker_logs, remaining): (Vec<_>, Vec<_>) = batch
-        .drain(..)
-        .partition(|msg| matches!(msg, LogMessage::Log { worker_id: id, .. } if id == worker_id));
-
-    if !worker_logs.is_empty() {
-        tracing::debug!(
-            "Flushing {} logs for worker {}",
-            worker_logs.len(),
-            crate::utils::short_id(worker_id)
-        );
-
-        for log_msg in worker_logs {
-            if let LogMessage::Log { worker_id, event } = log_msg {
-                // Also log locally for debugging
-                tracing::debug!(
-                    "[worker:{}] [{}] {}",
-                    &worker_id[..8.min(worker_id.len())],
-                    event.level,
-                    event.message
-                );
-
-                let level = event.level.to_string();
-                let subject = format!("{}.console.{}", worker_id, level);
-
-                if let Err(err) = nc.publish(subject, event.message.into()).await {
-                    tracing::error!("failed to publish log to NATS: {:?}", err);
-                }
-            }
-        }
-
-        // Flush only this worker's logs
-        if let Err(err) = nc.flush().await {
-            tracing::error!("failed to flush worker logs: {:?}", err);
-        }
-    }
-
-    // Put back remaining logs
-    *batch = remaining;
-}
-
-/// Sends one worker's log events to the global publisher. Events and the
-/// final FlushWorker go through the same channel, so the publisher gets
-/// every event of a request before its flush.
+/// Sends the console lines of one worker to the sink.
 #[derive(Clone)]
 pub struct LogSender {
     worker_id: String,
-    global_tx: std::sync::mpsc::Sender<LogMessage>,
+    sink: LogSink,
 }
 
 impl LogSender {
-    pub fn new(worker_id: String, global_tx: std::sync::mpsc::Sender<LogMessage>) -> Self {
-        Self {
-            worker_id,
-            global_tx,
-        }
+    pub fn new(worker_id: String, sink: LogSink) -> Self {
+        Self { worker_id, sink }
     }
 
-    pub fn send(&self, event: LogEvent) -> Result<(), std::sync::mpsc::SendError<LogMessage>> {
-        self.global_tx.send(LogMessage::Log {
-            worker_id: self.worker_id.clone(),
-            event,
-        })
+    pub fn send(&self, event: LogEvent) {
+        self.sink.send(&self.worker_id, event);
     }
-}
-
-pub struct WorkerLogHandler {
-    worker_id: String,
-    global_tx: std::sync::mpsc::Sender<LogMessage>,
-}
-
-impl WorkerLogHandler {
-    /// Signal that this worker is done and logs should be flushed
-    pub fn flush(self) {
-        tracing::debug!(
-            "Flushing logs for worker: {}",
-            crate::utils::short_id(&self.worker_id)
-        );
-
-        let _ = self.global_tx.send(LogMessage::FlushWorker {
-            worker_id: self.worker_id,
-        });
-    }
-}
-
-pub fn create_log_handler(
-    worker_id: String,
-    global_tx: std::sync::mpsc::Sender<LogMessage>,
-) -> (LogSender, WorkerLogHandler) {
-    let sender = LogSender::new(worker_id.clone(), global_tx.clone());
-    let handler = WorkerLogHandler {
-        worker_id,
-        global_tx,
-    };
-
-    (sender, handler)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openworkers_core::LogLevel;
+
+    fn line(message: &str) -> LogEvent {
+        LogEvent {
+            level: LogLevel::Warn,
+            message: message.to_string(),
+        }
+    }
 
     #[test]
-    fn a_flush_comes_after_every_event_of_its_request() {
-        let (global_tx, global_rx) = std::sync::mpsc::channel();
-        let (sender, handler) = create_log_handler("worker".to_string(), global_tx);
+    fn a_line_goes_to_the_live_streams_and_to_the_store() {
+        let (sink, mut store) = LogSink::new();
+        let mut live = sink.subscribe();
 
-        for i in 0..1000 {
-            sender
-                .send(LogEvent {
-                    level: LogLevel::Log,
-                    message: i.to_string(),
-                })
-                .unwrap();
+        LogSender::new("worker".to_string(), sink).send(line("hello"));
+
+        let streamed = live.try_recv().unwrap();
+        let stored = store.lines.try_recv().unwrap();
+
+        for entry in [streamed, stored] {
+            assert_eq!(entry.worker_id, "worker");
+            assert_eq!(entry.level, LogLevel::Warn);
+            assert_eq!(entry.message, "hello");
+        }
+    }
+
+    #[test]
+    fn a_full_store_queue_drops_new_lines_and_counts_them() {
+        let (sink, mut store) = LogSink::new();
+
+        for i in 0..STORE_CAPACITY + 3 {
+            sink.send("worker", line(&i.to_string()));
         }
 
-        handler.flush();
+        assert_eq!(store.dropped.load(Ordering::Relaxed), 3);
+        assert_eq!(store.lines.try_recv().unwrap().message, "0");
+    }
 
-        let mut events = 0;
+    #[test]
+    fn a_closed_store_does_not_count_as_a_drop() {
+        let (sink, store) = LogSink::new();
+        let dropped = store.dropped.clone();
+        drop(store);
 
-        for message in global_rx.try_iter() {
-            match message {
-                LogMessage::Log { worker_id, event } => {
-                    assert_eq!(worker_id, "worker");
-                    assert_eq!(event.message, events.to_string());
-                    events += 1;
-                }
-                LogMessage::FlushWorker { .. } => {
-                    assert_eq!(events, 1000, "the flush came before every event");
-                    return;
-                }
-            }
-        }
+        sink.send("worker", line("lost"));
 
-        panic!("no flush after {events} events");
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn level_names_match_the_logs_table_enum() {
+        let names: Vec<_> = [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Log,
+            LogLevel::Debug,
+            LogLevel::Trace,
+        ]
+        .into_iter()
+        .map(level_name)
+        .collect();
+
+        assert_eq!(names, ["error", "warn", "info", "log", "debug", "trace"]);
     }
 }

@@ -35,20 +35,24 @@ Filtering uses the TCP peer before TLS or HTTP parsing. The internal loopback
 listener is exempt. The infra production overlay supplies Cloudflare ranges;
 maintain that file when the permitted networks change.
 
-The runner holds a PostgreSQL advisory lock and refuses a second instance.
-Stop the current runner before replacing it; updates have downtime. Loss of the
-lock connection stops the process. This prevents accidental duplicate runners;
-it is not a distributed ownership or failover protocol.
+The runner holds a PostgreSQL advisory lock on a connection of its own, and a
+second runner on the same database does not start. Stop the runner before you
+start its replacement; a deploy stops the traffic for that time. When the lock
+connection closes, the runner stops. The lock does not fence a runner that has
+lost it, so it is not an ownership protocol for several runners.
 
-Cron schedules use UTC, with optional seconds. Overdue schedules run once, then
-advance to the next future occurrence. Dispatch is best effort: a crash after
-claiming an occurrence or a saturated worker pool can skip that occurrence.
+Crons use UTC, with an optional seconds field. A late cron runs once, then waits
+for its next run. The runner records the scheduled event before it runs it, so
+a stop between the two, or a full worker pool, skips that run.
 
-Console logs still use NATS. The runner persists messages in the existing
-`logs` table and serves the last ten plus live events at
-`/api/v1/workers/{id}/logs` (SSE) and `/ws-logs` (WebSocket) on dashboard hosts.
-Access uses the API worker's session and worker ownership check. Slow clients
-must reconnect. NATS and log delivery are not durable.
+Console logs stay in the runner process. Each line goes to the live log streams
+at once, and to the `logs` table in batches. A dashboard host serves
+`/api/v1/workers/{uuid}/logs` (SSE) and `/api/v1/workers/{uuid}/ws-logs`
+(WebSocket): the last 10 lines, then the live lines. The API worker checks the
+session of the client and the owner of the worker. A client that falls behind
+by 1024 lines is disconnected and must connect again. When 10 000 lines wait for
+the table, the runner drops new lines and logs a warning. A message in the
+table keeps 255 characters.
 
 ## Usage
 
@@ -112,7 +116,6 @@ CREATE DATABASE openworkers WITH OWNER openworkers;
 
 ```bash
 DATABASE_URL='postgres://openworkers:password@localhost:5432/openworkers'
-NATS_SERVERS='nats://localhost:4222'
 WORKER_DOMAINS='workers.rocks,workers.dev.localhost'
 ```
 
@@ -123,7 +126,6 @@ WORKER_DOMAINS='workers.rocks,workers.dev.localhost'
 | Variable       | Description                  |
 | -------------- | ---------------------------- |
 | `DATABASE_URL` | PostgreSQL connection string |
-| `NATS_SERVERS` | NATS server URL              |
 
 #### Networking
 
@@ -179,12 +181,6 @@ Fresh V8 isolate per request, destroyed after each response. No reuse, no poolin
 | `OTLP_ENDPOINT`     | -                    | OTLP exporter endpoint (enables telemetry) |
 | `OTLP_SERVICE_NAME` | `openworkers-runner` | Service name reported to OTLP              |
 | `OTLP_HEADERS`      | -                    | Extra headers for OTLP exporter            |
-
-#### NATS Authentication
-
-| Variable           | Default | Description                   |
-| ------------------ | ------- | ----------------------------- |
-| `NATS_CREDENTIALS` | -       | Path to NATS credentials file |
 
 #### Internal Routing (`WORKER_DOMAINS`)
 

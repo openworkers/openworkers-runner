@@ -17,7 +17,7 @@ use sqlx::postgres::PgPoolOptions;
 struct AppState {
     db_internal: sqlx::Pool<sqlx::Postgres>, // Runner's own queries (resolve, bindings lookup)
     db_worker: sqlx::Pool<sqlx::Postgres>,   // Worker binding operations (KV, Database)
-    log_tx: std::sync::mpsc::Sender<openworkers_runner::log::LogMessage>,
+    log_sink: openworkers_runner::log::LogSink,
     shutdown_tx: tokio::sync::mpsc::Sender<()>,
     wall_clock_timeout_ms: u64,
     ingress: openworkers_runner::ingress::Config,
@@ -199,14 +199,8 @@ async fn public_request(
     };
     let mut response = {
         if state.ingress.dashboard_hosts.contains(&host) {
-            if let Some((id, ws)) = ingress::log_route(req.uri().path()) {
-                if req.method() != hyper::Method::GET {
-                    return Ok(error_response(405, "GET required"));
-                }
-                return Ok(state
-                    .logs
-                    .serve(req, id, ws, &state.ingress.api_worker)
-                    .await);
+            if let Some((worker_id, stream)) = openworkers_runner::logs::route(req.uri().path()) {
+                return Ok(state.logs.serve(req, worker_id, stream).await);
             }
             if req.uri().path() == "/api/health/latency/proxy" {
                 return Ok(Response::new(full_body("OK")));
@@ -836,7 +830,7 @@ async fn handle_worker_request(
         request,
         res_tx,
         termination_tx,
-        state.log_tx.clone(),
+        state.log_sink.clone(),
         permit,
         state.db_worker.clone(),
         state.wall_clock_timeout_ms,
@@ -1076,12 +1070,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         create_pool(&db_url, internal_pool_size, test_before_acquire, "internal").await;
     let db_worker = create_pool(&db_url, worker_pool_size, test_before_acquire, "worker").await;
 
-    // A second runner against this platform is unsupported and fails startup.
-    let singleton = openworkers_runner::singleton::acquire(&db_url).await?;
-    let singleton_task = tokio::spawn(openworkers_runner::singleton::monitor(singleton));
+    // A second runner on the same database fails here
+    let lock = openworkers_runner::singleton::acquire(&db_url).await?;
+    let lock_task = tokio::spawn(async move {
+        openworkers_runner::singleton::hold(lock).await;
+        error!("lost the runner lock; another runner can start, so this one stops");
+        std::process::exit(1);
+    });
     let stop = tokio_util::sync::CancellationToken::new();
-    let logs = openworkers_runner::logs::Logs::start(db_internal.clone(), stop.clone()).await?;
     let ingress = openworkers_runner::ingress::Config::from_env()?;
+
+    let (log_sink, log_store) = openworkers_runner::log::LogSink::new();
+    let log_store_task = tokio::spawn(openworkers_runner::logs::store(
+        db_internal.clone(),
+        log_store,
+        stop.clone(),
+    ));
+    let logs = std::sync::Arc::new(openworkers_runner::logs::Logs::new(
+        db_internal.clone(),
+        log_sink.clone(),
+        ingress.api_worker.clone(),
+        stop.clone(),
+    ));
     let tls = openworkers_runner::ingress::tls_config()?;
 
     // Keeps the resolution cache in step with the database; off until it listens
@@ -1095,41 +1105,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "Per-worker concurrency limit: {}",
         openworkers_runner::worker_pool::get_max_concurrent_per_worker()
     );
-
-    // Connect to NATS with retries
-    let max_retries = 5;
-    let mut retry_count: u32 = 0;
-    loop {
-        match openworkers_runner::nats::nats_connect()
-            .await
-            .publish("boot", "0".into())
-            .await
-        {
-            Ok(_) => {
-                debug!("connected to NATS");
-                break;
-            }
-            Err(e) => {
-                retry_count += 1;
-                if retry_count > max_retries {
-                    panic!(
-                        "Failed to connect to NATS after {} retries: {}",
-                        max_retries, e
-                    );
-                }
-                let wait_time = Duration::from_secs(2u64.pow(retry_count.min(5)));
-                warn!(
-                    "NATS connection attempt {} failed: {}. Retrying in {:?}...",
-                    retry_count, e, wait_time
-                );
-                tokio::time::sleep(wait_time).await;
-            }
-        }
-    }
-
-    // Start global log publisher
-    let log_tx = openworkers_runner::log::start_log_publisher();
-    debug!("started log publisher");
 
     // Initialize isolate pool for V8 runtime
     #[cfg(feature = "v8")]
@@ -1208,7 +1183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let scheduler_task = tokio::spawn(openworkers_runner::scheduler::run(
         db_internal.clone(),
         db_worker.clone(),
-        log_tx.clone(),
+        log_sink.clone(),
         stop.clone(),
     ));
 
@@ -1220,7 +1195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let state = std::sync::Arc::new(AppState {
         db_internal,
         db_worker,
-        log_tx,
+        log_sink,
         shutdown_tx,
         wall_clock_timeout_ms,
         ingress,
@@ -1349,7 +1324,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         listener.abort();
     }
     let _ = scheduler_task.await;
-    singleton_task.abort();
+
+    // Drained, so no worker writes lines; the store writes its queue and returns
+    if tokio::time::timeout(Duration::from_secs(5), log_store_task)
+        .await
+        .is_err()
+    {
+        warn!("the log store did not finish in 5 s; the last worker logs are lost");
+    }
+
+    lock_task.abort();
     tracing::info!("Shutdown signal received - exiting");
 
     Ok(())

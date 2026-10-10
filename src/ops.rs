@@ -874,7 +874,7 @@ impl OperationsHandler for RunnerOperations {
             let state = self.request_state.lock().unwrap();
 
             if let Some(ref tx) = state.log_tx {
-                let _ = tx.send(LogEvent {
+                tx.send(LogEvent {
                     level,
                     message: message.clone(),
                 });
@@ -907,9 +907,9 @@ mod tests {
     #[test]
     fn test_runner_operations_update_request() {
         let ops = RunnerOperations::new();
-        let (tx, _rx) = std::sync::mpsc::channel();
+        let (sink, _store) = crate::log::LogSink::new();
         ops.update_request(
-            crate::log::LogSender::new("worker".to_string(), tx),
+            crate::log::LogSender::new("worker".to_string(), sink),
             tracing::Span::none(),
             0,
         );
@@ -944,7 +944,7 @@ mod tests {
     #[test]
     fn test_update_request_creates_fresh_limiters() {
         let ops = RunnerOperations::new();
-        let (tx_b, _rx_b) = std::sync::mpsc::channel();
+        let (sink_b, _store_b) = crate::log::LogSink::new();
 
         // Request A grabs its limiters and simulates some usage
         let limiters_a = ops.limiters();
@@ -960,7 +960,7 @@ mod tests {
 
         // Warm reuse: new request B arrives
         ops.update_request(
-            crate::log::LogSender::new("worker".to_string(), tx_b),
+            crate::log::LogSender::new("worker".to_string(), sink_b),
             tracing::Span::none(),
             0,
         );

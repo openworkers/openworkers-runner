@@ -62,7 +62,7 @@ async fn a_request_past_the_external_timeout_keeps_its_slot_until_its_js_ends() 
     };
 
     let slots = Arc::new(Semaphore::new(1));
-    let (global_log_tx, _global_log_rx) = std::sync::mpsc::channel();
+    let (log_sink, _log_store) = openworkers_runner::log::LogSink::new();
 
     let config = TaskExecutionConfig {
         worker_data,
@@ -72,7 +72,7 @@ async fn a_request_past_the_external_timeout_keeps_its_slot_until_its_js_ends() 
         db_pool: sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://localhost/unused")
             .unwrap(),
-        global_log_tx,
+        log_sink,
         limits,
         external_timeout_ms: Some(50),
         abort: Some(tokio_util::sync::CancellationToken::new()),

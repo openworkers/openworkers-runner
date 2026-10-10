@@ -133,17 +133,6 @@ pub fn worker_route<'a>(hostname: &'a str, domains: &[String]) -> Option<(&'stat
     Some((header, name))
 }
 
-pub fn log_route(path: &str) -> Option<(uuid::Uuid, bool)> {
-    let rest = path.strip_prefix("/api/v1/workers/")?;
-    let (id, endpoint) = rest.split_once('/')?;
-    let ws = match endpoint {
-        "logs" => false,
-        "ws-logs" => true,
-        _ => return None,
-    };
-    Some((uuid::Uuid::parse_str(id).ok()?, ws))
-}
-
 pub fn tls_config()
 -> Result<Option<Arc<rustls::ServerConfig>>, Box<dyn std::error::Error + Send + Sync>> {
     use rustls::pki_types::pem::PemObject;
@@ -229,20 +218,5 @@ mod tests {
         normalize(&mut req, "192.0.2.1:12".parse().unwrap(), true);
         assert_eq!(host(req.headers()).as_deref(), Some("hello.workers.rocks"));
         assert_eq!(req.uri().to_string(), "/path");
-    }
-
-    #[test]
-    fn log_routes_do_not_match_other_worker_endpoints() {
-        let id = uuid::Uuid::new_v4();
-        assert_eq!(
-            log_route(&format!("/api/v1/workers/{id}/logs")),
-            Some((id, false))
-        );
-        assert_eq!(
-            log_route(&format!("/api/v1/workers/{id}/ws-logs")),
-            Some((id, true))
-        );
-        assert!(log_route("/api/v1/workers/nope/logs").is_none());
-        assert!(log_route(&format!("/api/v1/workers/{id}/logs/extra")).is_none());
     }
 }

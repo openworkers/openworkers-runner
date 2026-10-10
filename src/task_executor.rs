@@ -5,7 +5,6 @@ use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 use tracing::Instrument;
 
-use crate::log::WorkerLogHandler;
 #[cfg(feature = "v8")]
 use crate::ops::LogTx;
 use crate::ops::{DbPool, RunnerOperations};
@@ -67,7 +66,7 @@ pub struct TaskExecutionConfig {
     pub permit: OwnedSemaphorePermit,
     pub task: Event,
     pub db_pool: DbPool,
-    pub global_log_tx: std::sync::mpsc::Sender<crate::log::LogMessage>,
+    pub log_sink: crate::log::LogSink,
     pub limits: RuntimeLimits,
     pub external_timeout_ms: Option<u64>,
     /// Cancelled when the client goes away, to stop ops nobody will read.
@@ -89,7 +88,6 @@ impl TaskExecutionConfig {
 struct TaskComponents {
     prepared: PreparedWorker,
     ops: Arc<RunnerOperations>,
-    log_handler: WorkerLogHandler,
     /// Raw log sender for warm hit callback (to update cached ops)
     #[cfg(feature = "v8")]
     log_tx: LogTx,
@@ -103,8 +101,7 @@ struct TaskComponents {
 
 /// Set up logging and the operations handle around a prepared script.
 fn task_components(config: &TaskExecutionConfig, prepared: PreparedWorker) -> TaskComponents {
-    let (log_tx, log_handler) =
-        crate::log::create_log_handler(config.worker_data.id.clone(), config.global_log_tx.clone());
+    let log_tx = crate::log::LogSender::new(config.worker_data.id.clone(), config.log_sink.clone());
 
     let depth = match &config.task {
         Event::Fetch(Some(init)) => crate::services::fetch::call_depth(&init.req.headers),
@@ -124,7 +121,6 @@ fn task_components(config: &TaskExecutionConfig, prepared: PreparedWorker) -> Ta
     TaskComponents {
         prepared,
         ops,
-        log_handler,
         #[cfg(feature = "v8")]
         log_tx,
         #[cfg(feature = "v8")]
@@ -322,9 +318,6 @@ pub async fn execute_task_await_v8_pooled(
                 }
             };
 
-            // CRITICAL: Flush logs before returning
-            components.log_handler.flush();
-
             // After successful JS execution, create code cache in background
             if result.is_ok()
                 && let Some(js_code) = js_code_for_snapshot
@@ -444,9 +437,6 @@ pub async fn execute_task_await(
 
                 let result =
                     run_task_with_timeout_worker(&mut worker, task, external_timeout_ms).await;
-
-                // CRITICAL: Flush logs before worker is dropped to prevent log loss
-                components.log_handler.flush();
 
                 // TaskPermit is automatically dropped here, releasing the semaphore
                 // and notifying the drain monitor

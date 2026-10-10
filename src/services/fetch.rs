@@ -39,7 +39,7 @@ pub static WORKER_DOMAINS: Lazy<Vec<String>> = Lazy::new(|| {
 });
 
 /// Where this runner listens, for the requests it routes to itself.
-const RUNNER_URL: &str = "http://127.0.0.1:8080";
+pub const RUNNER_URL: &str = "http://127.0.0.1:8080";
 
 /// Set by the runner on each request it routes to itself for a worker: a
 /// `fetch` to a worker domain, and a service binding. The admin endpoints
