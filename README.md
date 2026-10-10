@@ -146,6 +146,7 @@ WORKER_DOMAINS='workers.rocks,workers.dev.localhost'
 | ----------------------------- | ------- | ---------------------------------------------------------------------- |
 | `WORKER_DOMAINS`              | unset   | Comma-separated list of worker domains for public and internal routing |
 | `HTTP_POOL_MAX_IDLE_PER_HOST` | `100`   | Max idle HTTP connections per host (for worker `fetch()`)              |
+| `MAX_REQUEST_BODY_BYTES`      | 30 MiB  | Largest request body; a larger body gets 413                           |
 
 #### Code cache
 

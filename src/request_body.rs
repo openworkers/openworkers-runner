@@ -4,15 +4,33 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, LengthLimitError, Limited};
 use once_cell::sync::Lazy;
 
+/// The default limit: the 30 MiB that nginx let through for worker uploads.
+pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 30 * 1024 * 1024;
+
 /// The largest request body the runner takes, in bytes: MAX_REQUEST_BODY_BYTES,
-/// 10 MiB by default. A buffered body is held whole in memory and copied
-/// into the worker, so the limit bounds both.
+/// or the default. A buffered body is held whole in memory and copied into
+/// the worker, so the limit bounds both. A value that is not valid stops the
+/// runner when it first reads the limit.
 pub static MAX_REQUEST_BODY_BYTES: Lazy<usize> = Lazy::new(|| {
-    std::env::var("MAX_REQUEST_BODY_BYTES")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(10 * 1024 * 1024)
+    let value = std::env::var("MAX_REQUEST_BODY_BYTES").ok();
+
+    limit_from(value.as_deref()).unwrap_or_else(|error| panic!("{error}"))
 });
+
+/// The limit that a MAX_REQUEST_BODY_BYTES value gives: a count of bytes
+/// above 0, or the default when the variable is not set.
+pub fn limit_from(value: Option<&str>) -> Result<usize, String> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_MAX_REQUEST_BODY_BYTES);
+    };
+
+    match value.trim().parse::<usize>() {
+        Ok(limit) if limit > 0 => Ok(limit),
+        _ => Err(format!(
+            "MAX_REQUEST_BODY_BYTES is not a count of bytes above 0: '{value}'"
+        )),
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum BodyError {
@@ -55,6 +73,28 @@ mod tests {
 
         assert_eq!(read(at_limit, 16).await.unwrap().len(), 16);
         assert_eq!(read(over_limit, 16).await, Err(BodyError::TooLarge));
+    }
+
+    #[test]
+    fn the_default_limit_is_30_mib_and_a_value_replaces_it() {
+        assert_eq!(limit_from(None), Ok(30 * 1024 * 1024));
+        assert_eq!(limit_from(Some("1048576")), Ok(1024 * 1024));
+        assert_eq!(limit_from(Some(" 42 ")), Ok(42));
+    }
+
+    #[test]
+    fn a_limit_that_is_not_a_count_above_0_is_refused() {
+        for value in ["", "0", "-1", "10MB", "1.5", "99999999999999999999999"] {
+            assert!(limit_from(Some(value)).is_err(), "{value:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_upload_of_25_mib_passes_the_default_limit() {
+        let upload = Full::new(Bytes::from(vec![0u8; 25 * 1024 * 1024]));
+        let limit = limit_from(None).unwrap();
+
+        assert_eq!(read(upload, limit).await.unwrap().len(), 25 * 1024 * 1024);
     }
 
     #[test]

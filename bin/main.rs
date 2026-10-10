@@ -1154,6 +1154,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let stop = tokio_util::sync::CancellationToken::new();
     let ingress = openworkers_runner::ingress::Config::from_env()?;
 
+    // Read here, so a value that is not valid stops the start, not a request
+    let max_body = std::env::var("MAX_REQUEST_BODY_BYTES").ok();
+    let max_body = openworkers_runner::request_body::limit_from(max_body.as_deref())?;
+    info!("Request body limit: {max_body} bytes");
+
     let (log_sink, log_store) = openworkers_runner::log::LogSink::new();
     let log_store_task = tokio::spawn(openworkers_runner::logs::store(
         db_internal.clone(),
