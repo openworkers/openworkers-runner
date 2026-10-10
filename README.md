@@ -44,7 +44,9 @@ A file that cannot be read or parsed stops the start. The runner closes a
 refused connection before it reads a byte.
 
 A client must send its request headers in 30 s, and end the TLS handshake in
-10 s. A path that only a scanner asks for (`/.env`, `/.git/`, `id_rsa`,
+10 s. The worker upload of the dashboard (`/api/v1/workers/{id}/upload` on a
+dashboard host) takes a body of 30 MiB; other requests take
+`MAX_REQUEST_BODY_BYTES`. A path that only a scanner asks for (`/.env`, `/.git/`, `id_rsa`,
 `/etc/passwd`, `*.php`) gets a 404, and no worker runs. The runner reads the
 certificate, the key and the allowlist at start.
 
@@ -146,7 +148,7 @@ WORKER_DOMAINS='workers.rocks,workers.dev.localhost'
 | ----------------------------- | ------- | ---------------------------------------------------------------------- |
 | `WORKER_DOMAINS`              | unset   | Comma-separated list of worker domains for public and internal routing |
 | `HTTP_POOL_MAX_IDLE_PER_HOST` | `100`   | Max idle HTTP connections per host (for worker `fetch()`)              |
-| `MAX_REQUEST_BODY_BYTES`      | 30 MiB  | Largest request body; a larger body gets 413                           |
+| `MAX_REQUEST_BODY_BYTES`      | 10 MiB  | Largest request body; a larger body gets 413                           |
 
 #### Code cache
 

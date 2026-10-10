@@ -309,6 +309,11 @@ pub fn prepare<B>(config: &Config, req: &mut Request<B>, peer: SocketAddr, tls: 
             return Route::Latency;
         }
 
+        if worker_upload(req.uri().path()) {
+            let limit = crate::request_body::BodyLimit(crate::request_body::UPLOAD_MAX_BODY_BYTES);
+            req.extensions_mut().insert(limit);
+        }
+
         let api_worker =
             HeaderValue::from_str(&config.api_worker).expect("API_WORKER_NAME is a header value");
         req.headers_mut().insert("x-worker-name", api_worker);
@@ -322,6 +327,14 @@ pub fn prepare<B>(config: &Config, req: &mut Request<B>, peer: SocketAddr, tls: 
     }
 
     Route::Worker
+}
+
+/// Whether a path is the worker upload of the dashboard API:
+/// `/api/v1/workers/{id}/upload`.
+fn worker_upload(path: &str) -> bool {
+    path.strip_prefix("/api/v1/workers/")
+        .and_then(|rest| rest.strip_suffix("/upload"))
+        .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
 
 fn request_id() -> HeaderValue {
@@ -659,6 +672,36 @@ mod tests {
             (Route::Logs(id, Stream::WebSocket), None)
         );
         assert_eq!(route("/api/health/latency/proxy"), (Route::Latency, None));
+    }
+
+    #[test]
+    fn only_a_dashboard_upload_gets_the_upload_body_limit() {
+        use crate::request_body::{BodyLimit, UPLOAD_MAX_BODY_BYTES};
+
+        let config = config(&[("WORKER_DOMAINS", "workers.rocks")]).unwrap();
+        let limit = |host: &str, path: &str| {
+            let mut req = request(&[("host", host)], path);
+            prepare(&config, &mut req, PEER.parse().unwrap(), true);
+            req.extensions().get::<BodyLimit>().copied()
+        };
+
+        let upload = "/api/v1/workers/my-worker/upload";
+
+        assert_eq!(
+            limit("dash.openworkers.com", upload),
+            Some(BodyLimit(UPLOAD_MAX_BODY_BYTES))
+        );
+        assert_eq!(limit("hello.workers.rocks", upload), None);
+        assert_eq!(limit("www.example.com", upload), None);
+
+        for path in [
+            "/api/v1/workers/my-worker",
+            "/api/v1/workers//upload",
+            "/api/v1/workers/a/b/upload",
+            "/api/v1/workers/my-worker/upload/more",
+        ] {
+            assert_eq!(limit("dash.openworkers.com", path), None, "{path}");
+        }
     }
 
     #[test]

@@ -4,8 +4,16 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, LengthLimitError, Limited};
 use once_cell::sync::Lazy;
 
-/// The default limit: the 30 MiB that nginx let through for worker uploads.
-pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 30 * 1024 * 1024;
+pub const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 10 * 1024 * 1024;
+
+/// The limit of a worker upload to the dashboard: the 30 MiB that nginx let
+/// through on that route.
+pub const UPLOAD_MAX_BODY_BYTES: usize = 30 * 1024 * 1024;
+
+/// A request extension that raises the body limit of one request above
+/// MAX_REQUEST_BODY_BYTES.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BodyLimit(pub usize);
 
 /// The largest request body the runner takes, in bytes: MAX_REQUEST_BODY_BYTES,
 /// or the default. A buffered body is held whole in memory and copied into
@@ -76,8 +84,8 @@ mod tests {
     }
 
     #[test]
-    fn the_default_limit_is_30_mib_and_a_value_replaces_it() {
-        assert_eq!(limit_from(None), Ok(30 * 1024 * 1024));
+    fn the_default_limit_is_10_mib_and_a_value_replaces_it() {
+        assert_eq!(limit_from(None), Ok(10 * 1024 * 1024));
         assert_eq!(limit_from(Some("1048576")), Ok(1024 * 1024));
         assert_eq!(limit_from(Some(" 42 ")), Ok(42));
     }
@@ -90,11 +98,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_upload_of_25_mib_passes_the_default_limit() {
-        let upload = Full::new(Bytes::from(vec![0u8; 25 * 1024 * 1024]));
-        let limit = limit_from(None).unwrap();
+    async fn a_25_mib_body_passes_the_upload_limit_only() {
+        let body = || Full::new(Bytes::from(vec![0u8; 25 * 1024 * 1024]));
 
-        assert_eq!(read(upload, limit).await.unwrap().len(), 25 * 1024 * 1024);
+        assert_eq!(
+            read(body(), UPLOAD_MAX_BODY_BYTES).await.unwrap().len(),
+            25 * 1024 * 1024
+        );
+        assert_eq!(
+            read(body(), limit_from(None).unwrap()).await,
+            Err(BodyError::TooLarge)
+        );
     }
 
     #[test]

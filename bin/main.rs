@@ -650,7 +650,15 @@ async fn handle_worker_request(
 
     let start = tokio::time::Instant::now();
 
-    let max_body = *openworkers_runner::request_body::MAX_REQUEST_BODY_BYTES;
+    use openworkers_runner::request_body::{BodyLimit, MAX_REQUEST_BODY_BYTES};
+
+    // A route limit raises the limit; it never lowers MAX_REQUEST_BODY_BYTES
+    let max_body = req
+        .extensions()
+        .get::<BodyLimit>()
+        .map_or(*MAX_REQUEST_BODY_BYTES, |limit| {
+            limit.0.max(*MAX_REQUEST_BODY_BYTES)
+        });
 
     if openworkers_runner::request_body::announces_more_than(&headers, max_body) {
         return Ok(refuse(
