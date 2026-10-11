@@ -43,6 +43,14 @@ const GUEST_PRAGMAS: &[&str] = &[
     "table_xinfo",
 ];
 
+/// The ledger of `ow d1 migrations`, inside the database it describes
+const MIGRATIONS_TABLE: &str = "CREATE TABLE IF NOT EXISTS d1_migrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    checksum TEXT NOT NULL,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)";
+
 /// Largest integer a JavaScript number holds exactly (2^53 - 1)
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
@@ -67,6 +75,22 @@ impl Default for Limits {
             result_bytes: 16 * 1024 * 1024,
         }
     }
+}
+
+/// One migration file: its SQL runs in one transaction with its ledger row
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct Migration {
+    pub name: String,
+    pub sql: String,
+    pub checksum: String,
+}
+
+/// What the executor of a database runs
+pub enum Job {
+    /// A guest operation
+    Op(D1Op),
+    /// A management migration
+    Migrate(Migration),
 }
 
 pub struct Database {
@@ -126,7 +150,12 @@ impl Database {
         self.conn.get_interrupt_handle()
     }
 
-    pub fn run(&mut self, op: D1Op) -> D1Result {
+    pub fn run(&mut self, job: Job) -> D1Result {
+        let op = match job {
+            Job::Op(op) => op,
+            Job::Migrate(migration) => return self.migrate(&migration),
+        };
+
         match op {
             D1Op::Query { statement, rows } => match self.query(&statement, rows) {
                 Ok(result) => D1Result::Query(result),
@@ -228,28 +257,39 @@ impl Database {
 
     fn exec(&self, sql: &str) -> D1Result {
         let started = Instant::now();
+
+        match self.script(sql) {
+            Ok(count) => D1Result::Exec {
+                count,
+                duration: started.elapsed().as_secs_f64() * 1000.0,
+            },
+            Err(err) => D1Result::Error(err),
+        }
+    }
+
+    /// Runs the statements of `sql` in order and counts them. The error names
+    /// the failing statement; the ones before it are not undone here.
+    fn script(&self, sql: &str) -> Result<u32, D1Error> {
         let mut batch = rusqlite::Batch::new(&self.conn, sql);
         let mut count = 0;
 
         loop {
-            let at = |err: D1Error| {
-                D1Result::Error(D1Error {
-                    statement: Some(count as usize),
-                    ..err
-                })
+            let at = |err: D1Error| D1Error {
+                statement: Some(count as usize),
+                ..err
             };
 
             let mut stmt = match batch.next() {
                 Ok(Some(stmt)) => stmt,
-                Ok(None) => break,
-                Err(err) => return at(sql_error(err)),
+                Ok(None) => return Ok(count),
+                Err(err) => return Err(at(sql_error(err))),
             };
 
             if stmt.parameter_count() > 0 {
-                return at(error(
+                return Err(at(error(
                     D1ErrorKind::Sql,
                     "exec() does not take parameters".to_string(),
-                ));
+                )));
             }
 
             let mut cursor = stmt.raw_query();
@@ -258,17 +298,82 @@ impl Database {
                 match cursor.next() {
                     Ok(Some(_)) => {}
                     Ok(None) => break,
-                    Err(err) => return at(sql_error(err)),
+                    Err(err) => return Err(at(sql_error(err))),
                 }
             }
 
             count += 1;
+        }
+    }
+
+    /// Applies a migration and records it, in one transaction. A migration
+    /// already recorded with the same checksum is a no-op that counts 0.
+    fn migrate(&self, migration: &Migration) -> D1Result {
+        let started = Instant::now();
+
+        if let Err(err) = self.trusted("BEGIN IMMEDIATE") {
+            return D1Result::Error(err);
+        }
+
+        let count = match self.migrate_in_transaction(migration) {
+            Ok(count) => count,
+            Err(err) => {
+                self.rollback();
+                return D1Result::Error(err);
+            }
+        };
+
+        if let Err(err) = self.trusted("COMMIT") {
+            self.rollback();
+            return D1Result::Error(err);
         }
 
         D1Result::Exec {
             count,
             duration: started.elapsed().as_secs_f64() * 1000.0,
         }
+    }
+
+    fn migrate_in_transaction(&self, migration: &Migration) -> Result<u32, D1Error> {
+        self.trusted(MIGRATIONS_TABLE)?;
+
+        let applied: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT checksum FROM d1_migrations WHERE name = ?1",
+                [&migration.name],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                err => Err(sql_error(err)),
+            })?;
+
+        match applied {
+            Some(checksum) if checksum == migration.checksum => return Ok(0),
+            Some(_) => {
+                return Err(error(
+                    D1ErrorKind::Sql,
+                    format!(
+                        "migration {} was applied with another checksum",
+                        migration.name
+                    ),
+                ));
+            }
+            None => {}
+        }
+
+        let count = self.script(&migration.sql)?;
+
+        self.conn
+            .execute(
+                "INSERT INTO d1_migrations (name, checksum) VALUES (?1, ?2)",
+                [&migration.name, &migration.checksum],
+            )
+            .map_err(sql_error)?;
+
+        Ok(count)
     }
 
     /// Runs a runner statement that the guest restrictions would deny

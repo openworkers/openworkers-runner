@@ -510,3 +510,123 @@ async fn database_size_is_bounded() {
 
     assert_eq!(kind, D1ErrorKind::Overloaded, "{message}");
 }
+
+fn migration(name: &str, sql: &str, checksum: &str) -> super::Migration {
+    super::Migration {
+        name: name.to_string(),
+        sql: sql.to_string(),
+        checksum: checksum.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn a_migration_applies_once() {
+    let dir = TempDir::new();
+    let service = Service::new(config(&dir)).unwrap();
+    let first = migration(
+        "0001_init.sql",
+        "CREATE TABLE t (a TEXT);\nINSERT INTO t VALUES ('x;y');",
+        "c1",
+    );
+
+    let applied = service.migrate(DB, first.clone()).await;
+    let again = service.migrate(DB, first).await;
+
+    assert!(
+        matches!(applied, D1Result::Exec { count: 2, .. }),
+        "{applied:?}"
+    );
+    assert!(
+        matches!(again, D1Result::Exec { count: 0, .. }),
+        "{again:?}"
+    );
+    assert_eq!(count(&service, "t").await, "[[1]]");
+
+    let ledger = rows(query(&service, "SELECT name, checksum FROM d1_migrations", vec![]).await);
+
+    assert_eq!(json(&ledger.rows), r#"[["0001_init.sql","c1"]]"#);
+}
+
+#[tokio::test]
+async fn a_failed_migration_leaves_nothing() {
+    let dir = TempDir::new();
+    let service = Service::new(config(&dir)).unwrap();
+    let broken = migration(
+        "0001_broken.sql",
+        "CREATE TABLE t (a);\nINSERT INTO t VALUES (1);\nINSERT INTO nope VALUES (1);",
+        "c1",
+    );
+
+    let (kind, _, index) = failure(service.migrate(DB, broken).await);
+
+    assert_eq!(kind, D1ErrorKind::Sql);
+    assert_eq!(index, Some(2));
+
+    let (_, message, _) = failure(query(&service, "SELECT * FROM t", vec![]).await);
+
+    assert_eq!(message, "no such table: t: SQLITE_ERROR");
+
+    let ledger = rows(
+        query(
+            &service,
+            "SELECT count(*) FROM sqlite_master WHERE name = 'd1_migrations'",
+            vec![],
+        )
+        .await,
+    );
+
+    assert_eq!(json(&ledger.rows), "[[0]]");
+}
+
+#[tokio::test]
+async fn a_changed_migration_is_refused() {
+    let dir = TempDir::new();
+    let service = Service::new(config(&dir)).unwrap();
+
+    service
+        .migrate(DB, migration("0001.sql", "CREATE TABLE t (a);", "c1"))
+        .await;
+
+    let (_, message, _) = failure(
+        service
+            .migrate(DB, migration("0001.sql", "CREATE TABLE u (a);", "c2"))
+            .await,
+    );
+
+    assert_eq!(
+        message,
+        "migration 0001.sql was applied with another checksum"
+    );
+}
+
+#[tokio::test]
+async fn a_migration_cannot_control_the_transaction() {
+    let dir = TempDir::new();
+    let service = Service::new(config(&dir)).unwrap();
+
+    let (_, message, _) = failure(
+        service
+            .migrate(
+                DB,
+                migration("0001.sql", "COMMIT;\nCREATE TABLE t (a);", "c1"),
+            )
+            .await,
+    );
+
+    assert_eq!(message, "not authorized: SQLITE_AUTH");
+}
+
+#[tokio::test]
+async fn files_of_a_deleted_database_are_removed() {
+    let dir = TempDir::new();
+    let service = Service::new(config(&dir)).unwrap();
+
+    exec(&service, "CREATE TABLE t (a); INSERT INTO t VALUES (1);").await;
+
+    assert!(dir.0.join(format!("{DB}.sqlite")).exists());
+
+    service.remove_files(DB);
+
+    assert!(!dir.0.join(format!("{DB}.sqlite")).exists());
+    assert!(!dir.0.join(format!("{DB}.sqlite-wal")).exists());
+}

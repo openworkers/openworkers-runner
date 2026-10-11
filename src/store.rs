@@ -56,6 +56,7 @@ pub enum BindingType {
     Kv,
     Database,
     Worker,
+    D1,
 }
 
 #[derive(Clone, Debug, PartialEq, sqlx::Type)]
@@ -582,6 +583,18 @@ pub async fn get_worker_meta(
                 }
             }
 
+            BindingType::D1 => {
+                if let Some(database_id) = row.value
+                    && let Some(database_id) =
+                        fetch_d1_database(&mut *conn, &database_id, &basic.user_id).await
+                {
+                    bindings.push(Binding::D1 {
+                        key: row.key,
+                        database_id,
+                    });
+                }
+            }
+
             BindingType::Worker => {
                 if let Some(worker_id) = row.value
                     && let Some(config) = fetch_worker_binding_config(&mut *conn, &worker_id).await
@@ -593,10 +606,6 @@ pub async fn get_worker_meta(
                 }
             }
         }
-    }
-
-    for (key, database_id) in crate::d1::dev_bindings(basic.name.as_deref()) {
-        bindings.push(Binding::D1 { key, database_id });
     }
 
     tracing::debug!(
@@ -661,6 +670,35 @@ async fn fetch_storage_config(
         }),
         Err(err) => {
             tracing::warn!("failed to fetch storage_config {}: {:?}", config_id, err);
+            None
+        }
+    }
+}
+
+/// The ID of a D1 database the worker's owner holds and has not deleted.
+/// The owner check keeps an environment value from reaching the database of
+/// another account.
+async fn fetch_d1_database(
+    conn: &mut sqlx::PgConnection,
+    database_id: &str,
+    user_id: &str,
+) -> Option<String> {
+    let query = r#"
+        SELECT id::text
+        FROM d1_databases
+        WHERE id::text = $1 AND user_id::text = $2 AND deleted_at IS NULL
+    "#;
+
+    match sqlx::query_scalar::<_, String>(query)
+        .bind(database_id)
+        .bind(user_id)
+        .fetch_optional(conn)
+        .instrument(db_span!("SELECT", "d1_databases"))
+        .await
+    {
+        Ok(found) => found,
+        Err(err) => {
+            tracing::warn!("failed to fetch d1 database {}: {:?}", database_id, err);
             None
         }
     }

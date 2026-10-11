@@ -252,7 +252,6 @@ open it. A result returns after its commit is on the local disk.
 | `D1_MAX_QUEUE`          | `64`        | Calls waiting for one database before new calls fail       |
 | `D1_MAX_OPEN`           | `256`       | Open databases; the least recently used idle one closes    |
 | `D1_IDLE_SECS`          | `300`       | A database unused this long closes                         |
-| `D1_DEV_BINDINGS`       | unset       | Development only: `worker:BINDING=database-id`, comma separated |
 
 See `docs/d1.md` in openworkers-core for the supported D1 API.
 

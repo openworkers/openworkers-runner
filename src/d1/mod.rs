@@ -4,6 +4,7 @@
 //! in order, on the blocking thread pool. A result is returned after its
 //! SQLite commit, which `synchronous=FULL` makes durable on the local volume.
 
+pub mod requests;
 mod sqlite;
 
 use std::collections::HashMap;
@@ -24,8 +25,10 @@ use openworkers_core::D1Result;
 use rusqlite::InterruptHandle;
 
 pub use sqlite::Limits;
+pub use sqlite::Migration;
 
 use sqlite::Database;
+use sqlite::Job;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -119,34 +122,6 @@ pub fn service() -> Option<&'static Service> {
     SERVICE.get()
 }
 
-/// D1 bindings from `D1_DEV_BINDINGS`, until bindings live in the database:
-/// `worker:BINDING=database-id`, comma separated. Development only.
-pub fn dev_bindings(worker_name: Option<&str>) -> Vec<(String, String)> {
-    static PARSED: OnceLock<Vec<(String, String, String)>> = OnceLock::new();
-
-    let Some(worker_name) = worker_name else {
-        return Vec::new();
-    };
-
-    PARSED
-        .get_or_init(|| {
-            std::env::var("D1_DEV_BINDINGS")
-                .unwrap_or_default()
-                .split(',')
-                .filter_map(|entry| {
-                    let (worker, binding) = entry.trim().split_once(':')?;
-                    let (key, database_id) = binding.split_once('=')?;
-
-                    Some((worker.into(), key.into(), database_id.into()))
-                })
-                .collect()
-        })
-        .iter()
-        .filter(|(worker, _, _)| worker == worker_name)
-        .map(|(_, key, database_id)| (key.clone(), database_id.clone()))
-        .collect()
-}
-
 /// The error for a binding when D1 is off
 pub fn unavailable(binding: &str) -> D1Result {
     D1Result::Error(error(
@@ -174,6 +149,14 @@ impl Service {
     }
 
     pub async fn execute(&self, database_id: &str, op: D1Op) -> D1Result {
+        self.submit(database_id, Job::Op(op)).await
+    }
+
+    pub async fn migrate(&self, database_id: &str, migration: Migration) -> D1Result {
+        self.submit(database_id, Job::Migrate(migration)).await
+    }
+
+    async fn submit(&self, database_id: &str, job: Job) -> D1Result {
         let Ok(id) = uuid::Uuid::parse_str(database_id) else {
             return D1Result::Error(error(
                 D1ErrorKind::Unavailable,
@@ -192,7 +175,7 @@ impl Service {
             ));
         }
 
-        let result = self.run(&id.to_string(), &handle, op).await;
+        let result = self.run(&id.to_string(), &handle, job).await;
 
         handle.waiting.fetch_sub(1, Ordering::SeqCst);
         *handle.last_used.lock().unwrap() = Instant::now();
@@ -200,7 +183,7 @@ impl Service {
         result
     }
 
-    async fn run(&self, id: &str, handle: &Handle, op: D1Op) -> D1Result {
+    async fn run(&self, id: &str, handle: &Handle, job: Job) -> D1Result {
         let deadline = tokio::time::Instant::now() + self.config.timeout;
 
         let Ok(mut guard) =
@@ -233,7 +216,7 @@ impl Service {
         let interrupt = InterruptOnDrop(Some(guard.as_ref().unwrap().interrupt_handle()));
 
         let mut job = tokio::task::spawn_blocking(move || {
-            let result = guard.as_mut().unwrap().run(op);
+            let result = guard.as_mut().unwrap().run(job);
 
             drop(guard);
             result
@@ -281,6 +264,38 @@ impl Service {
 
         databases.insert(id.to_string(), handle.clone());
         handle
+    }
+
+    /// Deletes the files of a deleted database, unless a call still uses it;
+    /// the next sweep tries again.
+    pub fn remove_files(&self, id: &str) {
+        let Ok(id) = uuid::Uuid::parse_str(id) else {
+            return;
+        };
+
+        let id = id.to_string();
+        let mut databases = self.databases.lock().unwrap();
+
+        if databases
+            .get(&id)
+            .is_some_and(|handle| Arc::strong_count(handle) > 1)
+        {
+            return;
+        }
+
+        databases.remove(&id);
+        drop(databases);
+
+        for suffix in ["sqlite", "sqlite-wal", "sqlite-shm"] {
+            let path = self.config.data_dir.join(format!("{id}.{suffix}"));
+
+            match std::fs::remove_file(&path) {
+                Ok(()) if suffix == "sqlite" => tracing::info!("D1: removed deleted database {id}"),
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => tracing::warn!("D1: cannot remove {}: {err}", path.display()),
+            }
+        }
     }
 
     /// Drops the connections nobody used for `idle`; SQLite checkpoints the
