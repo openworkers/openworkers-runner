@@ -407,11 +407,11 @@ impl Service {
         handle
     }
 
-    /// Deletes the files of a deleted database, unless a call still uses it;
-    /// the next sweep tries again.
-    pub fn remove_files(&self, id: &str) {
+    /// Deletes the files of a deleted database. Returns false when a call
+    /// still uses it; the next sweep tries again.
+    pub fn remove_files(&self, id: &str) -> bool {
         let Ok(id) = uuid::Uuid::parse_str(id) else {
-            return;
+            return true;
         };
 
         let id = id.to_string();
@@ -421,7 +421,7 @@ impl Service {
             .get(&id)
             .is_some_and(|handle| Arc::strong_count(handle) > 1)
         {
-            return;
+            return false;
         }
 
         databases.remove(&id);
@@ -434,8 +434,22 @@ impl Service {
                 Ok(()) if suffix == "sqlite" => tracing::info!("D1: removed deleted database {id}"),
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => tracing::warn!("D1: cannot remove {}: {err}", path.display()),
+                Err(err) => {
+                    tracing::warn!("D1: cannot remove {}: {err}", path.display());
+                    return false;
+                }
             }
+        }
+
+        true
+    }
+
+    /// Deletes one snapshot object; fails when snapshots are off, so the
+    /// request to delete it stays queued
+    pub async fn remove_snapshot_object(&self, key: &str) -> Result<(), String> {
+        match &self.archive {
+            Some(archive) => archive.store.delete(key.to_string()).await,
+            None => Err("snapshots are off on this runner".to_string()),
         }
     }
 

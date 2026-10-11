@@ -120,8 +120,36 @@ async fn serve(service: &Service, database_id: &str, request: serde_json::Value)
     }
 }
 
-/// Removes the files of deleted databases and requests nobody collected
+/// Removes the files and snapshots of deleted databases, and requests nobody
+/// collected
 async fn clean_up(service: &Service, listener: &mut PgListener) -> Result<(), sqlx::Error> {
+    // Rows that triggers queued when a database or a snapshot row went away,
+    // including through the cascade of a deleted user
+    let purge: Vec<(i64, String, Option<String>)> =
+        sqlx::query_as("SELECT id, database_id::text, key FROM d1_purge ORDER BY id LIMIT 1000")
+            .fetch_all(&mut *listener)
+            .await?;
+
+    for (row, database_id, key) in purge {
+        let done = match &key {
+            None => service.remove_files(&database_id),
+            Some(key) => match service.remove_snapshot_object(key).await {
+                Ok(()) => true,
+                Err(err) => {
+                    tracing::warn!("D1: cannot remove snapshot {key}: {err}");
+                    false
+                }
+            },
+        };
+
+        if done {
+            sqlx::query("DELETE FROM d1_purge WHERE id = $1")
+                .bind(row)
+                .execute(&mut *listener)
+                .await?;
+        }
+    }
+
     let deleted: Vec<String> =
         sqlx::query_scalar("SELECT id::text FROM d1_databases WHERE deleted_at IS NOT NULL")
             .fetch_all(&mut *listener)
