@@ -491,20 +491,9 @@ async fn handle_worker_request(
                             },
                         ]);
 
-                        // Transform path for prerendered routes (add .html extension)
-                        // Static routes are stored with .html extension and don't need transformation
-                        let request_path = if matches!(
-                            res.asset_type,
-                            Some(openworkers_runner::store::AssetType::Prerendered)
-                        ) && !path.contains('.')
-                        {
-                            if path == "/" || path.is_empty() {
-                                "/index.html".to_string()
-                            } else {
-                                format!("{}.html", path)
-                            }
-                        } else {
-                            path.to_string()
+                        let request_path = match res.asset_type {
+                            Some(asset_type) => asset_type.storage_path(path),
+                            None => path.to_string(),
                         };
 
                         // Create HttpRequest for binding fetch

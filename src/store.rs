@@ -899,6 +899,29 @@ impl AssetType {
             _ => None,
         }
     }
+
+    /// The storage key of a request path.
+    pub fn storage_path(self, path: &str) -> String {
+        if self != AssetType::Prerendered {
+            return path.to_string();
+        }
+
+        if path.is_empty() {
+            return "/index.html".to_string();
+        }
+
+        if path.ends_with('/') {
+            return format!("{path}index.html");
+        }
+
+        let (_, name) = path.rsplit_once('/').unwrap_or(("", path));
+
+        if name.contains('.') {
+            return path.to_string();
+        }
+
+        format!("{path}.html")
+    }
 }
 
 /// Project route
@@ -1081,6 +1104,30 @@ mod tests {
 
         fn kind(&self) -> sqlx::error::ErrorKind {
             sqlx::error::ErrorKind::Other
+        }
+    }
+
+    #[test]
+    fn a_prerendered_page_is_stored_as_html() {
+        let cases = [
+            ("/", "/index.html"),
+            ("/about", "/about.html"),
+            ("/static-page/", "/static-page/index.html"),
+            ("/docs/v1.2/intro", "/docs/v1.2/intro.html"),
+            ("/sitemap.xml", "/sitemap.xml"),
+            ("/old-page/__data.json", "/old-page/__data.json"),
+        ];
+
+        for (path, key) in cases {
+            assert_eq!(AssetType::Prerendered.storage_path(path), key, "{path}");
+        }
+    }
+
+    #[test]
+    fn a_static_or_immutable_path_is_its_own_key() {
+        for asset_type in [AssetType::Static, AssetType::Immutable] {
+            assert_eq!(asset_type.storage_path("/robots"), "/robots");
+            assert_eq!(asset_type.storage_path("/docs/"), "/docs/");
         }
     }
 
