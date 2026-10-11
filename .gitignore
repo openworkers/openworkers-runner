@@ -5,3 +5,4 @@ tests/fixtures/*/target
 
 .env
 .env.*
+.claude
