@@ -513,7 +513,14 @@ async fn handle_worker_request(
                                 );
 
                                 // Record status code and convert to hyper response
-                                let hyper_response = http_response.into_hyper();
+                                let mut hyper_response = http_response.into_hyper();
+
+                                if let Some(asset_type) = res.asset_type {
+                                    let status = hyper_response.status();
+                                    asset_type
+                                        .set_cache_control(status, hyper_response.headers_mut());
+                                }
+
                                 span.record(
                                     "http.response.status_code",
                                     hyper_response.status().as_u16(),

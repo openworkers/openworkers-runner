@@ -900,6 +900,18 @@ impl AssetType {
         }
     }
 
+    /// Lets browsers keep a found immutable asset: its name changes with its content.
+    /// A Cache-Control stored with the object wins.
+    pub fn set_cache_control(self, status: hyper::StatusCode, headers: &mut hyper::HeaderMap) {
+        if self != AssetType::Immutable || !status.is_success() {
+            return;
+        }
+
+        headers.entry(hyper::header::CACHE_CONTROL).or_insert(
+            hyper::header::HeaderValue::from_static("public, max-age=31536000, immutable"),
+        );
+    }
+
     /// The storage key of a request path.
     pub fn storage_path(self, path: &str) -> String {
         if self != AssetType::Prerendered {
@@ -1067,6 +1079,8 @@ pub async fn get_worker_id_from_domain(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hyper::StatusCode;
+    use hyper::header::{CACHE_CONTROL, HeaderMap};
     use std::borrow::Cow;
 
     /// A Postgres error with only an SQLSTATE code.
@@ -1129,6 +1143,46 @@ mod tests {
             assert_eq!(asset_type.storage_path("/robots"), "/robots");
             assert_eq!(asset_type.storage_path("/docs/"), "/docs/");
         }
+    }
+
+    fn cached(asset_type: AssetType, status: u16, headers: HeaderMap) -> Option<String> {
+        let mut headers = headers;
+        asset_type.set_cache_control(StatusCode::from_u16(status).unwrap(), &mut headers);
+
+        headers
+            .get(CACHE_CONTROL)
+            .map(|v| v.to_str().unwrap().to_string())
+    }
+
+    #[test]
+    fn an_immutable_asset_is_cached_for_a_year() {
+        assert_eq!(
+            cached(AssetType::Immutable, 200, HeaderMap::new()).as_deref(),
+            Some("public, max-age=31536000, immutable")
+        );
+    }
+
+    #[test]
+    fn a_missing_immutable_asset_is_not_cached() {
+        assert_eq!(cached(AssetType::Immutable, 404, HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn a_static_or_prerendered_asset_gets_no_cache_control() {
+        for asset_type in [AssetType::Static, AssetType::Prerendered] {
+            assert_eq!(cached(asset_type, 200, HeaderMap::new()), None);
+        }
+    }
+
+    #[test]
+    fn the_cache_control_of_the_stored_object_wins() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, "no-store".parse().unwrap());
+
+        assert_eq!(
+            cached(AssetType::Immutable, 200, headers).as_deref(),
+            Some("no-store")
+        );
     }
 
     #[test]
