@@ -98,6 +98,10 @@ table keeps 255 characters.
 
 ### Build
 
+The build needs Rust 1.94 or later, for sqlx 0.9. The first build also clones
+the git dependencies of all the backends, with the `test262` submodule of
+`nova`, so it takes longer.
+
 One JavaScript engine per build, and `wasm` on top of it if the runner should
 also serve components. Selecting no backend, or two JavaScript engines, is a
 compile error.
@@ -145,12 +149,30 @@ Optional on top of a backend: `database` (default) and `telemetry`.
 cargo run --features v8 --bin snapshot
 ```
 
+The command writes `/tmp/openworkers-runtime-snapshot.bin`
+(`.cargo/config.toml`). The runner reads this file at start. Without it, the
+runner logs a warning and starts each isolate more slowly. Run the command
+again after you update `openworkers-runtime-v8`, or after a restart of the
+host that clears `/tmp`.
+
 ### Prepare the database
 
 ```sql
 CREATE USER openworkers WITH PASSWORD 'password';
 CREATE DATABASE openworkers WITH OWNER openworkers;
 ```
+
+The schema comes from the migrations of
+[openworkers-cli](https://github.com/openworkers/openworkers-cli). Apply them
+before you start the runner:
+
+```bash
+ow alias set infra --db postgres://openworkers:password@localhost:5432/openworkers
+ow infra migrate run
+```
+
+On an empty database, migration 28 needs a manual step. See
+[GETTING_STARTED.md](https://github.com/openworkers/openworkers-infra/blob/main/GETTING_STARTED.md#3-cli-alias-and-migrations).
 
 ### Create .env file
 
@@ -256,14 +278,5 @@ export RUST_LOG=openworkers_runtime=debug,openworkers_runner=debug # Optional
 cargo run --features v8
 ```
 
-### Install sqlx-cli (optional - only for development)
-
-```bash
-cargo install sqlx-cli --no-default-features --features rustls,postgres
-```
-
-#### Prepare the database
-
-```bash
-cargo sqlx prepare
-```
+The runner reads the first `.env` in the working directory or its parents.
+Variables already set in the environment take precedence.
