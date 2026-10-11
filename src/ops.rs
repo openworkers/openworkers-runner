@@ -28,6 +28,7 @@
 //! the config and injects auth headers transparently.
 
 #[cfg(feature = "database")]
+use openworkers_core::{D1Op, D1Result};
 use openworkers_core::{DatabaseOp, DatabaseResult};
 use openworkers_core::{
     HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, OpFuture,
@@ -75,6 +76,8 @@ pub struct BindingConfigs {
     pub storage: HashMap<String, StorageConfig>,
     pub kv: HashMap<String, KvConfig>,
     pub database: HashMap<String, DatabaseConfig>,
+    /// D1 binding name to database ID
+    pub d1: HashMap<String, String>,
     pub worker: HashMap<String, WorkerBindingConfig>,
 }
 
@@ -100,6 +103,9 @@ impl BindingConfigs {
                 }
                 Binding::Database { key, config } => {
                     configs.database.insert(key, config);
+                }
+                Binding::D1 { key, database_id } => {
+                    configs.d1.insert(key, database_id);
                 }
                 Binding::Worker { key, config } => {
                     configs.worker.insert(key, config);
@@ -471,6 +477,34 @@ impl OperationsHandler for RunnerOperations {
 
                         execute_s3_operation(&config, other).await
                     }
+                }
+            }
+            .instrument(span),
+        )
+    }
+
+    /// Handle D1 operation: `env.DB.prepare(sql).all()`, `.batch()`, `.exec()`
+    fn handle_binding_d1(&self, binding: &str, op: D1Op) -> OpFuture<'_, D1Result> {
+        let Some(database_id) = self.bindings.d1.get(binding).cloned() else {
+            let binding = binding.to_string();
+
+            return Box::pin(async move {
+                D1Result::Error(openworkers_core::D1Error {
+                    kind: openworkers_core::D1ErrorKind::Unavailable,
+                    message: format!("D1 binding '{binding}' not configured"),
+                    statement: None,
+                })
+            });
+        };
+
+        let span = self.span();
+        let binding = binding.to_string();
+
+        Box::pin(
+            async move {
+                match crate::d1::service() {
+                    Some(service) => service.execute(&database_id, op).await,
+                    None => crate::d1::unavailable(&binding),
                 }
             }
             .instrument(span),

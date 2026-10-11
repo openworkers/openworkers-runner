@@ -237,6 +237,25 @@ Single global LRU pool shared across all threads, protected by a mutex. Isolates
 
 Fresh V8 isolate per request, destroyed after each response. No reuse, no pooling. Slower (~1-2ms overhead per request) but useful for debugging. Also serves as a workaround for a V8 SIGSEGV (`SEGV_PKUERR`) that affects PINNED and POOLED modes in some containerized environments (see [#2](https://github.com/openworkers/openworkers-runner/issues/2)).
 
+#### D1 (SQLite)
+
+D1 is off when `D1_DATA_DIR` is unset. The runner keeps one SQLite file per
+database in that directory and locks the directory: a second process cannot
+open it. A result returns after its commit is on the local disk.
+
+| Variable                | Default     | Description                                                |
+| ----------------------- | ----------- | ---------------------------------------------------------- |
+| `D1_DATA_DIR`           | unset       | Directory of the database files                            |
+| `D1_MAX_DATABASE_BYTES` | `524288000` | Largest database; a write past it fails                    |
+| `D1_MAX_RESULT_BYTES`   | `16777216`  | Largest result of one statement                            |
+| `D1_TIMEOUT_MS`         | `30000`     | Time a call can wait in its queue and run                  |
+| `D1_MAX_QUEUE`          | `64`        | Calls waiting for one database before new calls fail       |
+| `D1_MAX_OPEN`           | `256`       | Open databases; the least recently used idle one closes    |
+| `D1_IDLE_SECS`          | `300`       | A database unused this long closes                         |
+| `D1_DEV_BINDINGS`       | unset       | Development only: `worker:BINDING=database-id`, comma separated |
+
+See `docs/d1.md` in openworkers-core for the supported D1 API.
+
 #### Telemetry (OpenTelemetry)
 
 | Variable            | Default              | Description                                |

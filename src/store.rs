@@ -124,6 +124,8 @@ pub enum Binding {
     Kv { key: String, config: KvConfig },
     /// Database binding (PostgreSQL)
     Database { key: String, config: DatabaseConfig },
+    /// D1 binding (SQLite in this runner)
+    D1 { key: String, database_id: String },
     /// Worker binding (worker-to-worker calls)
     Worker {
         key: String,
@@ -145,6 +147,7 @@ impl Binding {
             Binding::Database { key, .. } => {
                 Some(openworkers_core::BindingInfo::database(key.clone()))
             }
+            Binding::D1 { key, .. } => Some(openworkers_core::BindingInfo::d1(key.clone())),
             Binding::Worker { key, .. } => Some(openworkers_core::BindingInfo::worker(key.clone())),
         }
     }
@@ -590,6 +593,10 @@ pub async fn get_worker_meta(
                 }
             }
         }
+    }
+
+    for (key, database_id) in crate::d1::dev_bindings(basic.name.as_deref()) {
+        bindings.push(Binding::D1 { key, database_id });
     }
 
     tracing::debug!(

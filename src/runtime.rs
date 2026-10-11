@@ -86,6 +86,7 @@ const JS_BINDINGS: &[BindingType] = &[
     BindingType::Storage,
     BindingType::Kv,
     BindingType::Database,
+    BindingType::D1,
     BindingType::Worker,
 ];
 #[cfg(feature = "nova")]

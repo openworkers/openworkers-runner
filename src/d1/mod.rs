@@ -119,6 +119,34 @@ pub fn service() -> Option<&'static Service> {
     SERVICE.get()
 }
 
+/// D1 bindings from `D1_DEV_BINDINGS`, until bindings live in the database:
+/// `worker:BINDING=database-id`, comma separated. Development only.
+pub fn dev_bindings(worker_name: Option<&str>) -> Vec<(String, String)> {
+    static PARSED: OnceLock<Vec<(String, String, String)>> = OnceLock::new();
+
+    let Some(worker_name) = worker_name else {
+        return Vec::new();
+    };
+
+    PARSED
+        .get_or_init(|| {
+            std::env::var("D1_DEV_BINDINGS")
+                .unwrap_or_default()
+                .split(',')
+                .filter_map(|entry| {
+                    let (worker, binding) = entry.trim().split_once(':')?;
+                    let (key, database_id) = binding.split_once('=')?;
+
+                    Some((worker.into(), key.into(), database_id.into()))
+                })
+                .collect()
+        })
+        .iter()
+        .filter(|(worker, _, _)| worker == worker_name)
+        .map(|(_, key, database_id)| (key.clone(), database_id.clone()))
+        .collect()
+}
+
 /// The error for a binding when D1 is off
 pub fn unavailable(binding: &str) -> D1Result {
     D1Result::Error(error(

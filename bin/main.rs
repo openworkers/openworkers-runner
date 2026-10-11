@@ -1181,6 +1181,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         error!("lost the runner lock; another runner can start, so this one stops");
         std::process::exit(1);
     });
+    // After the runner lock: the data directory lock is the second guard
+    openworkers_runner::d1::init()?;
+
     let stop = tokio_util::sync::CancellationToken::new();
     let ingress = openworkers_runner::ingress::Config::from_env()?;
     openworkers_runner::services::fetch::set_internal_port(ingress.internal_port);
