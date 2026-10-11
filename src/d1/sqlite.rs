@@ -5,6 +5,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -100,10 +101,14 @@ pub struct Database {
     guest: Arc<AtomicBool>,
     page_size: u64,
     result_bytes: usize,
+    /// Why writes are refused during the current job, if they are
+    paused: Option<String>,
 }
 
 impl Database {
-    pub fn open(path: &Path, limits: &Limits) -> rusqlite::Result<Self> {
+    /// Opens or creates the database. `commits` counts the transactions that
+    /// commit, so the archive knows what a snapshot still lacks.
+    pub fn open(path: &Path, limits: &Limits, commits: Arc<AtomicU64>) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
 
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
@@ -138,11 +143,17 @@ impl Database {
             }
         }))?;
 
+        conn.commit_hook(Some(move || {
+            commits.fetch_add(1, Ordering::SeqCst);
+            false
+        }))?;
+
         Ok(Self {
             conn,
             guest,
             page_size,
             result_bytes: limits.result_bytes,
+            paused: None,
         })
     }
 
@@ -150,7 +161,11 @@ impl Database {
         self.conn.get_interrupt_handle()
     }
 
-    pub fn run(&mut self, job: Job) -> D1Result {
+    /// Runs a job. With `paused`, a statement that writes fails with that
+    /// reason and reads still run.
+    pub fn run(&mut self, job: Job, paused: Option<String>) -> D1Result {
+        self.paused = paused;
+
         let op = match job {
             Job::Op(op) => op,
             Job::Migrate(migration) => return self.migrate(&migration),
@@ -175,6 +190,10 @@ impl Database {
         bind(&mut stmt, &statement.params)?;
 
         let readonly = stmt.readonly();
+
+        if !readonly {
+            self.check_writes()?;
+        }
         let columns: Vec<String> = stmt.column_names().into_iter().map(String::from).collect();
         let mut values = Vec::new();
         let mut bytes = 0;
@@ -292,6 +311,10 @@ impl Database {
                 )));
             }
 
+            if !stmt.readonly() {
+                self.check_writes().map_err(at)?;
+            }
+
             let mut cursor = stmt.raw_query();
 
             loop {
@@ -310,6 +333,10 @@ impl Database {
     /// already recorded with the same checksum is a no-op that counts 0.
     fn migrate(&self, migration: &Migration) -> D1Result {
         let started = Instant::now();
+
+        if let Err(err) = self.check_writes() {
+            return D1Result::Error(err);
+        }
 
         if let Err(err) = self.trusted("BEGIN IMMEDIATE") {
             return D1Result::Error(err);
@@ -374,6 +401,16 @@ impl Database {
             .map_err(sql_error)?;
 
         Ok(count)
+    }
+
+    fn check_writes(&self) -> Result<(), D1Error> {
+        match &self.paused {
+            Some(reason) => Err(error(
+                D1ErrorKind::Overloaded,
+                format!("writes are paused: {reason}"),
+            )),
+            None => Ok(()),
+        }
     }
 
     /// Runs a runner statement that the guest restrictions would deny

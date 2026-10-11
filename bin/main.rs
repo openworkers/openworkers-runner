@@ -1182,7 +1182,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         std::process::exit(1);
     });
     // After the runner lock: the data directory lock is the second guard
-    openworkers_runner::d1::init()?;
+    openworkers_runner::d1::init(Some(db_internal.clone())).await?;
 
     if let Some(d1) = openworkers_runner::d1::service() {
         tokio::spawn(openworkers_runner::d1::requests::listen(d1, db_url.clone()));
@@ -1382,6 +1382,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         listener.abort();
     }
     let _ = scheduler_task.await;
+
+    // Drained: no call writes anymore, so this snapshot holds every commit
+    openworkers_runner::d1::shutdown().await;
 
     // Drained, so no worker writes lines; the store writes its queue and returns
     if tokio::time::timeout(Duration::from_secs(5), log_store_task)

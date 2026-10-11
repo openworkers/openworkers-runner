@@ -4,9 +4,9 @@
 //! runs it on the database and writes the result into the same row, which
 //! notifies `d1_result`. The client deletes the row once it has the result.
 //!
-//! Request JSON: `{"type": "op", "op": <D1Op>}` or
-//! `{"type": "migrate", "name": "...", "sql": "...", "checksum": "..."}`.
-//! The result is a `D1Result`.
+//! Request JSON: `{"type": "op", "op": <D1Op>}`,
+//! `{"type": "migrate", "name": "...", "sql": "...", "checksum": "..."}` or
+//! `{"type": "restore"}`. The result is a `D1Result`.
 
 use std::time::Duration;
 
@@ -28,8 +28,12 @@ const SWEEP: Duration = Duration::from_secs(60);
 #[derive(serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Request {
-    Op { op: D1Op },
+    Op {
+        op: D1Op,
+    },
     Migrate(Migration),
+    /// Replace the local file with the latest snapshot
+    Restore,
 }
 
 /// Serves the requests while the process lives, on a connection of its own.
@@ -105,6 +109,13 @@ async fn serve(service: &Service, database_id: &str, request: serde_json::Value)
     match serde_json::from_value::<Request>(request) {
         Ok(Request::Op { op }) => service.execute(database_id, op).await,
         Ok(Request::Migrate(migration)) => service.migrate(database_id, migration).await,
+        Ok(Request::Restore) => match service.reset_to_snapshot(database_id) {
+            Ok(()) => D1Result::Exec {
+                count: 0,
+                duration: 0.0,
+            },
+            Err(err) => failure(D1ErrorKind::Unavailable, err),
+        },
         Err(err) => failure(D1ErrorKind::Type, format!("bad request: {err}")),
     }
 }
@@ -118,6 +129,10 @@ async fn clean_up(service: &Service, listener: &mut PgListener) -> Result<(), sq
 
     for id in deleted {
         service.remove_files(&id);
+
+        if let Err(err) = service.forget_snapshots(&id).await {
+            tracing::warn!("D1: cannot remove the snapshots of deleted database {id}: {err}");
+        }
     }
 
     sqlx::query("DELETE FROM d1_requests WHERE created_at < now() - interval '1 hour'")

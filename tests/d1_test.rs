@@ -26,7 +26,7 @@ fn init_d1() {
         // SAFETY: set once, before any thread of this test binary reads it
         unsafe { std::env::set_var("D1_DATA_DIR", &dir) };
 
-        openworkers_runner::d1::init().unwrap();
+        futures::executor::block_on(openworkers_runner::d1::init(None)).unwrap();
     });
 }
 

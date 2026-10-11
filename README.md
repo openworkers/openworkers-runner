@@ -252,6 +252,16 @@ open it. A result returns after its commit is on the local disk.
 | `D1_MAX_QUEUE`          | `64`        | Calls waiting for one database before new calls fail       |
 | `D1_MAX_OPEN`           | `256`       | Open databases; the least recently used idle one closes    |
 | `D1_IDLE_SECS`          | `300`       | A database unused this long closes                         |
+| `D1_MIN_FREE_BYTES`     | `2147483648` | Writes pause below this free space on the data volume     |
+
+With `D1_ARCHIVE_ENDPOINT`, `D1_ARCHIVE_BUCKET`, `D1_ARCHIVE_ACCESS_KEY_ID` and
+`D1_ARCHIVE_SECRET_ACCESS_KEY` set (`D1_ARCHIVE_PREFIX` and `D1_ARCHIVE_REGION`
+optional), the runner copies each changed database to that S3 bucket every
+`D1_SNAPSHOT_SECS` (300) seconds and at a clean shutdown, and keeps the last 3
+copies. A database whose file is missing comes back from its last copy before
+it serves a call. A host or volume loss loses the commits after that copy.
+Without a copy for `D1_SNAPSHOT_ALERT_SECS` (900) the runner logs an error;
+after `D1_SNAPSHOT_PAUSE_SECS` (3600) it refuses writes until a copy succeeds.
 
 See `docs/d1.md` in openworkers-core for the supported D1 API.
 
