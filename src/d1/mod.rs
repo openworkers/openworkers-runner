@@ -206,6 +206,12 @@ pub fn service() -> Option<&'static Service> {
     SERVICE.get()
 }
 
+/// Installs a service built by hand, for tests and embedders; returns false
+/// when one is installed already
+pub fn install(service: Service) -> bool {
+    SERVICE.set(service).is_ok()
+}
+
 /// The error for a binding when D1 is off
 pub fn unavailable(binding: &str) -> D1Result {
     D1Result::Error(error(
@@ -310,16 +316,21 @@ impl Service {
     }
 
     async fn run(&self, id: &str, handle: &Handle, job: Job) -> D1Result {
+        let queued = Instant::now();
         let deadline = tokio::time::Instant::now() + self.config.timeout;
 
         let Ok(mut guard) =
             tokio::time::timeout_at(deadline, handle.database.clone().lock_owned()).await
         else {
+            crate::metrics::record_d1_call(queued.elapsed().as_secs_f64(), 0.0, "overloaded");
+
             return D1Result::Error(error(
                 D1ErrorKind::Overloaded,
                 "timed out waiting for the database".to_string(),
             ));
         };
+
+        let queue_time = queued.elapsed().as_secs_f64();
 
         if guard.is_none() {
             let path = self.config.data_dir.join(format!("{id}.sqlite"));
@@ -372,7 +383,25 @@ impl Service {
 
         interrupt.disarm();
 
-        result.unwrap_or_else(|_| internal_error())
+        let result = result.unwrap_or_else(|_| internal_error());
+        let execution_time = queued.elapsed().as_secs_f64() - queue_time;
+
+        crate::metrics::record_d1_call(queue_time, execution_time, outcome(&result));
+
+        result
+    }
+
+    /// How long the oldest commit that no snapshot holds has waited
+    pub fn oldest_unsaved(&self) -> Option<Duration> {
+        self.archive.as_ref()?;
+
+        self.databases
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|handle| *handle.unsaved_since.lock().unwrap())
+            .map(|since| since.elapsed())
+            .max()
     }
 
     fn handle(&self, id: &str) -> Arc<Handle> {
@@ -501,7 +530,12 @@ impl Service {
             .collect();
 
         for (id, handle) in unsaved {
-            if let Err(err) = self.snapshot(archive, &id, &handle).await {
+            let started = Instant::now();
+            let result = self.snapshot(archive, &id, &handle).await;
+
+            crate::metrics::record_d1_snapshot(started.elapsed().as_secs_f64(), result.is_ok());
+
+            if let Err(err) = result {
                 let since = *handle.unsaved_since.lock().unwrap();
                 let minutes = since.map_or(0, |since| since.elapsed().as_secs() / 60);
 
@@ -561,11 +595,13 @@ impl Service {
 
         let scratch = self.config.data_dir.join(format!("{id}.restore.scratch"));
         let size = bytes.len();
+        let started = Instant::now();
 
         tokio::task::spawn_blocking(move || archive::restore_snapshot(&bytes, &path, &scratch))
             .await
             .map_err(|e| e.to_string())??;
 
+        crate::metrics::record_d1_restore(started.elapsed().as_secs_f64());
         tracing::info!("D1: restored database {id} from its last snapshot ({size} bytes)");
 
         Ok(())
@@ -642,6 +678,21 @@ impl InterruptOnDrop {
 impl Drop for InterruptOnDrop {
     fn drop(&mut self) {
         self.interrupt();
+    }
+}
+
+/// A metric label for the outcome of a call
+fn outcome(result: &D1Result) -> &'static str {
+    match result {
+        D1Result::Error(err) => match err.kind {
+            D1ErrorKind::Sql => "sql",
+            D1ErrorKind::Type => "type",
+            D1ErrorKind::Range => "range",
+            D1ErrorKind::Interrupted => "interrupted",
+            D1ErrorKind::Overloaded => "overloaded",
+            D1ErrorKind::Unavailable => "unavailable",
+        },
+        _ => "ok",
     }
 }
 

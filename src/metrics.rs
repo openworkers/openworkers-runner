@@ -71,6 +71,13 @@ pub struct Metrics {
 
     // JS heap of the isolate when an event ends
     pub isolate_heap_used: Histogram<u64>,
+
+    // D1: no database ID and no SQL in labels
+    pub d1_queue_time: Histogram<f64>,
+    pub d1_execution_time: Histogram<f64>,
+    pub d1_snapshots_total: Counter<u64>,
+    pub d1_snapshot_duration: Histogram<f64>,
+    pub d1_restore_duration: Histogram<f64>,
 }
 
 #[cfg(feature = "telemetry")]
@@ -142,6 +149,33 @@ impl Metrics {
                         .to_vec(),
                 )
                 .build(),
+
+            d1_queue_time: meter
+                .f64_histogram("d1.queue_time")
+                .with_description("Time a D1 call waits for its database in seconds")
+                .with_unit("s")
+                .build(),
+            d1_execution_time: meter
+                .f64_histogram("d1.execution_time")
+                .with_description("Time a D1 call runs in SQLite in seconds")
+                .with_unit("s")
+                .build(),
+            d1_snapshots_total: meter
+                .u64_counter("d1.snapshots.total")
+                .with_description("D1 snapshots, by status")
+                .build(),
+            d1_snapshot_duration: meter
+                .f64_histogram("d1.snapshot.duration")
+                .with_description(
+                    "Time to copy, compress, upload and record a D1 snapshot in seconds",
+                )
+                .with_unit("s")
+                .build(),
+            d1_restore_duration: meter
+                .f64_histogram("d1.restore.duration")
+                .with_description("Time to restore a D1 database from its snapshot in seconds")
+                .with_unit("s")
+                .build(),
         }
     }
 }
@@ -161,6 +195,17 @@ pub fn init_metrics() {
 /// Pool occupancy is read at collection time, so a pool never has to push.
 #[cfg(feature = "telemetry")]
 fn observe_pools(meter: &Meter) {
+    meter
+        .u64_observable_gauge("d1.unsaved_age")
+        .with_description("Age of the oldest D1 commit that no snapshot holds, in seconds")
+        .with_unit("s")
+        .with_callback(|observer| {
+            if let Some(age) = crate::d1::service().and_then(|d1| d1.oldest_unsaved()) {
+                observer.observe(age.as_secs(), &[]);
+            }
+        })
+        .build();
+
     meter
         .u64_observable_gauge("worker.pool.active_tasks")
         .with_description("Workers running or queued")
@@ -322,6 +367,47 @@ pub fn record_late_respond_with(worker_id: &str, after_settle: bool) {
 
 #[cfg(not(feature = "telemetry"))]
 pub fn record_late_respond_with(_worker_id: &str, _after_settle: bool) {}
+
+/// Records one D1 call: its wait for the database and its run, labelled by
+/// outcome ("ok" or the error kind)
+#[cfg(feature = "telemetry")]
+pub fn record_d1_call(queue: f64, execution: f64, outcome: &'static str) {
+    if let Some(m) = metrics() {
+        let labels = [KeyValue::new("outcome", outcome)];
+
+        m.d1_queue_time.record(queue, &labels);
+        m.d1_execution_time.record(execution, &labels);
+    }
+}
+
+#[cfg(not(feature = "telemetry"))]
+pub fn record_d1_call(_queue: f64, _execution: f64, _outcome: &'static str) {}
+
+#[cfg(feature = "telemetry")]
+pub fn record_d1_snapshot(duration: f64, ok: bool) {
+    if let Some(m) = metrics() {
+        let status = KeyValue::new("status", if ok { "success" } else { "error" });
+
+        m.d1_snapshots_total.add(1, std::slice::from_ref(&status));
+
+        if ok {
+            m.d1_snapshot_duration.record(duration, &[]);
+        }
+    }
+}
+
+#[cfg(not(feature = "telemetry"))]
+pub fn record_d1_snapshot(_duration: f64, _ok: bool) {}
+
+#[cfg(feature = "telemetry")]
+pub fn record_d1_restore(duration: f64) {
+    if let Some(m) = metrics() {
+        m.d1_restore_duration.record(duration, &[]);
+    }
+}
+
+#[cfg(not(feature = "telemetry"))]
+pub fn record_d1_restore(_duration: f64) {}
 
 /// Records the JS heap the isolate of `worker_id` uses when an event ends.
 /// The 128 MiB bucket boundary is the default heap limit: a worker with
