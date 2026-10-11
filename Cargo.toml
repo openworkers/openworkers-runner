@@ -84,6 +84,9 @@ openworkers-runtime-wasm = { git = "https://github.com/openworkers/openworkers-r
 postgate = { git = "https://github.com/openworkers/postgate", tag = "v0.1.8", default-features = false, optional = true }
 
 futures = "0.3"
+
+# D1 databases: SQLite built from source, so every host runs the same version
+rusqlite = { version = "0.39", features = ["bundled", "hooks", "limits"] }
 serde_json = "1.0"
 serde = { version = "1.0.197", features = ["derive"] }
 base64 = "0.23"

@@ -2,6 +2,7 @@
 // compiled artifact, so the module follows the use rather than one engine
 #[cfg(any(feature = "_js", feature = "wasm"))]
 pub mod code_cache;
+pub mod d1;
 pub mod event_fetch;
 pub mod event_scheduled;
 pub mod limiter;
