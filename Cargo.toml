@@ -181,6 +181,10 @@ name = "hyper_integration_test"
 required-features = ["v8"]
 
 [[test]]
+name = "inbound_websocket_test"
+required-features = ["v8"]
+
+[[test]]
 name = "pinned_pool_test"
 required-features = ["v8"]
 

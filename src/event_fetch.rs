@@ -3,9 +3,7 @@ use crate::store::WorkerWithBindings;
 use crate::task_executor::{self, TaskExecutionConfig};
 use crate::worker::prepare_worker;
 
-use openworkers_core::{
-    Event, FetchInit, HttpRequest, HttpResponse, ResponseBody, ResponseSender, TerminationReason,
-};
+use openworkers_core::{Event, FetchInit, HttpResponse, ResponseBody, TerminationReason};
 use tracing::Instrument;
 
 type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>;
@@ -13,8 +11,7 @@ type TerminationTx = tokio::sync::oneshot::Sender<Result<(), TerminationReason>>
 #[allow(clippy::too_many_arguments)]
 pub fn run_fetch(
     worker_data: WorkerWithBindings,
-    req: HttpRequest,
-    res_tx: ResponseSender,
+    init: FetchInit,
     termination_tx: TerminationTx,
     log_sink: crate::log::LogSink,
     permit: tokio::sync::OwnedSemaphorePermit,
@@ -30,7 +27,7 @@ pub fn run_fetch(
         Ok(prepared) => prepared,
         Err(err) => {
             tracing::error!("Failed to prepare script: {err:?}");
-            res_tx
+            init.res_tx
                 .send(HttpResponse {
                     status: 500,
                     headers: vec![],
@@ -42,8 +39,10 @@ pub fn run_fetch(
         }
     };
 
-    // Create the task
-    let task = Event::Fetch(Some(FetchInit::new(req, res_tx)));
+    // An upgraded request runs while its socket is open; the runtime bounds
+    // each turn of the socket instead
+    let external_timeout_ms = init.upgrade.is_none().then_some(wall_clock_timeout_ms);
+    let task = Event::Fetch(Some(init));
 
     // Build config for task executor
     let config = TaskExecutionConfig {
@@ -53,7 +52,7 @@ pub fn run_fetch(
         db_pool,
         log_sink,
         limits,
-        external_timeout_ms: Some(wall_clock_timeout_ms),
+        external_timeout_ms,
         abort: Some(abort),
         span: span.clone(),
     };
@@ -73,6 +72,7 @@ pub fn run_fetch(
 mod tests {
     use super::*;
     use crate::store::{CodeType, WorkerSource};
+    use openworkers_core::HttpRequest;
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -110,8 +110,7 @@ mod tests {
 
         run_fetch(
             worker_data,
-            request,
-            res_tx,
+            FetchInit::new(request, res_tx),
             termination_tx,
             log_sink,
             permit,

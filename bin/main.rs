@@ -8,7 +8,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::oneshot::channel;
 use tracing::{debug, error, info, warn};
 
-use openworkers_core::{HttpRequest, HttpResponse, HyperBody};
+use openworkers_core::{FetchInit, HttpRequest, HttpResponse, HyperBody};
 use openworkers_runner::ingress::Peer;
 use openworkers_runner::metrics::{MetricsTimer, Outcome};
 
@@ -281,7 +281,7 @@ async fn serve_socket<S>(
 async fn handle_worker_request(
     state: &AppState,
     span: tracing::Span,
-    req: Request<hyper::body::Incoming>,
+    mut req: Request<hyper::body::Incoming>,
 ) -> Result<Response<HyperBody>, std::convert::Infallible> {
     let method = req.method().clone();
     let uri = req.uri().clone();
@@ -671,8 +671,30 @@ async fn handle_worker_request(
         ));
     }
 
+    use openworkers_runner::websocket::{self, Upgrade};
+
+    let accept = match websocket::upgrade(req.version(), &method, &headers) {
+        Upgrade::None => None,
+        Upgrade::Accept(accept) => Some(accept),
+        Upgrade::Refused(status, message) => {
+            let mut response = refuse(metrics_timer, &span, status, "bad_upgrade", message);
+
+            if status == 426 {
+                response.headers_mut().insert(
+                    "sec-websocket-version",
+                    hyper::header::HeaderValue::from_static("13"),
+                );
+            }
+
+            return Ok(response);
+        }
+    };
+
+    // Taken before the body, which consumes the request
+    let on_upgrade = accept.is_some().then(|| hyper::upgrade::on(&mut req));
+
     let scheme = forwarded_scheme(&headers);
-    let is_streaming = headers.contains_key("x-request-body-stream");
+    let is_streaming = headers.contains_key("x-request-body-stream") && on_upgrade.is_none();
 
     let mut pump_handle: Option<tokio::task::JoinHandle<()>> = None;
 
@@ -825,6 +847,15 @@ async fn handle_worker_request(
     };
 
     let (res_tx, res_rx) = channel::<HttpResponse>();
+
+    let (init, upgrade) = match accept.zip(on_upgrade) {
+        Some(upgrade) => {
+            let (init, socket_tx) = FetchInit::upgradable(request, res_tx);
+            (init, Some((upgrade, socket_tx)))
+        }
+        None => (FetchInit::new(request, res_tx), None),
+    };
+
     let (termination_tx, termination_rx) =
         channel::<Result<(), openworkers_core::TerminationReason>>();
 
@@ -840,8 +871,7 @@ async fn handle_worker_request(
 
     openworkers_runner::event_fetch::run_fetch(
         worker,
-        request,
-        res_tx,
+        init,
         termination_tx,
         state.log_sink.clone(),
         permit,
@@ -858,10 +888,17 @@ async fn handle_worker_request(
 
     let (response, outcome) =
         match tokio::time::timeout(deadline, res_rx).await {
-            Ok(Ok(res)) => (
-                res.into_hyper_with_disconnect(Some(disconnect_tx)),
-                Outcome::Success,
-            ),
+            Ok(Ok(res)) => match upgrade {
+                // Without the upgrade, dropping it closes the pairs of the worker
+                Some(((accept, on_upgrade), socket_tx)) if res.status == 101 => (
+                    websocket::switch(res, accept, on_upgrade, socket_tx),
+                    Outcome::Success,
+                ),
+                _ => (
+                    res.into_hyper_with_disconnect(Some(disconnect_tx)),
+                    Outcome::Success,
+                ),
+            },
             Ok(Err(_)) => {
                 let result = termination_rx.await.unwrap_or(Err(
                     openworkers_core::TerminationReason::Other("Unknown error".to_string()),
