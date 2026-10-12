@@ -127,6 +127,14 @@ impl LogSender {
     pub fn send(&self, event: LogEvent) {
         self.sink.send(&self.worker_id, event);
     }
+
+    /// A sender to the same sink for the lines of another worker.
+    pub fn for_worker(&self, worker_id: String) -> Self {
+        Self {
+            worker_id,
+            sink: self.sink.clone(),
+        }
+    }
 }
 
 #[cfg(test)]

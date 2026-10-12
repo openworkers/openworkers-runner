@@ -3,6 +3,7 @@
 #[cfg(any(feature = "_js", feature = "wasm"))]
 pub mod code_cache;
 pub mod d1;
+pub mod durable;
 pub mod event_fetch;
 pub mod event_scheduled;
 pub mod limiter;

@@ -3577,6 +3577,7 @@ dependencies = [
  "env_logger",
  "futures",
  "hex",
+ "hmac",
  "http-body-util",
  "hyper",
  "hyper-util",

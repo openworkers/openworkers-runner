@@ -132,6 +132,11 @@ pub enum Binding {
         key: String,
         config: WorkerBindingConfig,
     },
+    /// Durable Object namespace
+    DurableObject {
+        key: String,
+        namespace: crate::durable::NamespaceConfig,
+    },
 }
 
 impl Binding {
@@ -150,6 +155,9 @@ impl Binding {
             }
             Binding::D1 { key, .. } => Some(openworkers_core::BindingInfo::d1(key.clone())),
             Binding::Worker { key, .. } => Some(openworkers_core::BindingInfo::worker(key.clone())),
+            Binding::DurableObject { key, .. } => {
+                Some(openworkers_core::BindingInfo::durable_object(key.clone()))
+            }
         }
     }
 }

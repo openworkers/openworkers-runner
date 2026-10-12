@@ -88,6 +88,7 @@ const JS_BINDINGS: &[BindingType] = &[
     BindingType::Database,
     BindingType::D1,
     BindingType::Worker,
+    BindingType::DurableObject,
 ];
 #[cfg(feature = "nova")]
 const JS_BINDINGS: &[BindingType] = openworkers_runtime_nova::SUPPORTED_BINDINGS;
@@ -174,6 +175,7 @@ pub fn binding_type_name(binding_type: BindingType) -> &'static str {
         BindingType::D1 => "d1",
         BindingType::Worker => "worker",
         BindingType::Images => "images",
+        BindingType::DurableObject => "durable_object",
     }
 }
 

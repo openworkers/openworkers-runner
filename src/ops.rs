@@ -31,8 +31,8 @@
 use openworkers_core::{D1Op, D1Result};
 use openworkers_core::{DatabaseOp, DatabaseResult};
 use openworkers_core::{
-    HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, OpFuture,
-    OperationsHandler, RequestBody, StorageOp, StorageResult, WebSocketConnection,
+    HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, ObjectIdSource,
+    OpFuture, OperationsHandler, RequestBody, StorageOp, StorageResult, WebSocketConnection,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,6 +41,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tracing::Instrument;
 
+use crate::durable::NamespaceConfig;
+use crate::durable::id;
 use crate::limiter::BindingLimiters;
 #[cfg(feature = "database")]
 use crate::services::database::{self as db_service, QueryMode};
@@ -78,6 +80,7 @@ pub struct BindingConfigs {
     /// D1 binding name to database ID
     pub d1: HashMap<String, String>,
     pub worker: HashMap<String, WorkerBindingConfig>,
+    pub durable_object: HashMap<String, NamespaceConfig>,
 }
 
 impl BindingConfigs {
@@ -108,6 +111,9 @@ impl BindingConfigs {
                 }
                 Binding::Worker { key, config } => {
                     configs.worker.insert(key, config);
+                }
+                Binding::DurableObject { key, namespace } => {
+                    configs.durable_object.insert(key, namespace);
                 }
                 // Var and Secret are not resource bindings
                 Binding::Var { .. } | Binding::Secret { .. } => {}
@@ -223,6 +229,12 @@ impl RunnerOperations {
     /// The depth of a worker-to-worker call this request makes.
     fn next_depth(&self) -> u32 {
         self.request_state.lock().unwrap().depth + 1
+    }
+
+    /// The log sender of the current request
+    #[cfg(feature = "v8")]
+    fn log_tx(&self) -> Option<LogTx> {
+        self.request_state.lock().unwrap().log_tx.clone()
     }
 
     /// Get a clone of the current span
@@ -674,6 +686,65 @@ impl OperationsHandler for RunnerOperations {
             }
             .instrument(span),
         )
+    }
+
+    fn durable_object_id(&self, binding: &str, source: ObjectIdSource) -> Result<String, String> {
+        let namespace = self
+            .bindings
+            .durable_object
+            .get(binding)
+            .ok_or_else(|| format!("Durable Object binding '{binding}' not configured"))?;
+
+        match source {
+            ObjectIdSource::Name(name) => Ok(id::from_name(&namespace.key, &name)),
+            ObjectIdSource::Text(text) => id::parse(&namespace.key, &text)
+                .ok_or_else(|| "Invalid Durable Object ID".to_string()),
+            ObjectIdSource::Unique => Ok(id::unique(&namespace.key)),
+        }
+    }
+
+    fn handle_binding_durable_object(
+        &self,
+        binding: &str,
+        id: &str,
+        request: HttpRequest,
+    ) -> OpFuture<'_, Result<HttpResponse, String>> {
+        let Some(namespace) = self.bindings.durable_object.get(binding).cloned() else {
+            let error = format!("Durable Object binding '{binding}' not configured");
+            return Box::pin(async move { Err(error) });
+        };
+
+        // The guest can call the native with any string
+        let Some(id) = id::parse(&namespace.key, id) else {
+            return Box::pin(async { Err("Invalid Durable Object ID".to_string()) });
+        };
+
+        #[cfg(not(feature = "v8"))]
+        {
+            let _ = (id, request);
+            Box::pin(async { Err("this build cannot run Durable Objects".to_string()) })
+        }
+
+        #[cfg(feature = "v8")]
+        {
+            let db_pool = self.db_pool.clone();
+            let log_tx = self.log_tx();
+            let span = self.span();
+
+            Box::pin(
+                async move {
+                    // A call to an object is a subrequest, as a fetch is
+                    let limiters = self.limiters();
+                    let _guard = limiters.fetch.acquire().await.map_err(|e| e.to_string())?;
+
+                    let worker_id = namespace.worker_id.clone();
+                    let load = move || crate::durable::load(worker_id, db_pool, log_tx);
+
+                    crate::durable::send(&namespace, id, request, load).await
+                }
+                .instrument(span),
+            )
+        }
     }
 
     /// Handle worker binding: `env.SERVICE.fetch(request)`
