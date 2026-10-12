@@ -29,6 +29,8 @@ use openworkers_core::D1Error;
 use openworkers_core::D1ErrorKind;
 use openworkers_core::D1Op;
 use openworkers_core::D1Result;
+use openworkers_core::ObjectStorageOp;
+use openworkers_core::ObjectStorageResult;
 use rusqlite::InterruptHandle;
 
 pub use archive::Archive;
@@ -37,7 +39,11 @@ pub use sqlite::Limits;
 pub use sqlite::Migration;
 
 use sqlite::Database;
+use sqlite::Done;
 use sqlite::Job;
+
+/// The directory of the Durable Object files, inside the data directory
+const OBJECTS: &str = "objects";
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -95,11 +101,14 @@ struct Handle {
     saved: AtomicU64,
     /// When the oldest commit that no snapshot holds happened
     unsaved_since: Mutex<Option<Instant>>,
+    /// The file has snapshots: false for the storage of a Durable Object
+    archived: bool,
 }
 
 impl Handle {
+    /// Commits that a snapshot still has to hold
     fn unsaved(&self) -> bool {
-        self.commits.load(Ordering::SeqCst) != self.saved.load(Ordering::SeqCst)
+        self.archived && self.commits.load(Ordering::SeqCst) != self.saved.load(Ordering::SeqCst)
     }
 }
 
@@ -222,7 +231,7 @@ pub fn unavailable(binding: &str) -> D1Result {
 
 impl Service {
     pub fn new(config: Config) -> Result<Self, String> {
-        std::fs::create_dir_all(&config.data_dir)
+        std::fs::create_dir_all(config.data_dir.join(OBJECTS))
             .map_err(|err| format!("D1: cannot create the data directory: {err}"))?;
 
         let lock = File::create(config.data_dir.join(".lock"))
@@ -256,33 +265,59 @@ impl Service {
     }
 
     pub async fn execute(&self, database_id: &str, op: D1Op) -> D1Result {
-        self.submit(database_id, Job::Op(op)).await
+        d1_result(self.submit_database(database_id, Job::Op(op)).await)
     }
 
     pub async fn migrate(&self, database_id: &str, migration: Migration) -> D1Result {
-        self.submit(database_id, Job::Migrate(migration)).await
+        d1_result(
+            self.submit_database(database_id, Job::Migrate(migration))
+                .await,
+        )
     }
 
-    async fn submit(&self, database_id: &str, job: Job) -> D1Result {
-        let Ok(id) = uuid::Uuid::parse_str(database_id) else {
-            return D1Result::Error(error(
-                D1ErrorKind::Unavailable,
-                "the binding does not name a database".to_string(),
-            ));
+    /// Runs `op` on the storage of the Durable Object whose file is named by
+    /// `id`, a UUID. Objects have no snapshots yet.
+    pub async fn object_storage(&self, id: &str, op: ObjectStorageOp) -> ObjectStorageResult {
+        let Ok(id) = uuid::Uuid::parse_str(id) else {
+            return ObjectStorageResult::Error("not the storage of an object".to_string());
         };
 
-        let handle = self.handle(&id.to_string());
+        match self
+            .submit(format!("{OBJECTS}/{id}"), false, Job::Object(op))
+            .await
+        {
+            Done::Object(result) => result,
+            Done::D1(D1Result::Error(err)) => ObjectStorageResult::Error(err.message),
+            Done::D1(_) => ObjectStorageResult::Error("internal error".to_string()),
+        }
+    }
+
+    async fn submit_database(&self, database_id: &str, job: Job) -> Done {
+        let Ok(id) = uuid::Uuid::parse_str(database_id) else {
+            return Done::D1(D1Result::Error(error(
+                D1ErrorKind::Unavailable,
+                "the binding does not name a database".to_string(),
+            )));
+        };
+
+        self.submit(id.to_string(), true, job).await
+    }
+
+    /// Runs `job` on the file `<key>.sqlite` of the data directory, after the
+    /// jobs before it. `archived`: the file has snapshots.
+    async fn submit(&self, key: String, archived: bool, job: Job) -> Done {
+        let handle = self.handle(&key, archived);
 
         if handle.waiting.fetch_add(1, Ordering::SeqCst) >= self.config.max_queue {
             handle.waiting.fetch_sub(1, Ordering::SeqCst);
 
-            return D1Result::Error(error(
+            return Done::D1(D1Result::Error(error(
                 D1ErrorKind::Overloaded,
                 "too many queries are waiting for this database".to_string(),
-            ));
+            )));
         }
 
-        let result = self.run(&id.to_string(), &handle, job).await;
+        let result = self.run(&key, &handle, job).await;
 
         handle.waiting.fetch_sub(1, Ordering::SeqCst);
         *handle.last_used.lock().unwrap() = Instant::now();
@@ -304,6 +339,10 @@ impl Service {
             return Some("the data volume is almost full".to_string());
         }
 
+        if !handle.archived {
+            return None;
+        }
+
         let archive = self.archive.as_ref()?;
         let since = (*handle.unsaved_since.lock().unwrap())?;
 
@@ -315,7 +354,7 @@ impl Service {
         })
     }
 
-    async fn run(&self, id: &str, handle: &Handle, job: Job) -> D1Result {
+    async fn run(&self, id: &str, handle: &Handle, job: Job) -> Done {
         let queued = Instant::now();
         let deadline = tokio::time::Instant::now() + self.config.timeout;
 
@@ -324,10 +363,10 @@ impl Service {
         else {
             crate::metrics::record_d1_call(queued.elapsed().as_secs_f64(), 0.0, "overloaded");
 
-            return D1Result::Error(error(
+            return Done::D1(D1Result::Error(error(
                 D1ErrorKind::Overloaded,
                 "timed out waiting for the database".to_string(),
-            ));
+            )));
         };
 
         let queue_time = queued.elapsed().as_secs_f64();
@@ -337,13 +376,13 @@ impl Service {
             let limits = self.config.limits.clone();
             let commits = handle.commits.clone();
 
-            if let Err(err) = self.restore_if_missing(id).await {
+            if let Err(err) = self.restore_if_missing(id, handle.archived).await {
                 tracing::error!("D1: cannot restore database {id}: {err}");
 
-                return D1Result::Error(error(
+                return Done::D1(D1Result::Error(error(
                     D1ErrorKind::Unavailable,
                     "the database cannot be restored from its last snapshot".to_string(),
-                ));
+                )));
             }
 
             match tokio::task::spawn_blocking(move || Database::open(&path, &limits, commits)).await
@@ -352,12 +391,12 @@ impl Service {
                 Ok(Err(err)) => {
                     tracing::error!("D1: cannot open database {id}: {err}");
 
-                    return D1Result::Error(error(
+                    return Done::D1(D1Result::Error(error(
                         D1ErrorKind::Unavailable,
                         "the database cannot be opened".to_string(),
-                    ));
+                    )));
                 }
-                Err(_) => return internal_error(),
+                Err(_) => return Done::D1(internal_error()),
             }
         }
 
@@ -383,7 +422,7 @@ impl Service {
 
         interrupt.disarm();
 
-        let result = result.unwrap_or_else(|_| internal_error());
+        let result = result.unwrap_or_else(|_| Done::D1(internal_error()));
         let execution_time = queued.elapsed().as_secs_f64() - queue_time;
 
         crate::metrics::record_d1_call(queue_time, execution_time, outcome(&result));
@@ -404,7 +443,7 @@ impl Service {
             .max()
     }
 
-    fn handle(&self, id: &str) -> Arc<Handle> {
+    fn handle(&self, id: &str, archived: bool) -> Arc<Handle> {
         let mut databases = self.databases.lock().unwrap();
 
         if let Some(handle) = databases.get(id) {
@@ -430,6 +469,7 @@ impl Service {
             commits: Arc::new(AtomicU64::new(0)),
             saved: AtomicU64::new(0),
             unsaved_since: Mutex::new(None),
+            archived,
         });
 
         databases.insert(id.to_string(), handle.clone());
@@ -578,10 +618,10 @@ impl Service {
 
     /// Writes the latest snapshot of a database whose file is missing. A
     /// database without a snapshot starts empty.
-    async fn restore_if_missing(&self, id: &str) -> Result<(), String> {
+    async fn restore_if_missing(&self, id: &str, archived: bool) -> Result<(), String> {
         let path = self.config.data_dir.join(format!("{id}.sqlite"));
 
-        let Some(archive) = &self.archive else {
+        let Some(archive) = self.archive.as_ref().filter(|_| archived) else {
             return Ok(());
         };
 
@@ -681,10 +721,19 @@ impl Drop for InterruptOnDrop {
     }
 }
 
+fn d1_result(done: Done) -> D1Result {
+    match done {
+        Done::D1(result) => result,
+        Done::Object(_) => internal_error(),
+    }
+}
+
 /// A metric label for the outcome of a call
-fn outcome(result: &D1Result) -> &'static str {
+fn outcome(result: &Done) -> &'static str {
     match result {
-        D1Result::Error(err) => match err.kind {
+        Done::Object(ObjectStorageResult::Error(_)) => "object_error",
+        Done::Object(_) => "ok",
+        Done::D1(D1Result::Error(err)) => match err.kind {
             D1ErrorKind::Sql => "sql",
             D1ErrorKind::Type => "type",
             D1ErrorKind::Range => "range",
@@ -731,3 +780,6 @@ mod tests;
 
 #[cfg(test)]
 mod archive_tests;
+
+#[cfg(test)]
+mod object_tests;

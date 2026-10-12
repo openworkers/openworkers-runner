@@ -24,6 +24,17 @@ pub struct NamespaceConfig {
 #[cfg(feature = "v8")]
 pub use registry::{IDLE, ObjectSource, load, send};
 
+/// The name of the storage file of an object: a UUID that a hash of the
+/// namespace and the id gives, so it does not depend on the runner.
+pub fn storage_id(namespace: &str, id: &str) -> String {
+    use sha2::Digest;
+
+    let digest = sha2::Sha256::digest(format!("{namespace}/{id}"));
+    let bytes: [u8; 16] = digest[..16].try_into().expect("a digest has 32 bytes");
+
+    uuid::Uuid::from_bytes(bytes).to_string()
+}
+
 #[cfg(feature = "v8")]
 mod registry {
     use std::collections::HashMap;
@@ -213,6 +224,7 @@ mod registry {
     /// the worker, its bindings and its logs, as for a request to it.
     pub async fn load(
         worker_id: String,
+        storage_id: String,
         db_pool: Option<crate::ops::DbPool>,
         log_tx: Option<crate::ops::LogTx>,
     ) -> Result<ObjectSource, String> {
@@ -236,7 +248,8 @@ mod registry {
             .with_worker_id(data.id.clone())
             .with_user_id(data.user_id.clone())
             .with_bindings(data.bindings)
-            .with_db_pool(db_pool);
+            .with_db_pool(db_pool)
+            .with_object_storage(storage_id);
 
         if let Some(log_tx) = log_tx {
             ops = ops.with_log_tx(log_tx.for_worker(data.id));

@@ -32,7 +32,8 @@ use openworkers_core::{D1Op, D1Result};
 use openworkers_core::{DatabaseOp, DatabaseResult};
 use openworkers_core::{
     HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, ObjectIdSource,
-    OpFuture, OperationsHandler, RequestBody, StorageOp, StorageResult, WebSocketConnection,
+    ObjectStorageOp, ObjectStorageResult, OpFuture, OperationsHandler, RequestBody, StorageOp,
+    StorageResult, WebSocketConnection,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -159,6 +160,8 @@ pub struct RunnerOperations {
     pub bindings: BindingConfigs,
     /// Database pool for KV operations
     pub db_pool: Option<DbPool>,
+    /// The storage file of the Durable Object these operations serve
+    object_storage: Option<String>,
 }
 
 impl RunnerOperations {
@@ -175,6 +178,7 @@ impl RunnerOperations {
             }),
             bindings: BindingConfigs::new(),
             db_pool: None,
+            object_storage: None,
         }
     }
 
@@ -211,6 +215,12 @@ impl RunnerOperations {
 
     pub fn with_db_pool(mut self, pool: DbPool) -> Self {
         self.db_pool = Some(pool);
+        self
+    }
+
+    /// Serve the Durable Object whose storage file `storage_id` names
+    pub fn with_object_storage(mut self, storage_id: String) -> Self {
+        self.object_storage = Some(storage_id);
         self
     }
 
@@ -703,6 +713,31 @@ impl OperationsHandler for RunnerOperations {
         }
     }
 
+    fn handle_durable_object_storage(
+        &self,
+        op: ObjectStorageOp,
+    ) -> OpFuture<'_, ObjectStorageResult> {
+        let Some(storage_id) = self.object_storage.clone() else {
+            return Box::pin(async {
+                ObjectStorageResult::Error("this worker is not a Durable Object".to_string())
+            });
+        };
+
+        let span = self.span();
+
+        Box::pin(
+            async move {
+                match crate::d1::service() {
+                    Some(service) => service.object_storage(&storage_id, op).await,
+                    None => ObjectStorageResult::Error(
+                        "Durable Object storage is off on this runner (no D1_DATA_DIR)".to_string(),
+                    ),
+                }
+            }
+            .instrument(span),
+        )
+    }
+
     fn handle_binding_durable_object(
         &self,
         binding: &str,
@@ -738,7 +773,8 @@ impl OperationsHandler for RunnerOperations {
                     let _guard = limiters.fetch.acquire().await.map_err(|e| e.to_string())?;
 
                     let worker_id = namespace.worker_id.clone();
-                    let load = move || crate::durable::load(worker_id, db_pool, log_tx);
+                    let storage_id = crate::durable::storage_id(&namespace.id, &id);
+                    let load = move || crate::durable::load(worker_id, storage_id, db_pool, log_tx);
 
                     crate::durable::send(&namespace, id, request, load).await
                 }

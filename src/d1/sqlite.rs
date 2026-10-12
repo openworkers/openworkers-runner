@@ -17,6 +17,8 @@ use openworkers_core::D1Result;
 use openworkers_core::D1Rows;
 use openworkers_core::D1Statement;
 use openworkers_core::D1StatementResult;
+use openworkers_core::ObjectStorageOp;
+use openworkers_core::ObjectStorageResult;
 use openworkers_core::SqlPrimitive;
 use rusqlite::Connection;
 use rusqlite::InterruptHandle;
@@ -29,6 +31,8 @@ use rusqlite::hooks::Authorization;
 use rusqlite::limits::Limit;
 use rusqlite::types::Value;
 use rusqlite::types::ValueRef;
+
+mod object;
 
 /// Pragmas a guest can run: schema reads, and the deferral migration tools use
 const GUEST_PRAGMAS: &[&str] = &[
@@ -92,6 +96,14 @@ pub enum Job {
     Op(D1Op),
     /// A management migration
     Migrate(Migration),
+    /// An operation on the storage of a Durable Object
+    Object(ObjectStorageOp),
+}
+
+/// What a job gives back
+pub enum Done {
+    D1(D1Result),
+    Object(ObjectStorageResult),
 }
 
 pub struct Database {
@@ -163,22 +175,23 @@ impl Database {
 
     /// Runs a job. With `paused`, a statement that writes fails with that
     /// reason and reads still run.
-    pub fn run(&mut self, job: Job, paused: Option<String>) -> D1Result {
+    pub fn run(&mut self, job: Job, paused: Option<String>) -> Done {
         self.paused = paused;
 
         let op = match job {
             Job::Op(op) => op,
-            Job::Migrate(migration) => return self.migrate(&migration),
+            Job::Migrate(migration) => return Done::D1(self.migrate(&migration)),
+            Job::Object(op) => return Done::Object(self.object(op)),
         };
 
-        match op {
+        Done::D1(match op {
             D1Op::Query { statement, rows } => match self.query(&statement, rows) {
                 Ok(result) => D1Result::Query(result),
                 Err(err) => D1Result::Error(err),
             },
             D1Op::Batch { statements } => self.batch(&statements),
             D1Op::Exec { sql } => self.exec(&sql),
-        }
+        })
     }
 
     fn query(&self, statement: &D1Statement, rows: D1Rows) -> Result<D1StatementResult, D1Error> {
