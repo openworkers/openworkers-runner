@@ -413,3 +413,43 @@ async fn an_account_runs_a_bounded_count_of_objects() {
     };
     assert_eq!(get(&other, "a", idle, &loads).await.unwrap(), "a 1");
 }
+
+/// Operations that keep the logs of the worker.
+#[derive(Default)]
+struct Logs(std::sync::Mutex<Vec<String>>);
+
+impl OperationsHandler for Logs {
+    fn handle_log(&self, _level: openworkers_core::LogLevel, message: String) {
+        self.0.lock().unwrap().push(message);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_worker_logs_tell_why_an_object_failed() {
+    let namespace = NamespaceConfig {
+        class_name: "Missing".to_string(),
+        ..namespace("ns-logs")
+    };
+    let logs = Arc::new(Logs::default());
+    let ops = Arc::clone(&logs);
+
+    let failed = send(
+        &namespace,
+        "a".to_string(),
+        0,
+        request(),
+        move |_| async move {
+            Ok(ObjectSource {
+                ops,
+                ..source(Duration::from_secs(60))
+            })
+        },
+    )
+    .await;
+
+    assert_eq!(failed.unwrap_err(), "the Durable Object stopped");
+    assert_eq!(
+        *logs.0.lock().unwrap(),
+        ["Durable Object Missing a: not built: TypeError: the worker exports no class 'Missing'"]
+    );
+}

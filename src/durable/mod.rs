@@ -84,7 +84,8 @@ mod registry {
 
     use once_cell::sync::Lazy;
     use openworkers_core::{
-        FetchInit, HttpRequest, HttpResponse, OperationsHandle, RuntimeLimits, Script,
+        FetchInit, HttpRequest, HttpResponse, LogLevel, OperationsHandle, RuntimeLimits, Script,
+        TerminationReason,
     };
     use openworkers_runtime_v8::{DurableObject, ObjectSpec};
     use tokio::sync::{mpsc, oneshot};
@@ -298,16 +299,25 @@ mod registry {
                 }
             };
 
+            // The logs of the worker are where its developer looks
+            let log = |what: &str, reason: TerminationReason| {
+                let message = format!(
+                    "Durable Object {} {}: {what}: {reason}",
+                    spec.class_name, key.id
+                );
+                spec.ops.handle_log(LogLevel::Error, message);
+            };
+
             let object = match DurableObject::new(&spec) {
                 Ok(object) => object,
                 Err(reason) => {
-                    tracing::warn!("durable object {}: not built: {reason:?}", key.id);
+                    log("not built", reason);
                     continue;
                 }
             };
 
             if let Err(reason) = object.serve(first, &mut mailbox, spec.idle).await {
-                tracing::warn!("durable object {}: stopped: {reason:?}", key.id);
+                log("stopped", reason);
             }
         }
     }
