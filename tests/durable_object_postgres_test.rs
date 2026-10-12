@@ -412,3 +412,52 @@ async fn an_alarm_the_account_limit_refuses_is_not_a_failed_run() {
     durable::stop_namespace(&busy.id);
     remove_user(&db, user).await;
 }
+
+#[cfg(feature = "v8")]
+#[tokio::test]
+#[ignore]
+async fn the_worker_logs_tell_why_an_object_did_not_load() {
+    use openworkers_runner::durable::id::IdKey;
+    use openworkers_runner::durable::{self, NamespaceConfig};
+    use openworkers_runner::log::{LogSender, LogSink};
+
+    let db = database().await;
+    let user = new_user(&db).await;
+    let worker = new_worker(&db, user, &[]).await;
+
+    sqlx::query("UPDATE worker_deployments SET code_type = 'wasm' WHERE worker_id = $1")
+        .bind(worker)
+        .execute(&db)
+        .await
+        .unwrap();
+
+    let namespace = NamespaceConfig {
+        id: Uuid::new_v4().to_string(),
+        user_id: user.to_string(),
+        worker_id: worker.to_string(),
+        class_name: "Counter".to_string(),
+        key: IdKey([6; 32]),
+    };
+    let (sink, _store) = LogSink::new();
+    let mut logs = sink.subscribe();
+
+    let error = durable::load(
+        namespace,
+        "a".to_string(),
+        Default::default(),
+        Some(db.clone()),
+        Some(LogSender::new("caller".to_string(), sink)),
+    )
+    .await
+    .err()
+    .unwrap();
+
+    let line = logs.try_recv().unwrap();
+    assert_eq!(line.worker_id, worker.to_string());
+    assert_eq!(
+        line.message,
+        format!("Durable Object Counter a: not loaded: {error}")
+    );
+
+    remove_user(&db, user).await;
+}

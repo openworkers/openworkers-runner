@@ -147,8 +147,8 @@ mod registry {
 
     use once_cell::sync::Lazy;
     use openworkers_core::{
-        FetchInit, HttpRequest, HttpResponse, LogLevel, OperationsHandle, RuntimeLimits, Script,
-        TerminationReason,
+        FetchInit, HttpRequest, HttpResponse, LogEvent, LogLevel, OperationsHandle, RuntimeLimits,
+        Script, TerminationReason,
     };
     use openworkers_runtime_v8::{AlarmInit, DurableObject, ObjectEvent, ObjectSpec};
     use tokio::sync::{mpsc, oneshot};
@@ -563,11 +563,29 @@ mod registry {
             return Err("the worker of the Durable Object class is gone".to_string());
         }
 
+        // From here the worker is of the account, and its logs are where its
+        // developer looks
+        let failed = |error: String| {
+            if let Some(log_tx) = &log_tx {
+                log_tx.for_worker(data.id.clone()).send(LogEvent {
+                    level: LogLevel::Error,
+                    message: format!(
+                        "Durable Object {} {object_id}: not loaded: {error}",
+                        namespace.class_name
+                    ),
+                });
+            }
+
+            error
+        };
+
         if data.code_type == CodeType::Wasm {
-            return Err("a WebAssembly worker cannot export a Durable Object class".to_string());
+            return Err(failed(
+                "a WebAssembly worker cannot export a Durable Object class".to_string(),
+            ));
         }
 
-        let script = crate::worker::prepare_script(&data).map_err(|e| format!("{e:?}"))?;
+        let script = crate::worker::prepare_script(&data).map_err(|e| failed(format!("{e:?}")))?;
 
         let mut ops = crate::ops::RunnerOperations::new()
             .with_worker_id(data.id.clone())
