@@ -675,7 +675,22 @@ async fn handle_worker_request(
 
     let accept = match websocket::upgrade(req.version(), &method, &headers) {
         Upgrade::None => None,
-        Upgrade::Accept(accept) => Some(accept),
+        Upgrade::Accept(accept) => {
+            let Ok(socket_slot) = openworkers_runner::worker_pool::WS_SEMAPHORE
+                .clone()
+                .try_acquire_owned()
+            else {
+                return Ok(refuse(
+                    metrics_timer,
+                    &span,
+                    503,
+                    "websocket_limit",
+                    "Too many open WebSockets",
+                ));
+            };
+
+            Some((accept, socket_slot))
+        }
         Upgrade::Refused(status, message) => {
             let mut response = refuse(metrics_timer, &span, status, "bad_upgrade", message);
 
@@ -848,6 +863,9 @@ async fn handle_worker_request(
 
     let (res_tx, res_rx) = channel::<HttpResponse>();
 
+    // A socket trades its worker slot for its socket slot at the 101
+    let slot = openworkers_runner::worker_pool::PermitSlot::new(permit);
+
     let (init, upgrade) = match accept.zip(on_upgrade) {
         Some(upgrade) => {
             let (init, socket_tx) = FetchInit::upgradable(request, res_tx);
@@ -874,7 +892,7 @@ async fn handle_worker_request(
         init,
         termination_tx,
         state.log_sink.clone(),
-        permit,
+        slot.clone(),
         state.db_worker.clone(),
         state.wall_clock_timeout_ms,
         abort.clone(),
@@ -886,30 +904,36 @@ async fn handle_worker_request(
     // whatever op the guest is still awaiting.
     let deadline = Duration::from_millis(state.wall_clock_timeout_ms);
 
-    let (response, outcome) =
-        match tokio::time::timeout(deadline, res_rx).await {
-            Ok(Ok(res)) => match upgrade {
-                // Without the upgrade, dropping it closes the pairs of the worker
-                Some(((accept, on_upgrade), socket_tx)) if res.status == 101 => (
-                    websocket::switch(res, accept, on_upgrade, socket_tx),
+    let (response, outcome) = match tokio::time::timeout(deadline, res_rx).await {
+        Ok(Ok(res)) => match upgrade {
+            // Without the upgrade, dropping it closes the pairs of the worker
+            Some((((accept, socket_slot), on_upgrade), socket_tx)) if res.status == 101 => {
+                slot.trade(socket_slot);
+
+                (
+                    websocket::switch(res, accept, on_upgrade, socket_tx, websocket::max_idle()),
                     Outcome::Success,
-                ),
-                _ => (
-                    res.into_hyper_with_disconnect(Some(disconnect_tx)),
-                    Outcome::Success,
-                ),
-            },
-            Ok(Err(_)) => {
-                let result = termination_rx.await.unwrap_or(Err(
-                    openworkers_core::TerminationReason::Other("Unknown error".to_string()),
-                ));
-                terminated_response(result)
+                )
             }
-            Err(_) => {
-                abort.cancel();
-                terminated_response(Err(openworkers_core::TerminationReason::WallClockTimeout))
-            }
-        };
+            _ => (
+                res.into_hyper_with_disconnect(Some(disconnect_tx)),
+                Outcome::Success,
+            ),
+        },
+        Ok(Err(_)) => {
+            let result =
+                termination_rx
+                    .await
+                    .unwrap_or(Err(openworkers_core::TerminationReason::Other(
+                        "Unknown error".to_string(),
+                    )));
+            terminated_response(result)
+        }
+        Err(_) => {
+            abort.cancel();
+            terminated_response(Err(openworkers_core::TerminationReason::WallClockTimeout))
+        }
+    };
 
     // Abort body pump if still running (free the connection)
     if let Some(handle) = pump_handle {

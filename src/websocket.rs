@@ -9,6 +9,10 @@ use hyper::{HeaderMap, Method, Response, Version};
 use openworkers_core::{
     HttpResponse, HyperBody, WebSocketConnection, WebSocketIncoming, WebSocketOutgoing,
 };
+use std::sync::Arc;
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::oneshot;
 use tokio_tungstenite::WebSocketStream;
@@ -18,6 +22,21 @@ use tungstenite::protocol::{Role, WebSocketConfig};
 /// The largest message, and frame, a client can send. A larger one closes the
 /// socket with 1009.
 pub const MAX_MESSAGE_BYTES: usize = 1 << 20;
+
+/// How long the socket of a client stays open with no frame either way (from
+/// WS_MAX_IDLE_MS env). The default is the idle limit of the Cloudflare proxy.
+pub fn max_idle() -> Duration {
+    static MAX_IDLE: LazyLock<Duration> = LazyLock::new(|| {
+        let ms = std::env::var("WS_MAX_IDLE_MS")
+            .ok()
+            .and_then(|ms| ms.parse().ok())
+            .unwrap_or(100_000);
+
+        Duration::from_millis(ms)
+    });
+
+    *MAX_IDLE
+}
 
 /// What a request asks of the WebSocket protocol.
 #[derive(Debug, PartialEq, Eq)]
@@ -78,12 +97,14 @@ pub fn upgrade(version: Version, method: &Method, headers: &HeaderMap) -> Upgrad
 /// The 101 that switches the connection of an upgrade, with the headers the
 /// worker set. Once hyper writes it, the socket goes to the worker on
 /// `socket_tx`. When the upgrade fails, dropping `socket_tx` closes the
-/// server end of the worker.
+/// server end of the worker. The socket closes with 1001 after `max_idle`
+/// with no frame either way, and when the runner drains.
 pub fn switch(
     response: HttpResponse,
     accept: String,
     on_upgrade: hyper::upgrade::OnUpgrade,
     socket_tx: oneshot::Sender<WebSocketConnection>,
+    max_idle: Duration,
 ) -> Response<HyperBody> {
     tokio::spawn(async move {
         let upgraded = match on_upgrade.await {
@@ -105,7 +126,7 @@ pub fn switch(
         .await;
 
         // The worker let the socket go before the client came
-        if let Err(socket) = socket_tx.send(bridge(stream)) {
+        if let Err(socket) = socket_tx.send(pipe(stream, Some(max_idle))) {
             let _ = socket.send_tx.send(WebSocketOutgoing::Close {
                 code: 1000,
                 reason: String::new(),
@@ -146,7 +167,25 @@ pub fn bridge<S>(stream: WebSocketStream<S>) -> WebSocketConnection
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    pipe(stream, None)
+}
+
+/// The bridge of a socket, which closes after `max_idle` with no frame either
+/// way and when the runner drains, if `max_idle` is set.
+fn pipe<S>(stream: WebSocketStream<S>, max_idle: Option<Duration>) -> WebSocketConnection
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let (mut ws_write, mut ws_read) = stream.split();
+
+    // The time of the last frame, in ms after `origin`
+    let origin = tokio::time::Instant::now();
+    let last_frame = Arc::new(AtomicU64::new(0));
+    let touch = {
+        let last_frame = Arc::clone(&last_frame);
+        move || last_frame.store(origin.elapsed().as_millis() as u64, Ordering::Relaxed)
+    };
+    let read_touch = touch.clone();
 
     let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel::<WebSocketOutgoing>();
     let (recv_tx, recv_rx) = tokio::sync::mpsc::unbounded_channel::<WebSocketIncoming>();
@@ -166,6 +205,8 @@ where
                 }
             };
 
+            touch();
+
             if ws_write.send(ws_msg).await.is_err() {
                 break;
             }
@@ -178,7 +219,59 @@ where
     let close_tx = send_tx.clone();
 
     tokio::spawn(async move {
-        while let Some(result) = ws_read.next().await {
+        // A close the bridge decides goes to both ends
+        let close = |code: u16, reason: &str| {
+            let _ = close_tx.send(WebSocketOutgoing::Close {
+                code,
+                reason: reason.into(),
+            });
+            let _ = recv_tx.send(WebSocketIncoming::Closed {
+                code,
+                reason: reason.into(),
+            });
+        };
+
+        loop {
+            let last = || origin + Duration::from_millis(last_frame.load(Ordering::Relaxed));
+            let idle = async {
+                match max_idle {
+                    Some(idle) => tokio::time::sleep_until(last() + idle).await,
+                    None => std::future::pending().await,
+                }
+            };
+            let drain = async {
+                match max_idle {
+                    Some(_) => crate::worker_pool::draining().await,
+                    None => std::future::pending().await,
+                }
+            };
+
+            let result = tokio::select! {
+                biased;
+
+                _ = drain => {
+                    close(1001, "The runner is going away");
+                    break;
+                }
+
+                _ = idle => {
+                    // The other task may have sent a frame meanwhile
+                    if max_idle.is_some_and(|idle| last().elapsed() >= idle) {
+                        close(1001, "Idle for too long");
+                        break;
+                    }
+
+                    continue;
+                }
+
+                next = ws_read.next() => match next {
+                    Some(result) => result,
+                    None => break,
+                },
+            };
+
+            read_touch();
+
             let incoming = match result {
                 Ok(tungstenite::Message::Text(s)) => WebSocketIncoming::Text(s.to_string()),
                 Ok(tungstenite::Message::Binary(b)) => WebSocketIncoming::Binary(b.to_vec()),
@@ -196,12 +289,7 @@ where
                 // tungstenite stops reading without a close frame, so both
                 // ends learn of the limit here
                 Err(tungstenite::Error::Capacity(_)) => {
-                    let reason = "Message too big".to_string();
-                    let _ = close_tx.send(WebSocketOutgoing::Close {
-                        code: 1009,
-                        reason: reason.clone(),
-                    });
-                    let _ = recv_tx.send(WebSocketIncoming::Closed { code: 1009, reason });
+                    close(1009, "Message too big");
                     break;
                 }
                 Err(e) => {

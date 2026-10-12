@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::{Notify, Semaphore, oneshot};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, oneshot};
 
 // Default pool size configuration
 const DEFAULT_WORKER_POOL_SIZE: usize = 1;
@@ -213,6 +213,20 @@ pub static WORKER_SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| {
     Arc::new(Semaphore::new(*MAX_QUEUED_WORKERS))
 });
 
+/// Max open inbound WebSockets (from MAX_WS_CONNECTIONS env). A socket keeps
+/// its context for its whole life, so the default is the request budget.
+static MAX_WS_CONNECTIONS: Lazy<usize> = Lazy::new(|| {
+    std::env::var("MAX_WS_CONNECTIONS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(*MAX_QUEUED_WORKERS)
+});
+
+/// The slots of the open inbound WebSockets. A socket takes one in place of
+/// its worker slot at the 101, and keeps it until it closes.
+pub static WS_SEMAPHORE: Lazy<Arc<Semaphore>> =
+    Lazy::new(|| Arc::new(Semaphore::new(*MAX_WS_CONNECTIONS)));
+
 /// Timeout for waiting on a worker slot
 pub fn get_worker_wait_timeout() -> Duration {
     Duration::from_millis(
@@ -222,6 +236,9 @@ pub fn get_worker_wait_timeout() -> Duration {
             .unwrap_or(DEFAULT_WORKER_WAIT_TIMEOUT_MS),
     )
 }
+
+/// Wakes the open sockets when the runner starts to drain
+static DRAIN_NOTIFY: Lazy<Notify> = Lazy::new(Notify::new);
 
 /// Global draining state
 ///
@@ -233,6 +250,7 @@ pub static IS_DRAINING: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 pub fn set_draining(draining: bool) {
     IS_DRAINING.store(draining, Ordering::SeqCst);
     if draining {
+        DRAIN_NOTIFY.notify_waiters();
         tracing::info!("Runner is now draining - refusing new requests");
     } else {
         tracing::info!("Runner is no longer draining - accepting requests");
@@ -244,9 +262,25 @@ pub fn is_draining() -> bool {
     IS_DRAINING.load(Ordering::SeqCst)
 }
 
-/// Get the number of active tasks
+/// Resolves once the runner drains.
+pub async fn draining() {
+    loop {
+        let notified = DRAIN_NOTIFY.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        if is_draining() {
+            return;
+        }
+
+        notified.await;
+    }
+}
+
+/// Get the number of active tasks: the workers and the open sockets
 pub fn get_active_tasks() -> usize {
-    *MAX_QUEUED_WORKERS - WORKER_SEMAPHORE.available_permits()
+    (*MAX_QUEUED_WORKERS - WORKER_SEMAPHORE.available_permits())
+        + (*MAX_WS_CONNECTIONS - WS_SEMAPHORE.available_permits())
 }
 
 /// Notify for task completion events
@@ -315,24 +349,46 @@ pub fn get_max_concurrent_per_worker() -> usize {
     *MAX_CONCURRENT_PER_WORKER
 }
 
-/// Wrapper around OwnedSemaphorePermit that automatically notifies on drop
+/// The slot a task holds until its JS ends. An upgraded request trades its
+/// worker slot for a socket slot at the 101, while its JS goes on.
+#[derive(Clone)]
+pub struct PermitSlot(Arc<Mutex<Option<OwnedSemaphorePermit>>>);
+
+impl PermitSlot {
+    pub fn new(permit: OwnedSemaphorePermit) -> Self {
+        Self(Arc::new(Mutex::new(Some(permit))))
+    }
+
+    /// Holds `permit` in place of the slot the task holds. A task that has
+    /// ended holds nothing, and `permit` goes back at once.
+    pub fn trade(&self, permit: OwnedSemaphorePermit) {
+        let mut held = self.0.lock().unwrap();
+
+        if held.is_some() {
+            *held = Some(permit);
+            drop(held);
+            notify_task_completed();
+        }
+    }
+}
+
+/// Frees the slot of a task when it ends, and tells the drain monitor
 ///
 /// This ensures that ALL task types (fetch, scheduled, etc.) properly notify
 /// the drain monitor when they complete, without requiring manual calls.
 pub struct TaskPermit {
-    _permit: tokio::sync::OwnedSemaphorePermit,
+    slot: PermitSlot,
 }
 
 impl TaskPermit {
-    /// Wrap an OwnedSemaphorePermit with automatic notification on drop
-    pub fn new(permit: tokio::sync::OwnedSemaphorePermit) -> Self {
-        Self { _permit: permit }
+    pub fn new(slot: PermitSlot) -> Self {
+        Self { slot }
     }
 }
 
 impl Drop for TaskPermit {
     fn drop(&mut self) {
-        // Automatically notify drain monitor when task completes
+        self.slot.0.lock().unwrap().take();
         notify_task_completed();
     }
 }
@@ -341,6 +397,36 @@ impl Drop for TaskPermit {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_trade_frees_the_slot_the_task_held() {
+        let workers = Arc::new(Semaphore::new(1));
+        let sockets = Arc::new(Semaphore::new(1));
+
+        let slot = PermitSlot::new(workers.clone().try_acquire_owned().unwrap());
+        let task = TaskPermit::new(slot.clone());
+
+        slot.trade(sockets.clone().try_acquire_owned().unwrap());
+        assert_eq!(workers.available_permits(), 1);
+        assert_eq!(sockets.available_permits(), 0);
+
+        drop(task);
+        assert_eq!(sockets.available_permits(), 1);
+    }
+
+    /// A socket that closed before the 101 went out holds no slot.
+    #[test]
+    fn a_trade_after_the_end_holds_nothing() {
+        let workers = Arc::new(Semaphore::new(1));
+        let sockets = Arc::new(Semaphore::new(1));
+
+        let slot = PermitSlot::new(workers.clone().try_acquire_owned().unwrap());
+        drop(TaskPermit::new(slot.clone()));
+
+        slot.trade(sockets.clone().try_acquire_owned().unwrap());
+        assert_eq!(workers.available_permits(), 1);
+        assert_eq!(sockets.available_permits(), 1);
+    }
 
     /// Prove that tasks on the same thread can interleave during I/O waits.
     ///

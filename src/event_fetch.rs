@@ -14,7 +14,7 @@ pub fn run_fetch(
     init: FetchInit,
     termination_tx: TerminationTx,
     log_sink: crate::log::LogSink,
-    permit: tokio::sync::OwnedSemaphorePermit,
+    permit: crate::worker_pool::PermitSlot,
     db_pool: DbPool,
     wall_clock_timeout_ms: u64,
     abort: tokio_util::sync::CancellationToken,
@@ -100,9 +100,11 @@ mod tests {
         let (res_tx, res_rx) = tokio::sync::oneshot::channel();
         let (termination_tx, termination_rx) = tokio::sync::oneshot::channel();
         let (log_sink, _log_store) = crate::log::LogSink::new();
-        let permit = Arc::new(tokio::sync::Semaphore::new(1))
-            .try_acquire_owned()
-            .unwrap();
+        let permit = crate::worker_pool::PermitSlot::new(
+            Arc::new(tokio::sync::Semaphore::new(1))
+                .try_acquire_owned()
+                .unwrap(),
+        );
         // Never connects: the failure comes before any query
         let db_pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://localhost/unused")

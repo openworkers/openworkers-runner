@@ -237,6 +237,20 @@ Single global LRU pool shared across all threads, protected by a mutex. Isolates
 
 Fresh V8 isolate per request, destroyed after each response. No reuse, no pooling. Slower (~1-2ms overhead per request) but useful for debugging. Also serves as a workaround for a V8 SIGSEGV (`SEGV_PKUERR`) that affects PINNED and POOLED modes in some containerized environments (see [#2](https://github.com/openworkers/openworkers-runner/issues/2)).
 
+#### WebSockets
+
+A worker accepts a WebSocket with `WebSocketPair` and a 101 response. Each
+open socket keeps its context until it closes. At the 101, the socket gives
+back its worker slot and takes a socket slot.
+
+| Variable             | Default                  | Description                                        |
+| -------------------- | ------------------------ | -------------------------------------------------- |
+| `MAX_WS_CONNECTIONS` | `MAX_QUEUED_WORKERS`     | Max open sockets; an upgrade over it gets a 503    |
+| `WS_MAX_IDLE_MS`     | `100000`                 | A socket with no frame either way closes with 1001 |
+
+A message or frame over 1 MiB closes the socket with 1009. A drain closes
+every open socket with 1001.
+
 #### D1 (SQLite)
 
 D1 is off when `D1_DATA_DIR` is unset. The runner keeps one SQLite file per

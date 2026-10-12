@@ -146,7 +146,7 @@ fn run_scheduled(
 
             let config = TaskExecutionConfig {
                 worker_data,
-                permit,
+                permit: crate::worker_pool::PermitSlot::new(permit),
                 task: event,
                 db_pool,
                 log_sink,

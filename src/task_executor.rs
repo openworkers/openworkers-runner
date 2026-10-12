@@ -2,7 +2,6 @@ use std::sync::Arc;
 #[cfg(feature = "v8")]
 use std::sync::OnceLock;
 use std::time::Duration;
-use tokio::sync::OwnedSemaphorePermit;
 use tracing::Instrument;
 
 #[cfg(feature = "v8")]
@@ -63,7 +62,7 @@ pub const DEFAULT_WALL_CLOCK_TIME_MS: u64 = 60_000;
 /// Configuration for executing a task
 pub struct TaskExecutionConfig {
     pub worker_data: WorkerWithBindings,
-    pub permit: OwnedSemaphorePermit,
+    pub permit: crate::worker_pool::PermitSlot,
     pub task: Event,
     pub db_pool: DbPool,
     pub log_sink: crate::log::LogSink,

@@ -66,7 +66,9 @@ async fn a_request_past_the_external_timeout_keeps_its_slot_until_its_js_ends() 
 
     let config = TaskExecutionConfig {
         worker_data,
-        permit: Arc::clone(&slots).try_acquire_owned().unwrap(),
+        permit: openworkers_runner::worker_pool::PermitSlot::new(
+            Arc::clone(&slots).try_acquire_owned().unwrap(),
+        ),
         task: Event::Fetch(Some(FetchInit::new(request, res_tx))),
         // Never connects: the worker has no database binding
         db_pool: sqlx::postgres::PgPoolOptions::new()
