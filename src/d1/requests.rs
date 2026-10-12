@@ -220,13 +220,15 @@ async fn clean_up_namespaces(
         if crate::durable::stop_namespace(&namespace_id) {
             service.remove_namespace_files(&namespace_id);
         }
-
-        // The trigger queues the snapshot objects in durable_object_purge
-        sqlx::query("DELETE FROM durable_object_archives WHERE namespace_id::text = $1")
-            .bind(&namespace_id)
-            .execute(&mut *listener)
-            .await?;
     }
+
+    // The trigger queues the snapshot objects in durable_object_purge
+    sqlx::query(
+        "DELETE FROM durable_object_archives WHERE namespace_id IN \
+         (SELECT id FROM durable_object_namespaces WHERE deleted_at IS NOT NULL)",
+    )
+    .execute(&mut *listener)
+    .await?;
 
     Ok(())
 }
