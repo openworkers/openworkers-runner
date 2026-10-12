@@ -19,6 +19,7 @@ pub mod telemetry;
 pub mod utils;
 #[cfg(feature = "wasm")]
 pub mod wasm_cache;
+pub mod websocket;
 pub mod worker;
 pub mod worker_pool;
 

@@ -33,7 +33,6 @@ use openworkers_core::{DatabaseOp, DatabaseResult};
 use openworkers_core::{
     HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, OpFuture,
     OperationsHandler, RequestBody, StorageOp, StorageResult, WebSocketConnection,
-    WebSocketIncoming, WebSocketOutgoing,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -741,7 +740,6 @@ impl OperationsHandler for RunnerOperations {
         let url = url.to_string();
 
         Box::pin(async move {
-            use futures::{SinkExt, StreamExt};
             use tokio_tungstenite::WebSocketStream;
             use tokio_tungstenite::tungstenite;
             use tungstenite::handshake::client::generate_key;
@@ -830,71 +828,7 @@ impl OperationsHandler for RunnerOperations {
             // reqwest owns the connection and TLS; tungstenite only frames messages.
             let ws_stream = WebSocketStream::from_raw_socket(upgraded, Role::Client, None).await;
 
-            let (mut ws_write, mut ws_read) = ws_stream.split();
-
-            // Channels for bidirectional message passing
-            let (send_tx, mut send_rx) =
-                tokio::sync::mpsc::unbounded_channel::<WebSocketOutgoing>();
-            let (recv_tx, recv_rx) = tokio::sync::mpsc::unbounded_channel::<WebSocketIncoming>();
-
-            // Task: forward outgoing messages (JS -> WS)
-            tokio::spawn(async move {
-                while let Some(msg) = send_rx.recv().await {
-                    let ws_msg = match msg {
-                        WebSocketOutgoing::Text(s) => tungstenite::Message::Text(s.into()),
-                        WebSocketOutgoing::Binary(b) => {
-                            tungstenite::Message::Binary(bytes::Bytes::from(b))
-                        }
-                        WebSocketOutgoing::Close { code, reason } => {
-                            let frame = tungstenite::protocol::CloseFrame {
-                                code: tungstenite::protocol::frame::coding::CloseCode::from(code),
-                                reason: reason.into(),
-                            };
-                            tungstenite::Message::Close(Some(frame))
-                        }
-                    };
-
-                    if ws_write.send(ws_msg).await.is_err() {
-                        break;
-                    }
-                }
-
-                let _ = ws_write.close().await;
-            });
-
-            // Task: forward incoming messages (WS -> JS)
-            tokio::spawn(async move {
-                while let Some(result) = ws_read.next().await {
-                    let incoming = match result {
-                        Ok(tungstenite::Message::Text(s)) => WebSocketIncoming::Text(s.to_string()),
-                        Ok(tungstenite::Message::Binary(b)) => {
-                            WebSocketIncoming::Binary(b.to_vec())
-                        }
-                        Ok(tungstenite::Message::Close(frame)) => {
-                            let (code, reason) = frame
-                                .map(|f| (u16::from(f.code), f.reason.to_string()))
-                                .unwrap_or((1000, String::new()));
-                            let _ = recv_tx.send(WebSocketIncoming::Closed { code, reason });
-                            break;
-                        }
-                        Ok(tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_)) => {
-                            continue; // tungstenite handles pong automatically
-                        }
-                        Ok(tungstenite::Message::Frame(_)) => continue,
-                        Err(e) => {
-                            let _ =
-                                recv_tx.send(WebSocketIncoming::Error(format!("WS error: {}", e)));
-                            break;
-                        }
-                    };
-
-                    if recv_tx.send(incoming).is_err() {
-                        break; // Receiver dropped
-                    }
-                }
-            });
-
-            Ok(WebSocketConnection { send_tx, recv_rx })
+            Ok(crate::websocket::bridge(ws_stream))
         })
     }
 
