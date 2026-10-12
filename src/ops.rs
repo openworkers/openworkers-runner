@@ -160,8 +160,8 @@ pub struct RunnerOperations {
     pub bindings: BindingConfigs,
     /// Database pool for KV operations
     pub db_pool: Option<DbPool>,
-    /// The storage file of the Durable Object these operations serve
-    object_storage: Option<String>,
+    /// The namespace and id of the Durable Object these operations serve
+    object_storage: Option<(String, String)>,
 }
 
 impl RunnerOperations {
@@ -218,9 +218,9 @@ impl RunnerOperations {
         self
     }
 
-    /// Serve the Durable Object whose storage file `storage_id` names
-    pub fn with_object_storage(mut self, storage_id: String) -> Self {
-        self.object_storage = Some(storage_id);
+    /// Serve the Durable Object `object_id` of the namespace `namespace_id`
+    pub fn with_object_storage(mut self, namespace_id: String, object_id: String) -> Self {
+        self.object_storage = Some((namespace_id, object_id));
         self
     }
 
@@ -717,7 +717,7 @@ impl OperationsHandler for RunnerOperations {
         &self,
         op: ObjectStorageOp,
     ) -> OpFuture<'_, ObjectStorageResult> {
-        let Some(storage_id) = self.object_storage.clone() else {
+        let Some((namespace_id, object_id)) = self.object_storage.clone() else {
             return Box::pin(async {
                 ObjectStorageResult::Error("this worker is not a Durable Object".to_string())
             });
@@ -728,7 +728,7 @@ impl OperationsHandler for RunnerOperations {
         Box::pin(
             async move {
                 match crate::d1::service() {
-                    Some(service) => service.object_storage(&storage_id, op).await,
+                    Some(service) => service.object_storage(&namespace_id, &object_id, op).await,
                     None => ObjectStorageResult::Error(
                         "Durable Object storage is off on this runner (no D1_DATA_DIR)".to_string(),
                     ),
@@ -772,9 +772,12 @@ impl OperationsHandler for RunnerOperations {
                     let limiters = self.limiters();
                     let _guard = limiters.fetch.acquire().await.map_err(|e| e.to_string())?;
 
-                    let worker_id = namespace.worker_id.clone();
-                    let storage_id = crate::durable::storage_id(&namespace.id, &id);
-                    let load = move || crate::durable::load(worker_id, storage_id, db_pool, log_tx);
+                    let load = {
+                        let namespace = namespace.clone();
+                        let id = id.clone();
+
+                        move || crate::durable::load(namespace, id, db_pool, log_tx)
+                    };
 
                     crate::durable::send(&namespace, id, request, load).await
                 }

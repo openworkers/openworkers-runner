@@ -31,6 +31,7 @@ const COUNTER: &str = r#"
 fn namespace(id: &str) -> NamespaceConfig {
     NamespaceConfig {
         id: id.to_string(),
+        user_id: "user".to_string(),
         worker_id: "worker".to_string(),
         class_name: "Counter".to_string(),
         key: IdKey([1; 32]),
@@ -149,6 +150,37 @@ async fn a_failed_load_fails_the_request_and_the_next_one_loads_again() {
             .await
             .unwrap(),
         "a 1"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopped_namespace_ends_its_objects_and_refuses_requests() {
+    let namespace = namespace("ns-stopped");
+    let loads = Arc::new(AtomicUsize::new(0));
+    let idle = Duration::from_secs(60);
+
+    assert_eq!(get(&namespace, "a", idle, &loads).await.unwrap(), "a 1");
+
+    // The object is busy with nothing: stopping it closes its mailbox, and
+    // the task ends soon after
+    super::stop_namespace("ns-stopped");
+
+    let mut stopped = false;
+
+    for _ in 0..50 {
+        if super::stop_namespace("ns-stopped") {
+            stopped = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    assert!(stopped, "the object still runs");
+    assert!(!is_running("ns-stopped", "a"));
+    assert_eq!(
+        get(&namespace, "a", idle, &loads).await.unwrap_err(),
+        "the Durable Object namespace was deleted"
     );
 }
 

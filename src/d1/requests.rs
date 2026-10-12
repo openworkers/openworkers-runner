@@ -120,8 +120,8 @@ async fn serve(service: &Service, database_id: &str, request: serde_json::Value)
     }
 }
 
-/// Removes the files and snapshots of deleted databases, and requests nobody
-/// collected
+/// Removes the files and snapshots of deleted databases and Durable Object
+/// namespaces, and requests nobody collected
 async fn clean_up(service: &Service, listener: &mut PgListener) -> Result<(), sqlx::Error> {
     // Rows that triggers queued when a database or a snapshot row went away,
     // including through the cascade of a deleted user
@@ -166,6 +166,67 @@ async fn clean_up(service: &Service, listener: &mut PgListener) -> Result<(), sq
     sqlx::query("DELETE FROM d1_requests WHERE created_at < now() - interval '1 hour'")
         .execute(&mut *listener)
         .await?;
+
+    // A runner can run before the migrations of Durable Objects
+    if let Err(err) = clean_up_namespaces(service, listener).await {
+        tracing::warn!("D1: cannot clean up Durable Object namespaces: {err}");
+    }
+
+    Ok(())
+}
+
+/// The same for Durable Object namespaces. Their objects stop first, so none
+/// writes a file again after its removal.
+async fn clean_up_namespaces(
+    service: &Service,
+    listener: &mut PgListener,
+) -> Result<(), sqlx::Error> {
+    let purge: Vec<(i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, namespace_id::text, key FROM durable_object_purge ORDER BY id LIMIT 1000",
+    )
+    .fetch_all(&mut *listener)
+    .await?;
+
+    for (row, namespace_id, key) in purge {
+        let done = match &key {
+            None => {
+                crate::durable::stop_namespace(&namespace_id)
+                    && service.remove_namespace_files(&namespace_id)
+            }
+            Some(key) => match service.remove_snapshot_object(key).await {
+                Ok(()) => true,
+                Err(err) => {
+                    tracing::warn!("D1: cannot remove snapshot {key}: {err}");
+                    false
+                }
+            },
+        };
+
+        if done {
+            sqlx::query("DELETE FROM durable_object_purge WHERE id = $1")
+                .bind(row)
+                .execute(&mut *listener)
+                .await?;
+        }
+    }
+
+    let deleted: Vec<String> = sqlx::query_scalar(
+        "SELECT id::text FROM durable_object_namespaces WHERE deleted_at IS NOT NULL",
+    )
+    .fetch_all(&mut *listener)
+    .await?;
+
+    for namespace_id in deleted {
+        if crate::durable::stop_namespace(&namespace_id) {
+            service.remove_namespace_files(&namespace_id);
+        }
+
+        // The trigger queues the snapshot objects in durable_object_purge
+        sqlx::query("DELETE FROM durable_object_archives WHERE namespace_id::text = $1")
+            .bind(&namespace_id)
+            .execute(&mut *listener)
+            .await?;
+    }
 
     Ok(())
 }

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use openworkers_core::{HttpMethod, HttpRequest, RequestBody, Script};
 use openworkers_runner::durable::id::IdKey;
-use openworkers_runner::durable::{NamespaceConfig, ObjectSource, send, storage_id};
+use openworkers_runner::durable::{NamespaceConfig, ObjectSource, send};
 use openworkers_runner::ops::RunnerOperations;
 
 static INIT: Once = Once::new();
@@ -43,14 +43,18 @@ const VISITS: &str = r#"
 fn new_namespace() -> NamespaceConfig {
     NamespaceConfig {
         id: uuid::Uuid::new_v4().to_string(),
+        user_id: "user".to_string(),
         worker_id: "worker".to_string(),
         class_name: "Visits".to_string(),
         key: IdKey([3; 32]),
     }
 }
 
-async fn visit(namespace: &NamespaceConfig, id: &str) -> String {
-    let storage = storage_id(&namespace.id, id);
+/// Sends a request to the object of `name`, with the storage the runner
+/// gives it.
+async fn visit(namespace: &NamespaceConfig, name: &str) -> String {
+    let id = openworkers_runner::durable::id::from_name(&namespace.key, name);
+    let ops = RunnerOperations::new().with_object_storage(namespace.id.clone(), id.clone());
     let load = move || async move {
         let code = openworkers_transform::parse_worker_code(
             VISITS.as_bytes(),
@@ -60,7 +64,7 @@ async fn visit(namespace: &NamespaceConfig, id: &str) -> String {
 
         Ok(ObjectSource {
             script: Script::new(code),
-            ops: Arc::new(RunnerOperations::new().with_object_storage(storage)),
+            ops: Arc::new(ops),
             limits: openworkers_runner::task_executor::TaskExecutionConfig::default_limits(),
             idle: Duration::from_millis(100),
         })
@@ -73,13 +77,11 @@ async fn visit(namespace: &NamespaceConfig, id: &str) -> String {
         body: RequestBody::None,
     };
 
-    let response = tokio::time::timeout(
-        Duration::from_secs(10),
-        send(namespace, id.to_string(), request, load),
-    )
-    .await
-    .expect("the object answers in time")
-    .unwrap();
+    let response =
+        tokio::time::timeout(Duration::from_secs(10), send(namespace, id, request, load))
+            .await
+            .expect("the object answers in time")
+            .unwrap();
 
     let body = response.body.collect().await.unwrap().unwrap();
 

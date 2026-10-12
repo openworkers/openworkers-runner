@@ -42,8 +42,30 @@ use sqlite::Database;
 use sqlite::Done;
 use sqlite::Job;
 
-/// The directory of the Durable Object files, inside the data directory
+/// The directory of the Durable Object files, inside the data directory:
+/// `objects/<namespace id>/<object id>.sqlite`
 const OBJECTS: &str = "objects";
+
+/// The key of the storage file of an object, from a namespace UUID and an
+/// object ID of 64 lowercase hex digits; `None` for anything else, so a key
+/// never leaves the data directory.
+pub fn object_key(namespace_id: &str, object_id: &str) -> Option<String> {
+    let namespace_id = uuid::Uuid::parse_str(namespace_id).ok()?;
+
+    let hex = object_id.len() == 64
+        && object_id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+
+    hex.then(|| format!("{OBJECTS}/{namespace_id}/{object_id}"))
+}
+
+/// The namespace and object of an object key, `None` for a D1 database.
+pub fn parse_object_key(key: &str) -> Option<(&str, &str)> {
+    let rest = key.strip_prefix(OBJECTS)?.strip_prefix('/')?;
+
+    rest.split_once('/')
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -101,14 +123,11 @@ struct Handle {
     saved: AtomicU64,
     /// When the oldest commit that no snapshot holds happened
     unsaved_since: Mutex<Option<Instant>>,
-    /// The file has snapshots: false for the storage of a Durable Object
-    archived: bool,
 }
 
 impl Handle {
-    /// Commits that a snapshot still has to hold
     fn unsaved(&self) -> bool {
-        self.archived && self.commits.load(Ordering::SeqCst) != self.saved.load(Ordering::SeqCst)
+        self.commits.load(Ordering::SeqCst) != self.saved.load(Ordering::SeqCst)
     }
 }
 
@@ -275,17 +294,19 @@ impl Service {
         )
     }
 
-    /// Runs `op` on the storage of the Durable Object whose file is named by
-    /// `id`, a UUID. Objects have no snapshots yet.
-    pub async fn object_storage(&self, id: &str, op: ObjectStorageOp) -> ObjectStorageResult {
-        let Ok(id) = uuid::Uuid::parse_str(id) else {
+    /// Runs `op` on the storage of the object `object_id` of the Durable
+    /// Object namespace `namespace_id`.
+    pub async fn object_storage(
+        &self,
+        namespace_id: &str,
+        object_id: &str,
+        op: ObjectStorageOp,
+    ) -> ObjectStorageResult {
+        let Some(key) = object_key(namespace_id, object_id) else {
             return ObjectStorageResult::Error("not the storage of an object".to_string());
         };
 
-        match self
-            .submit(format!("{OBJECTS}/{id}"), false, Job::Object(op))
-            .await
-        {
+        match self.submit(key, Job::Object(op)).await {
             Done::Object(result) => result,
             Done::D1(D1Result::Error(err)) => ObjectStorageResult::Error(err.message),
             Done::D1(_) => ObjectStorageResult::Error("internal error".to_string()),
@@ -300,13 +321,13 @@ impl Service {
             )));
         };
 
-        self.submit(id.to_string(), true, job).await
+        self.submit(id.to_string(), job).await
     }
 
     /// Runs `job` on the file `<key>.sqlite` of the data directory, after the
-    /// jobs before it. `archived`: the file has snapshots.
-    async fn submit(&self, key: String, archived: bool, job: Job) -> Done {
-        let handle = self.handle(&key, archived);
+    /// jobs before it.
+    async fn submit(&self, key: String, job: Job) -> Done {
+        let handle = self.handle(&key);
 
         if handle.waiting.fetch_add(1, Ordering::SeqCst) >= self.config.max_queue {
             handle.waiting.fetch_sub(1, Ordering::SeqCst);
@@ -337,10 +358,6 @@ impl Service {
     fn paused(&self, handle: &Handle) -> Option<String> {
         if self.disk_low.load(Ordering::SeqCst) {
             return Some("the data volume is almost full".to_string());
-        }
-
-        if !handle.archived {
-            return None;
         }
 
         let archive = self.archive.as_ref()?;
@@ -376,7 +393,19 @@ impl Service {
             let limits = self.config.limits.clone();
             let commits = handle.commits.clone();
 
-            if let Err(err) = self.restore_if_missing(id, handle.archived).await {
+            // The directory of a namespace appears with its first object, or with a restore
+            if let Some(dir) = path.parent()
+                && let Err(err) = std::fs::create_dir_all(dir)
+            {
+                tracing::error!("D1: cannot create {}: {err}", dir.display());
+
+                return Done::D1(D1Result::Error(error(
+                    D1ErrorKind::Unavailable,
+                    "the database cannot be opened".to_string(),
+                )));
+            }
+
+            if let Err(err) = self.restore_if_missing(id).await {
                 tracing::error!("D1: cannot restore database {id}: {err}");
 
                 return Done::D1(D1Result::Error(error(
@@ -443,7 +472,7 @@ impl Service {
             .max()
     }
 
-    fn handle(&self, id: &str, archived: bool) -> Arc<Handle> {
+    fn handle(&self, id: &str) -> Arc<Handle> {
         let mut databases = self.databases.lock().unwrap();
 
         if let Some(handle) = databases.get(id) {
@@ -469,7 +498,6 @@ impl Service {
             commits: Arc::new(AtomicU64::new(0)),
             saved: AtomicU64::new(0),
             unsaved_since: Mutex::new(None),
-            archived,
         });
 
         databases.insert(id.to_string(), handle.clone());
@@ -511,6 +539,45 @@ impl Service {
         }
 
         true
+    }
+
+    /// Deletes the files of a deleted Durable Object namespace. Returns false
+    /// when a call still uses one of them; the next sweep tries again.
+    pub fn remove_namespace_files(&self, namespace_id: &str) -> bool {
+        let Ok(namespace_id) = uuid::Uuid::parse_str(namespace_id) else {
+            return true;
+        };
+
+        let prefix = format!("{OBJECTS}/{namespace_id}/");
+        let mut databases = self.databases.lock().unwrap();
+
+        if databases
+            .iter()
+            .any(|(key, handle)| key.starts_with(&prefix) && Arc::strong_count(handle) > 1)
+        {
+            return false;
+        }
+
+        databases.retain(|key, _| !key.starts_with(&prefix));
+        drop(databases);
+
+        let dir = self
+            .config
+            .data_dir
+            .join(OBJECTS)
+            .join(namespace_id.to_string());
+
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {
+                tracing::info!("D1: removed the objects of deleted namespace {namespace_id}");
+                true
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Err(err) => {
+                tracing::warn!("D1: cannot remove {}: {err}", dir.display());
+                false
+            }
+        }
     }
 
     /// Deletes one snapshot object; fails when snapshots are off, so the
@@ -618,10 +685,10 @@ impl Service {
 
     /// Writes the latest snapshot of a database whose file is missing. A
     /// database without a snapshot starts empty.
-    async fn restore_if_missing(&self, id: &str, archived: bool) -> Result<(), String> {
+    async fn restore_if_missing(&self, id: &str) -> Result<(), String> {
         let path = self.config.data_dir.join(format!("{id}.sqlite"));
 
-        let Some(archive) = self.archive.as_ref().filter(|_| archived) else {
+        let Some(archive) = &self.archive else {
             return Ok(());
         };
 

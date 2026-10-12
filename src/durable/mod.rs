@@ -15,6 +15,8 @@ use id::IdKey;
 pub struct NamespaceConfig {
     /// Stable id of the namespace
     pub id: String,
+    /// The account of the namespace, which must own the worker too
+    pub user_id: String,
     /// The worker that exports the class
     pub worker_id: String,
     pub class_name: String,
@@ -22,22 +24,17 @@ pub struct NamespaceConfig {
 }
 
 #[cfg(feature = "v8")]
-pub use registry::{IDLE, ObjectSource, load, send};
+pub use registry::{IDLE, ObjectSource, load, send, stop_namespace};
 
-/// The name of the storage file of an object: a UUID that a hash of the
-/// namespace and the id gives, so it does not depend on the runner.
-pub fn storage_id(namespace: &str, id: &str) -> String {
-    use sha2::Digest;
-
-    let digest = sha2::Sha256::digest(format!("{namespace}/{id}"));
-    let bytes: [u8; 16] = digest[..16].try_into().expect("a digest has 32 bytes");
-
-    uuid::Uuid::from_bytes(bytes).to_string()
+/// Without a JavaScript engine that serves objects, none runs.
+#[cfg(not(feature = "v8"))]
+pub fn stop_namespace(_namespace_id: &str) -> bool {
+    true
 }
 
 #[cfg(feature = "v8")]
 mod registry {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::future::Future;
     use std::hash::{Hash, Hasher};
     use std::sync::Mutex;
@@ -76,8 +73,48 @@ mod registry {
         generation: u64,
     }
 
-    static OBJECTS: Lazy<Mutex<HashMap<ObjectKey, Entry>>> = Lazy::new(Default::default);
+    #[derive(Default)]
+    struct Registry {
+        objects: HashMap<ObjectKey, Entry>,
+        /// Tasks that serve an object, per namespace
+        running: HashMap<String, usize>,
+        /// Deleted namespaces; their IDs are never reused
+        stopped: HashSet<String>,
+    }
+
+    static REGISTRY: Lazy<Mutex<Registry>> = Lazy::new(Default::default);
     static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+    /// Counts the task of an object until it ends, however it ends.
+    struct Running(String);
+
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let mut registry = REGISTRY.lock().unwrap();
+
+            if let Some(count) = registry.running.get_mut(&self.0) {
+                *count -= 1;
+
+                if *count == 0 {
+                    registry.running.remove(&self.0);
+                }
+            }
+        }
+    }
+
+    /// Stops the objects of a deleted namespace: no new request reaches them,
+    /// and each one ends after the requests it has taken. Answers whether
+    /// none runs any more, so its files can go.
+    pub fn stop_namespace(namespace_id: &str) -> bool {
+        let mut registry = REGISTRY.lock().unwrap();
+
+        registry.stopped.insert(namespace_id.to_string());
+        registry
+            .objects
+            .retain(|key, _| key.namespace != namespace_id);
+
+        !registry.running.contains_key(namespace_id)
+    }
 
     /// Sends `request` to the object `id` of `namespace`, and starts the
     /// object if it is not running. `load` gives what the object is built
@@ -101,11 +138,15 @@ mod registry {
         let init = FetchInit::new(request, res_tx);
 
         {
-            let mut objects = OBJECTS.lock().unwrap();
+            let mut registry = REGISTRY.lock().unwrap();
+
+            if registry.stopped.contains(&key.namespace) {
+                return Err("the Durable Object namespace was deleted".to_string());
+            }
 
             // A task that is gone left a closed mailbox, and the send hands
             // the request back
-            let init = match objects.get(&key) {
+            let init = match registry.objects.get(&key) {
                 Some(entry) => match entry.mailbox.send(init) {
                     Ok(()) => None,
                     Err(mpsc::error::SendError(init)) => Some(init),
@@ -117,19 +158,22 @@ mod registry {
                 let (mailbox, rx) = mpsc::unbounded_channel();
                 let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
                 mailbox.send(init).expect("the receiver is here");
-                objects.insert(
+                registry.objects.insert(
                     key.clone(),
                     Entry {
                         mailbox,
                         generation,
                     },
                 );
+                *registry.running.entry(key.namespace.clone()).or_default() += 1;
+                let running = Running(key.namespace.clone());
 
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 key.hash(&mut hasher);
 
-                WORKER_POOL.spawn_on(hasher.finish(), move || {
-                    serve(key, generation, class_name, rx, load)
+                WORKER_POOL.spawn_on(hasher.finish(), move || async move {
+                    serve(key, generation, class_name, rx, load).await;
+                    drop(running);
                 });
             }
         }
@@ -203,28 +247,30 @@ mod registry {
         generation: u64,
         mailbox: &mut mpsc::UnboundedReceiver<FetchInit>,
     ) -> bool {
-        let mut objects = OBJECTS.lock().unwrap();
+        let mut registry = REGISTRY.lock().unwrap();
 
         if !mailbox.is_empty() {
             return false;
         }
 
-        if objects
+        if registry
+            .objects
             .get(key)
             .is_some_and(|entry| entry.generation == generation)
         {
-            objects.remove(key);
+            registry.objects.remove(key);
         }
 
         mailbox.close();
         true
     }
 
-    /// What the objects of the class `worker_id` exports are built from:
-    /// the worker, its bindings and its logs, as for a request to it.
+    /// What the object `object_id` of `namespace` is built from: the worker
+    /// that exports the class, its bindings and its logs, as for a request
+    /// to it.
     pub async fn load(
-        worker_id: String,
-        storage_id: String,
+        namespace: super::NamespaceConfig,
+        object_id: String,
         db_pool: Option<crate::ops::DbPool>,
         log_tx: Option<crate::ops::LogTx>,
     ) -> Result<ObjectSource, String> {
@@ -232,11 +278,18 @@ mod registry {
 
         let db_pool = db_pool.ok_or("Durable Objects need the database")?;
         let mut conn = db_pool.acquire().await.map_err(|e| e.to_string())?;
-        let data =
-            crate::store::get_worker_with_bindings(&mut conn, WorkerIdentifier::Id(worker_id))
-                .await
-                .ok_or("the worker of the Durable Object class is gone")?;
+        let worker = WorkerIdentifier::Id(namespace.worker_id.clone());
+        let data = crate::store::get_worker_with_bindings(&mut conn, worker)
+            .await
+            .ok_or("the worker of the Durable Object class is gone")?;
         drop(conn);
+
+        // The binding checks the account of the namespace; the worker must be
+        // of that account too, or a namespace could run the code of another
+        // account with its bindings
+        if data.user_id != namespace.user_id {
+            return Err("the worker of the Durable Object class is gone".to_string());
+        }
 
         if data.code_type == CodeType::Wasm {
             return Err("a WebAssembly worker cannot export a Durable Object class".to_string());
@@ -249,7 +302,7 @@ mod registry {
             .with_user_id(data.user_id.clone())
             .with_bindings(data.bindings)
             .with_db_pool(db_pool)
-            .with_object_storage(storage_id);
+            .with_object_storage(namespace.id, object_id);
 
         if let Some(log_tx) = log_tx {
             ops = ops.with_log_tx(log_tx.for_worker(data.id));
@@ -270,7 +323,7 @@ mod registry {
             id: id.to_string(),
         };
 
-        OBJECTS.lock().unwrap().contains_key(&key)
+        REGISTRY.lock().unwrap().objects.contains_key(&key)
     }
 }
 

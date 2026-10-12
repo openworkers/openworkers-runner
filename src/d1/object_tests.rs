@@ -8,7 +8,8 @@ use super::Config;
 use super::Limits;
 use super::Service;
 
-const OBJECT: &str = "33333333-3333-4333-8333-333333333333";
+const NAMESPACE: &str = "33333333-3333-4333-8333-333333333333";
+const OBJECT: &str = "abababababababababababababababababababababababababababababababab";
 
 struct TempDir(PathBuf);
 
@@ -56,7 +57,7 @@ fn list() -> ObjectStorageOp {
 }
 
 async fn keys(service: &Service, op: ObjectStorageOp) -> Vec<String> {
-    match service.object_storage(OBJECT, op).await {
+    match service.object_storage(NAMESPACE, OBJECT, op).await {
         ObjectStorageResult::Entries(entries) => entries.into_iter().map(|(key, _)| key).collect(),
         other => panic!("not entries: {other:?}"),
     }
@@ -67,7 +68,7 @@ async fn values_round_trip_in_their_object_file() {
     let (service, dir) = service();
 
     service
-        .object_storage(OBJECT, put(&[("a", b"one"), ("b", &[0, 255])]))
+        .object_storage(NAMESPACE, OBJECT, put(&[("a", b"one"), ("b", &[0, 255])]))
         .await;
 
     let get = ObjectStorageOp::Get {
@@ -75,11 +76,14 @@ async fn values_round_trip_in_their_object_file() {
     };
 
     assert_eq!(
-        service.object_storage(OBJECT, get).await,
+        service.object_storage(NAMESPACE, OBJECT, get).await,
         ObjectStorageResult::Values(vec![Some(vec![0, 255]), None, Some(b"one".to_vec())])
     );
-    assert!(dir.0.join(format!("objects/{OBJECT}.sqlite")).exists());
-    assert!(!dir.0.join(format!("{OBJECT}.sqlite")).exists());
+    assert!(
+        dir.0
+            .join(format!("objects/{NAMESPACE}/{OBJECT}.sqlite"))
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -89,6 +93,7 @@ async fn a_list_follows_its_range_order_and_limit() {
 
     service
         .object_storage(
+            NAMESPACE,
             OBJECT,
             put(&[
                 ("a:1", values),
@@ -147,7 +152,7 @@ async fn a_write_is_atomic_and_counts_its_deletes() {
     let (service, _dir) = service();
 
     service
-        .object_storage(OBJECT, put(&[("a", b"1"), ("b", b"2")]))
+        .object_storage(NAMESPACE, OBJECT, put(&[("a", b"1"), ("b", b"2")]))
         .await;
 
     let write = ObjectStorageOp::Write {
@@ -157,7 +162,7 @@ async fn a_write_is_atomic_and_counts_its_deletes() {
     };
 
     assert_eq!(
-        service.object_storage(OBJECT, write).await,
+        service.object_storage(NAMESPACE, OBJECT, write).await,
         ObjectStorageResult::Written { deleted: 1 }
     );
     assert_eq!(keys(&service, list()).await, ["b", "c"]);
@@ -173,7 +178,7 @@ async fn a_write_is_atomic_and_counts_its_deletes() {
     };
 
     assert!(matches!(
-        service.object_storage(OBJECT, too_big).await,
+        service.object_storage(NAMESPACE, OBJECT, too_big).await,
         ObjectStorageResult::Error(message) if message.contains("over 131072 bytes")
     ));
     assert_eq!(keys(&service, list()).await, ["b", "c"]);
@@ -184,7 +189,7 @@ async fn a_write_is_atomic_and_counts_its_deletes() {
         delete_all: true,
     };
 
-    service.object_storage(OBJECT, delete_all).await;
+    service.object_storage(NAMESPACE, OBJECT, delete_all).await;
     assert!(keys(&service, list()).await.is_empty());
 }
 
@@ -199,28 +204,39 @@ async fn keys_have_the_limits_of_cloudflare() {
         ObjectStorageOp::Get { keys: many },
     ] {
         assert!(matches!(
-            service.object_storage(OBJECT, op).await,
+            service.object_storage(NAMESPACE, OBJECT, op).await,
             ObjectStorageResult::Error(_)
         ));
     }
 }
 
 #[tokio::test]
-async fn an_object_has_nothing_for_a_snapshot_to_take() {
-    let (service, _dir) = service();
+async fn a_deleted_namespace_loses_its_files() {
+    let (service, dir) = service();
 
-    service.object_storage(OBJECT, put(&[("a", b"1")])).await;
+    service
+        .object_storage(NAMESPACE, OBJECT, put(&[("a", b"1")]))
+        .await;
+    assert!(service.remove_namespace_files(NAMESPACE));
+    assert!(!dir.0.join(format!("objects/{NAMESPACE}")).exists());
 
-    let handle = service.handle(&format!("objects/{OBJECT}"), false);
-    assert!(!handle.unsaved());
+    // A namespace with no file is already clean
+    assert!(service.remove_namespace_files(NAMESPACE));
 }
 
 #[tokio::test]
-async fn the_name_of_an_object_file_must_be_a_uuid() {
+async fn an_object_file_stays_in_the_data_directory() {
     let (service, _dir) = service();
 
-    assert!(matches!(
-        service.object_storage("../escape", list()).await,
-        ObjectStorageResult::Error(_)
-    ));
+    for (namespace, object) in [
+        ("../escape", OBJECT),
+        (NAMESPACE, "../../escape"),
+        (NAMESPACE, &OBJECT.to_uppercase()),
+        (NAMESPACE, &OBJECT[1..]),
+    ] {
+        assert!(matches!(
+            service.object_storage(namespace, object, list()).await,
+            ObjectStorageResult::Error(_)
+        ));
+    }
 }

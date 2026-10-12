@@ -467,3 +467,46 @@ async fn a_database_without_snapshot_starts_empty() {
 
     assert_eq!(values(&service, "SELECT 1").await, "[[1]]");
 }
+
+#[tokio::test]
+async fn a_lost_object_comes_back_from_its_last_snapshot() {
+    use openworkers_core::ObjectStorageOp;
+    use openworkers_core::ObjectStorageResult;
+
+    const NAMESPACE: &str = "55555555-5555-4555-8555-555555555555";
+    let object = "cd".repeat(32);
+
+    let dir = temp_dir();
+    let memory = Memory::default();
+    let put = ObjectStorageOp::Write {
+        puts: vec![("k".to_string(), b"saved".to_vec())],
+        deletes: Vec::new(),
+        delete_all: false,
+    };
+
+    {
+        let service = service(&dir, &memory);
+
+        service.object_storage(NAMESPACE, &object, put).await;
+        service.snapshot_all().await;
+    }
+
+    let keys: Vec<String> = memory.objects.lock().unwrap().keys().cloned().collect();
+    assert_eq!(keys.len(), 1);
+    assert!(
+        keys[0].starts_with(&format!("do/{NAMESPACE}/{object}/1/")),
+        "{keys:?}"
+    );
+
+    std::fs::remove_dir_all(dir.0.join("objects")).unwrap();
+
+    let service = service(&dir, &memory);
+    let get = ObjectStorageOp::Get {
+        keys: vec!["k".to_string()],
+    };
+
+    assert_eq!(
+        service.object_storage(NAMESPACE, &object, get).await,
+        ObjectStorageResult::Values(vec![Some(b"saved".to_vec())])
+    );
+}

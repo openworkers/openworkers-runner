@@ -57,6 +57,8 @@ pub enum BindingType {
     Database,
     Worker,
     D1,
+    #[sqlx(rename = "durable_object")]
+    DurableObject,
 }
 
 #[derive(Clone, Debug, PartialEq, sqlx::Type)]
@@ -603,6 +605,19 @@ pub async fn get_worker_meta(
                 }
             }
 
+            BindingType::DurableObject => {
+                if let Some(namespace_id) = row.value
+                    && let Some(namespace) =
+                        fetch_durable_object_namespace(&mut *conn, &namespace_id, &basic.user_id)
+                            .await
+                {
+                    bindings.push(Binding::DurableObject {
+                        key: row.key,
+                        namespace,
+                    });
+                }
+            }
+
             BindingType::Worker => {
                 if let Some(worker_id) = row.value
                     && let Some(config) = fetch_worker_binding_config(&mut *conn, &worker_id).await
@@ -710,6 +725,56 @@ async fn fetch_d1_database(
             None
         }
     }
+}
+
+/// The Durable Object namespace of `namespace_id`, if `user_id` owns it, it
+/// is not deleted, and its worker still exists
+async fn fetch_durable_object_namespace(
+    conn: &mut sqlx::PgConnection,
+    namespace_id: &str,
+    user_id: &str,
+) -> Option<crate::durable::NamespaceConfig> {
+    #[derive(Debug, FromRow)]
+    struct Row {
+        id: String,
+        user_id: String,
+        worker_id: String,
+        class_name: String,
+        key: Vec<u8>,
+    }
+
+    let query = r#"
+        SELECT id::text, user_id::text, worker_id::text, class_name, key
+        FROM durable_object_namespaces
+        WHERE id::text = $1 AND user_id::text = $2
+            AND deleted_at IS NULL AND worker_id IS NOT NULL
+    "#;
+
+    let row = match sqlx::query_as::<_, Row>(query)
+        .bind(namespace_id)
+        .bind(user_id)
+        .fetch_optional(conn)
+        .instrument(db_span!("SELECT", "durable_object_namespaces"))
+        .await
+    {
+        Ok(row) => row?,
+        Err(err) => {
+            tracing::warn!(
+                "failed to fetch durable object namespace {}: {:?}",
+                namespace_id,
+                err
+            );
+            return None;
+        }
+    };
+
+    Some(crate::durable::NamespaceConfig {
+        id: row.id,
+        user_id: row.user_id,
+        worker_id: row.worker_id,
+        class_name: row.class_name,
+        key: crate::durable::id::IdKey(row.key.try_into().ok()?),
+    })
 }
 
 /// Fetch KV config by ID

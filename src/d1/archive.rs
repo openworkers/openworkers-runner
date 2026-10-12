@@ -103,7 +103,12 @@ impl Archive {
     pub async fn save(&self, database_id: &str, bytes: Vec<u8>) -> Result<Snapshot, String> {
         let epoch = self.index.epoch();
         let seq = chrono::Utc::now().timestamp_millis();
-        let key = format!("d1/{database_id}/{epoch}/{seq}.sqlite.zst");
+        let key = match super::parse_object_key(database_id) {
+            Some((namespace, object)) => {
+                format!("do/{namespace}/{object}/{epoch}/{seq}.sqlite.zst")
+            }
+            None => format!("d1/{database_id}/{epoch}/{seq}.sqlite.zst"),
+        };
         let checksum = hex::encode(Sha256::digest(&bytes));
         let size = bytes.len() as u64;
 
@@ -305,22 +310,36 @@ impl Index for PgIndex {
 
     fn record(&self, snapshot: Snapshot) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(async move {
-            let inserted = sqlx::query(
-                r#"
-                INSERT INTO d1_archives (database_id, seq, epoch, key, checksum, size)
-                SELECT $1::uuid, $2, $3, $4, $5, $6
-                WHERE $3 = (SELECT max(epoch) FROM runner_epochs)
-                "#,
-            )
-            .bind(&snapshot.database_id)
-            .bind(snapshot.seq)
-            .bind(snapshot.epoch)
-            .bind(&snapshot.key)
-            .bind(&snapshot.checksum)
-            .bind(snapshot.size as i64)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| e.to_string())?;
+            let query = match super::parse_object_key(&snapshot.database_id) {
+                Some((namespace, object)) => sqlx::query(
+                    r#"
+                    INSERT INTO durable_object_archives
+                        (namespace_id, object_id, seq, epoch, key, checksum, size)
+                    SELECT $1::uuid, $2, $3, $4, $5, $6, $7
+                    WHERE $4 = (SELECT max(epoch) FROM runner_epochs)
+                    "#,
+                )
+                .bind(namespace.to_string())
+                .bind(object.to_string()),
+                None => sqlx::query(
+                    r#"
+                    INSERT INTO d1_archives (database_id, seq, epoch, key, checksum, size)
+                    SELECT $1::uuid, $2, $3, $4, $5, $6
+                    WHERE $3 = (SELECT max(epoch) FROM runner_epochs)
+                    "#,
+                )
+                .bind(snapshot.database_id.clone()),
+            };
+
+            let inserted = query
+                .bind(snapshot.seq)
+                .bind(snapshot.epoch)
+                .bind(snapshot.key.clone())
+                .bind(snapshot.checksum.clone())
+                .bind(snapshot.size as i64)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
 
             if inserted.rows_affected() == 0 {
                 return Err(format!(
@@ -335,23 +354,37 @@ impl Index for PgIndex {
 
     fn list(&self, database_id: String) -> BoxFuture<'_, Result<Vec<Snapshot>, String>> {
         Box::pin(async move {
-            let rows: Vec<(String, i64, i64, String, String, i64)> = sqlx::query_as(
-                r#"
-                SELECT database_id::text, seq, epoch, key, checksum, size
-                FROM d1_archives
-                WHERE database_id::text = $1
-                ORDER BY seq DESC
-                "#,
-            )
-            .bind(&database_id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| e.to_string())?;
+            let query = match super::parse_object_key(&database_id) {
+                Some((namespace, object)) => sqlx::query_as(
+                    r#"
+                    SELECT seq, epoch, key, checksum, size
+                    FROM durable_object_archives
+                    WHERE namespace_id::text = $1 AND object_id = $2
+                    ORDER BY seq DESC
+                    "#,
+                )
+                .bind(namespace.to_string())
+                .bind(object.to_string()),
+                None => sqlx::query_as(
+                    r#"
+                    SELECT seq, epoch, key, checksum, size
+                    FROM d1_archives
+                    WHERE database_id::text = $1
+                    ORDER BY seq DESC
+                    "#,
+                )
+                .bind(database_id.clone()),
+            };
+
+            let rows: Vec<(i64, i64, String, String, i64)> = query
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
 
             Ok(rows
                 .into_iter()
-                .map(|(database_id, seq, epoch, key, checksum, size)| Snapshot {
-                    database_id,
+                .map(|(seq, epoch, key, checksum, size)| Snapshot {
+                    database_id: database_id.clone(),
                     seq,
                     epoch,
                     key,
@@ -364,8 +397,20 @@ impl Index for PgIndex {
 
     fn forget(&self, database_id: String, seq: i64) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(async move {
-            sqlx::query("DELETE FROM d1_archives WHERE database_id::text = $1 AND seq = $2")
-                .bind(&database_id)
+            let query = match super::parse_object_key(&database_id) {
+                Some((namespace, object)) => sqlx::query(
+                    "DELETE FROM durable_object_archives \
+                     WHERE namespace_id::text = $1 AND object_id = $2 AND seq = $3",
+                )
+                .bind(namespace.to_string())
+                .bind(object.to_string()),
+                None => {
+                    sqlx::query("DELETE FROM d1_archives WHERE database_id::text = $1 AND seq = $2")
+                        .bind(database_id.clone())
+                }
+            };
+
+            query
                 .bind(seq)
                 .execute(&self.pool)
                 .await
