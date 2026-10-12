@@ -158,6 +158,17 @@ impl SequentialWorkerPool {
         self.send_to(thread_idx, Box::new(move || Box::pin(task())));
     }
 
+    /// Spawn a task on the thread of `key`, so the tasks of one key share a
+    /// thread whatever the order they come in.
+    pub fn spawn_on<F, Fut>(&self, key: u64, task: F)
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        let thread_idx = (key % self.senders.len() as u64) as usize;
+        self.send_to(thread_idx, Box::new(move || Box::pin(task())));
+    }
+
     /// Spawn a task (round-robin) and wait for it to complete.
     pub async fn spawn_await<F, Fut, T>(&self, task: F) -> Result<T, oneshot::error::RecvError>
     where
@@ -426,6 +437,33 @@ mod tests {
         slot.trade(sockets.clone().try_acquire_owned().unwrap());
         assert_eq!(workers.available_permits(), 1);
         assert_eq!(sockets.available_permits(), 1);
+    }
+
+    #[test]
+    fn the_tasks_of_one_key_share_a_thread() {
+        let pool = SequentialWorkerPool::new(3);
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        for key in [7u64, 8, 7, 9, 7] {
+            let tx = tx.clone();
+
+            pool.spawn_on(key, move || async move {
+                let name = std::thread::current().name().unwrap().to_string();
+                tx.send((key, name)).unwrap();
+            });
+        }
+
+        let mut threads = std::collections::HashMap::new();
+
+        for _ in 0..5 {
+            let (key, name) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            threads.entry(key).or_insert_with(Vec::new).push(name);
+        }
+
+        assert_eq!(threads[&7].len(), 3);
+        assert!(threads[&7].iter().all(|name| name == &threads[&7][0]));
+        assert_ne!(threads[&7][0], threads[&8][0]);
+        assert_ne!(threads[&8][0], threads[&9][0]);
     }
 
     /// Prove that tasks on the same thread can interleave during I/O waits.
