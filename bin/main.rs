@@ -1374,6 +1374,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         stop.clone(),
     ));
 
+    #[cfg(feature = "v8")]
+    tokio::spawn(openworkers_runner::durable::alarms::run(
+        db_internal.clone(),
+        db_worker.clone(),
+        log_sink.clone(),
+        stop.clone(),
+    ));
+
     // Shutdown signal channel
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
     let shutdown_tx_signal = shutdown_tx.clone();

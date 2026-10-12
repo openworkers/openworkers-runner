@@ -98,6 +98,8 @@ pub enum Job {
     Migrate(Migration),
     /// An operation on the storage of a Durable Object
     Object(ObjectStorageOp),
+    /// Deletes the alarm of a Durable Object if it is still this time
+    ClearAlarm(i64),
 }
 
 /// What a job gives back
@@ -182,6 +184,7 @@ impl Database {
             Job::Op(op) => op,
             Job::Migrate(migration) => return Done::D1(self.migrate(&migration)),
             Job::Object(op) => return Done::Object(self.object(op)),
+            Job::ClearAlarm(at) => return Done::Object(self.clear_alarm(at)),
         };
 
         Done::D1(match op {

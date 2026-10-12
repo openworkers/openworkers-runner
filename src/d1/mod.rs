@@ -306,7 +306,26 @@ impl Service {
             return ObjectStorageResult::Error("not the storage of an object".to_string());
         };
 
-        match self.submit(key, Job::Object(op)).await {
+        self.object_job(key, Job::Object(op)).await
+    }
+
+    /// Deletes the alarm of an object if it is still `at`, and answers the
+    /// alarm after that.
+    pub async fn clear_alarm(
+        &self,
+        namespace_id: &str,
+        object_id: &str,
+        at: i64,
+    ) -> ObjectStorageResult {
+        let Some(key) = object_key(namespace_id, object_id) else {
+            return ObjectStorageResult::Error("not the storage of an object".to_string());
+        };
+
+        self.object_job(key, Job::ClearAlarm(at)).await
+    }
+
+    async fn object_job(&self, key: String, job: Job) -> ObjectStorageResult {
+        match self.submit(key, job).await {
             Done::Object(result) => result,
             Done::D1(D1Result::Error(err)) => ObjectStorageResult::Error(err.message),
             Done::D1(_) => ObjectStorageResult::Error("internal error".to_string()),

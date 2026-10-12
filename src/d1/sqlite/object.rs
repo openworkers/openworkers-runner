@@ -1,5 +1,5 @@
 //! The storage of a Durable Object: one table of keys and serialized values
-//! in the database file of the object.
+//! in the database file of the object, and one row for its alarm.
 
 use openworkers_core::ObjectStorageOp;
 use openworkers_core::ObjectStorageResult;
@@ -10,6 +10,10 @@ use super::Database;
 
 const TABLE: &str =
     "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value BLOB NOT NULL) WITHOUT ROWID";
+
+/// Milliseconds since the Unix epoch
+const ALARM_TABLE: &str =
+    "CREATE TABLE IF NOT EXISTS alarm (id INTEGER PRIMARY KEY CHECK (id = 0), at INTEGER NOT NULL)";
 
 /// Bytes of a key, of a value, and keys per call, as on Cloudflare
 const MAX_KEY_BYTES: usize = 2048;
@@ -30,10 +34,56 @@ impl Database {
         result.unwrap_or_else(ObjectStorageResult::Error)
     }
 
+    /// Deletes the alarm if it is still `at`, after its handler ran, and
+    /// answers the alarm after that: a handler can set the next one.
+    pub(super) fn clear_alarm(&mut self, at: i64) -> ObjectStorageResult {
+        self.guest
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+
+        let result = self.check_writes().map_err(|e| e.message).and_then(|()| {
+            self.conn
+                .execute(ALARM_TABLE, [])
+                .and_then(|_| self.conn.execute("DELETE FROM alarm WHERE at = ?1", [at]))
+                .map_err(|e| e.to_string())?;
+
+            self.alarm().map(ObjectStorageResult::Alarm)
+        });
+
+        self.guest.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        result.unwrap_or_else(ObjectStorageResult::Error)
+    }
+
+    fn alarm(&self) -> Result<Option<i64>, String> {
+        self.conn
+            .query_row("SELECT at FROM alarm", [], |row| row.get(0))
+            .optional()
+            .map_err(|e| e.to_string())
+    }
+
     fn object_op(&mut self, op: ObjectStorageOp) -> Result<ObjectStorageResult, String> {
         self.conn.execute(TABLE, []).map_err(|e| e.to_string())?;
+        self.conn
+            .execute(ALARM_TABLE, [])
+            .map_err(|e| e.to_string())?;
 
         match op {
+            ObjectStorageOp::GetAlarm => Ok(ObjectStorageResult::Alarm(self.alarm()?)),
+            ObjectStorageOp::SetAlarm(at) => {
+                self.check_writes().map_err(|e| e.message)?;
+
+                match at {
+                    Some(at) => self.conn.execute(
+                        "INSERT INTO alarm (id, at) VALUES (0, ?1) \
+                         ON CONFLICT (id) DO UPDATE SET at = excluded.at",
+                        [at],
+                    ),
+                    None => self.conn.execute("DELETE FROM alarm", []),
+                }
+                .map_err(|e| e.to_string())?;
+
+                Ok(ObjectStorageResult::Alarm(at))
+            }
             ObjectStorageOp::Get { keys } => {
                 check_keys(&keys)?;
 

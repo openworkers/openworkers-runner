@@ -5,6 +5,7 @@
 //! selects, with a mailbox in the registry. An object that is idle with an
 //! empty mailbox removes its entry, so a later request starts it again.
 
+pub mod alarms;
 pub mod id;
 
 use std::sync::{Arc, Mutex};
@@ -66,8 +67,8 @@ impl Drop for DepthGuard {
 
 #[cfg(feature = "v8")]
 pub use registry::{
-    DRAIN, IDLE, MAX_RESIDENT_PER_ACCOUNT, ObjectSource, load, retire, running_versions, send,
-    stop_namespace,
+    DRAIN, IDLE, MAX_RESIDENT_PER_ACCOUNT, ObjectSource, alarm, load, retire, running_versions,
+    send, stop_namespace,
 };
 
 /// Without a JavaScript engine that serves objects, none runs.
@@ -149,7 +150,7 @@ mod registry {
         FetchInit, HttpRequest, HttpResponse, LogLevel, OperationsHandle, RuntimeLimits, Script,
         TerminationReason,
     };
-    use openworkers_runtime_v8::{DurableObject, ObjectSpec};
+    use openworkers_runtime_v8::{AlarmInit, DurableObject, ObjectEvent, ObjectSpec};
     use tokio::sync::{mpsc, oneshot};
 
     use super::CallDepths;
@@ -183,7 +184,7 @@ mod registry {
     }
 
     struct Entry {
-        mailbox: mpsc::UnboundedSender<FetchInit>,
+        mailbox: mpsc::UnboundedSender<ObjectEvent>,
         /// Tells the task that serves the entry from a later one
         generation: u64,
         depths: Arc<CallDepths>,
@@ -308,85 +309,120 @@ mod registry {
         L: FnOnce(Arc<CallDepths>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<ObjectSource, String>> + Send + 'static,
     {
+        let (res_tx, res_rx) = oneshot::channel();
+        let event = ObjectEvent::Fetch(FetchInit::new(request, res_tx));
+
+        // The event counts at its depth until its response comes
+        let entered = admit(namespace, id, depth, event, load)?;
+        let response = res_rx.await;
+        drop(entered);
+
+        response.map_err(|_| "the Durable Object stopped".to_string())
+    }
+
+    /// Runs the alarm handler of the object `id` of `namespace`, as `send`
+    /// runs a request. `retry_count` is how many times the alarm failed.
+    pub async fn alarm<L, Fut>(
+        namespace: &super::NamespaceConfig,
+        id: String,
+        retry_count: u32,
+        load: L,
+    ) -> Result<(), String>
+    where
+        L: FnOnce(Arc<CallDepths>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<ObjectSource, String>> + Send + 'static,
+    {
+        let (done, outcome) = oneshot::channel();
+        let event = ObjectEvent::Alarm(AlarmInit { retry_count, done });
+
+        let _entered = admit(namespace, id, 0, event, load)?;
+
+        outcome
+            .await
+            .map_err(|_| "the Durable Object stopped".to_string())?
+    }
+
+    /// Puts `event` in the mailbox of the object, and starts the object if
+    /// it is not running.
+    fn admit<L, Fut>(
+        namespace: &super::NamespaceConfig,
+        id: String,
+        depth: u32,
+        event: ObjectEvent,
+        load: L,
+    ) -> Result<super::DepthGuard, String>
+    where
+        L: FnOnce(Arc<CallDepths>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<ObjectSource, String>> + Send + 'static,
+    {
         let key = ObjectKey {
             namespace: namespace.id.clone(),
             id,
         };
         let class_name = namespace.class_name.clone();
-        let (res_tx, res_rx) = oneshot::channel();
-        let init = FetchInit::new(request, res_tx);
+        let mut registry = REGISTRY.lock().unwrap();
 
-        // The event counts at its depth until its response comes
-        let entered = 'admit: {
-            let mut registry = REGISTRY.lock().unwrap();
+        if registry.stopped.contains(&key.namespace) {
+            return Err("the Durable Object namespace was deleted".to_string());
+        }
 
-            if registry.stopped.contains(&key.namespace) {
-                return Err("the Durable Object namespace was deleted".to_string());
-            }
-
-            // A task that is gone left a closed mailbox, and the send hands
-            // the request back
-            let init = match registry.objects.get(&key) {
-                Some(entry) => match entry.mailbox.send(init) {
-                    Ok(()) => break 'admit entry.depths.enter(depth),
-                    Err(mpsc::error::SendError(init)) => init,
-                },
-                None => init,
-            };
-
-            let account = namespace.user_id.clone();
-
-            if registry.accounts.get(&account).copied().unwrap_or(0) >= MAX_RESIDENT_PER_ACCOUNT {
-                return Err("too many Durable Objects run for this account".to_string());
-            }
-
-            let (mailbox, rx) = mpsc::unbounded_channel();
-            let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
-            let depths = Arc::new(CallDepths::default());
-            let entered = depths.enter(depth);
-            let (done_tx, done) = oneshot::channel();
-            let previous = registry.retiring.remove(&key).map(|(_, done)| done);
-            mailbox.send(init).expect("the receiver is here");
-            registry.objects.insert(
-                key.clone(),
-                Entry {
-                    mailbox,
-                    generation,
-                    depths: Arc::clone(&depths),
-                    worker_id: namespace.worker_id.clone(),
-                    version: None,
-                    done,
-                },
-            );
-            *registry.running.entry(key.namespace.clone()).or_default() += 1;
-            *registry.accounts.entry(account.clone()).or_default() += 1;
-            let running = Running {
-                key: key.clone(),
-                generation,
-                account,
-                _done: done_tx,
-            };
-
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            key.hash(&mut hasher);
-
-            WORKER_POOL.spawn_on(hasher.finish(), move || async move {
-                // Old and new code never run for the same object at once
-                if let Some(previous) = previous {
-                    previous.await.ok();
-                }
-
-                serve(key, generation, class_name, rx, move || load(depths)).await;
-                drop(running);
-            });
-
-            entered
+        // A task that is gone left a closed mailbox, and the send hands the
+        // event back
+        let event = match registry.objects.get(&key) {
+            Some(entry) => match entry.mailbox.send(event) {
+                Ok(()) => return Ok(entry.depths.enter(depth)),
+                Err(mpsc::error::SendError(event)) => event,
+            },
+            None => event,
         };
 
-        let response = res_rx.await;
-        drop(entered);
+        let account = namespace.user_id.clone();
 
-        response.map_err(|_| "the Durable Object stopped".to_string())
+        if registry.accounts.get(&account).copied().unwrap_or(0) >= MAX_RESIDENT_PER_ACCOUNT {
+            return Err("too many Durable Objects run for this account".to_string());
+        }
+
+        let (mailbox, rx) = mpsc::unbounded_channel();
+        let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
+        let depths = Arc::new(CallDepths::default());
+        let entered = depths.enter(depth);
+        let (done_tx, done) = oneshot::channel();
+        let previous = registry.retiring.remove(&key).map(|(_, done)| done);
+        mailbox.send(event).expect("the receiver is here");
+        registry.objects.insert(
+            key.clone(),
+            Entry {
+                mailbox,
+                generation,
+                depths: Arc::clone(&depths),
+                worker_id: namespace.worker_id.clone(),
+                version: None,
+                done,
+            },
+        );
+        *registry.running.entry(key.namespace.clone()).or_default() += 1;
+        *registry.accounts.entry(account.clone()).or_default() += 1;
+        let running = Running {
+            key: key.clone(),
+            generation,
+            account,
+            _done: done_tx,
+        };
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut hasher);
+
+        WORKER_POOL.spawn_on(hasher.finish(), move || async move {
+            // Old and new code never run for the same object at once
+            if let Some(previous) = previous {
+                previous.await.ok();
+            }
+
+            serve(key, generation, class_name, rx, move || load(depths)).await;
+            drop(running);
+        });
+
+        Ok(entered)
     }
 
     /// Serves one object until it is idle with an empty mailbox.
@@ -394,7 +430,7 @@ mod registry {
         key: ObjectKey,
         generation: u64,
         class_name: String,
-        mut mailbox: mpsc::UnboundedReceiver<FetchInit>,
+        mut mailbox: mpsc::UnboundedReceiver<ObjectEvent>,
         load: L,
     ) where
         L: FnOnce() -> Fut,
@@ -470,7 +506,7 @@ mod registry {
     fn leave(
         key: &ObjectKey,
         generation: u64,
-        mailbox: &mut mpsc::UnboundedReceiver<FetchInit>,
+        mailbox: &mut mpsc::UnboundedReceiver<ObjectEvent>,
     ) -> bool {
         let mut registry = REGISTRY.lock().unwrap();
 

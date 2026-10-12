@@ -255,3 +255,80 @@ async fn an_old_deployment_or_a_deleted_worker_is_outdated() {
 
     remove_user(&db, user).await;
 }
+
+fn data_dir() -> openworkers_runner::d1::Service {
+    let dir = std::env::temp_dir().join(format!("do-alarm-test-{}", Uuid::new_v4()));
+
+    openworkers_runner::d1::Service::new(openworkers_runner::d1::Config {
+        data_dir: dir,
+        limits: Default::default(),
+        timeout: std::time::Duration::from_secs(5),
+        max_queue: 64,
+        max_open: 16,
+        idle: std::time::Duration::from_secs(300),
+        min_free_bytes: 0,
+    })
+    .unwrap()
+}
+
+async fn indexed(db: &PgPool, namespace: Uuid, object: &str) -> Option<(i64, i32, bool)> {
+    sqlx::query_as(
+        "SELECT (extract(epoch FROM scheduled_at) * 1000)::bigint, retry_count, delivering \
+         FROM durable_object_alarms WHERE namespace_id = $1 AND object_id = $2",
+    )
+    .bind(namespace)
+    .bind(object)
+    .fetch_optional(db)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[ignore]
+async fn an_alarm_goes_to_the_object_file_and_to_the_due_index() {
+    use openworkers_core::ObjectStorageResult;
+    use openworkers_runner::durable::alarms;
+
+    let db = database().await;
+    let service = data_dir();
+
+    let user = new_user(&db).await;
+    let worker = new_worker(&db, user, &[]).await;
+    let namespace = new_namespace(&db, user, worker, "Counter").await;
+    let ns = namespace.to_string();
+    let object = "cd".repeat(32);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+
+    let later = now + 60_000;
+    assert_eq!(
+        alarms::set(&service, &db, &ns, &object, Some(later)).await,
+        ObjectStorageResult::Alarm(Some(later))
+    );
+    assert_eq!(
+        indexed(&db, namespace, &object).await,
+        Some((later, 0, false))
+    );
+
+    let mine = |due: &[alarms::Due]| due.iter().any(|due| due.object_id == object);
+    assert!(!mine(&alarms::claim(&db, 1000).await.unwrap()));
+
+    // A due alarm is claimed once, and stays under way through a setAlarm
+    let past = now - 1000;
+    alarms::set(&service, &db, &ns, &object, Some(past)).await;
+    assert!(mine(&alarms::claim(&db, 1000).await.unwrap()));
+    assert!(!mine(&alarms::claim(&db, 1000).await.unwrap()));
+
+    alarms::set(&service, &db, &ns, &object, Some(later)).await;
+    assert_eq!(
+        indexed(&db, namespace, &object).await,
+        Some((later, 0, true))
+    );
+
+    alarms::set(&service, &db, &ns, &object, None).await;
+    assert_eq!(indexed(&db, namespace, &object).await, None);
+
+    remove_user(&db, user).await;
+}

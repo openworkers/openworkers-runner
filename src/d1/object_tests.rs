@@ -240,3 +240,65 @@ async fn an_object_file_stays_in_the_data_directory() {
         ));
     }
 }
+
+#[tokio::test]
+async fn an_alarm_lives_in_the_object_file_apart_from_the_keys() {
+    let (service, _dir) = service();
+    let storage = |op| service.object_storage(NAMESPACE, OBJECT, op);
+
+    assert_eq!(
+        storage(ObjectStorageOp::GetAlarm).await,
+        ObjectStorageResult::Alarm(None)
+    );
+    assert_eq!(
+        storage(ObjectStorageOp::SetAlarm(Some(5000))).await,
+        ObjectStorageResult::Alarm(Some(5000))
+    );
+    assert_eq!(
+        storage(ObjectStorageOp::SetAlarm(Some(7000))).await,
+        ObjectStorageResult::Alarm(Some(7000))
+    );
+
+    // deleteAll() leaves the alarm, as on Cloudflare
+    storage(put(&[("a", b"1")])).await;
+    storage(ObjectStorageOp::Write {
+        puts: Vec::new(),
+        deletes: Vec::new(),
+        delete_all: true,
+    })
+    .await;
+
+    assert_eq!(
+        storage(ObjectStorageOp::GetAlarm).await,
+        ObjectStorageResult::Alarm(Some(7000))
+    );
+
+    storage(ObjectStorageOp::SetAlarm(None)).await;
+    assert_eq!(
+        storage(ObjectStorageOp::GetAlarm).await,
+        ObjectStorageResult::Alarm(None)
+    );
+}
+
+#[tokio::test]
+async fn clearing_an_old_alarm_keeps_a_newer_one() {
+    let (service, _dir) = service();
+
+    service
+        .object_storage(NAMESPACE, OBJECT, ObjectStorageOp::SetAlarm(Some(5000)))
+        .await;
+
+    // The handler of the alarm at 5000 set the next one
+    service
+        .object_storage(NAMESPACE, OBJECT, ObjectStorageOp::SetAlarm(Some(9000)))
+        .await;
+    assert_eq!(
+        service.clear_alarm(NAMESPACE, OBJECT, 5000).await,
+        ObjectStorageResult::Alarm(Some(9000))
+    );
+
+    assert_eq!(
+        service.clear_alarm(NAMESPACE, OBJECT, 9000).await,
+        ObjectStorageResult::Alarm(None)
+    );
+}

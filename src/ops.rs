@@ -753,11 +753,21 @@ impl OperationsHandler for RunnerOperations {
 
         Box::pin(
             async move {
-                match crate::d1::service() {
-                    Some(service) => service.object_storage(&namespace_id, &object_id, op).await,
-                    None => ObjectStorageResult::Error(
+                let Some(service) = crate::d1::service() else {
+                    return ObjectStorageResult::Error(
                         "Durable Object storage is off on this runner (no D1_DATA_DIR)".to_string(),
+                    );
+                };
+
+                match (op, &self.db_pool) {
+                    (ObjectStorageOp::SetAlarm(at), Some(db)) => {
+                        crate::durable::alarms::set(service, db, &namespace_id, &object_id, at)
+                            .await
+                    }
+                    (ObjectStorageOp::SetAlarm(_), None) => ObjectStorageResult::Error(
+                        "Durable Object alarms need the database".to_string(),
                     ),
+                    (op, _) => service.object_storage(&namespace_id, &object_id, op).await,
                 }
             }
             .instrument(span),

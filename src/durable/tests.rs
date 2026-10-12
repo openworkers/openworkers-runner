@@ -615,3 +615,53 @@ async fn retiring_another_version_keeps_the_object() {
         "v3 2"
     );
 }
+
+const ALARMED: &str = r#"
+    export class Counter {
+        constructor(state) {
+            this.runs = [];
+        }
+
+        async fetch() {
+            return new Response(JSON.stringify(this.runs));
+        }
+
+        async alarm(info) {
+            this.runs.push(info.retryCount);
+
+            if (info.retryCount === 0) {
+                throw new Error('first run fails');
+            }
+        }
+    }
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_alarm_runs_the_handler_of_the_object() {
+    let namespace = namespace("ns-alarm");
+    let load = || {
+        |_| async {
+            Ok(source_of(
+                ALARMED,
+                Vec::new(),
+                RunnerOperations::new(),
+                Duration::from_secs(60),
+            ))
+        }
+    };
+
+    assert_eq!(
+        super::alarm(&namespace, "a".to_string(), 0, load()).await,
+        Err("first run fails".to_string())
+    );
+    assert_eq!(
+        super::alarm(&namespace, "a".to_string(), 1, load()).await,
+        Ok(())
+    );
+
+    let runs = send(&namespace, "a".to_string(), 0, request(), load())
+        .await
+        .unwrap();
+    let body = runs.body.collect().await.unwrap().unwrap();
+    assert_eq!(body.as_ref(), b"[0,1]");
+}
