@@ -207,6 +207,63 @@ pub fn capabilities() -> String {
     format!("runtime backends: {}", backends.join(", "))
 }
 
+/// The Server header of a public response: the backends of this build, then
+/// the runner version, as `openworkers/v8,wasm/v1.16.1`.
+pub fn server_header() -> String {
+    let mut backends: Vec<&str> = Vec::new();
+
+    if RUNS_JAVASCRIPT {
+        backends.push(Backend::Js.name());
+    }
+
+    if RUNS_WASM {
+        backends.push(Backend::Wasm.name());
+    }
+
+    format!(
+        "openworkers/{}/v{}",
+        backends.join(","),
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+#[cfg(test)]
+mod server_header_tests {
+    use super::server_header;
+
+    #[cfg(all(feature = "v8", not(feature = "wasm")))]
+    #[test]
+    fn a_v8_build_names_v8() {
+        assert_eq!(
+            server_header(),
+            concat!("openworkers/v8/v", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[cfg(all(feature = "v8", feature = "wasm"))]
+    #[test]
+    fn a_v8_and_wasm_build_names_both() {
+        assert_eq!(
+            server_header(),
+            concat!("openworkers/v8,wasm/v", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[cfg(all(feature = "wasm", not(feature = "_js")))]
+    #[test]
+    fn a_build_without_javascript_names_wasm_only() {
+        assert_eq!(
+            server_header(),
+            concat!("openworkers/wasm/v", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[test]
+    fn the_value_is_a_valid_header_value() {
+        assert!(hyper::header::HeaderValue::from_str(&server_header()).is_ok());
+    }
+}
+
 #[cfg(test)]
 mod strict_tests {
     use super::configure_strict;

@@ -22,6 +22,7 @@ struct AppState {
     wall_clock_timeout_ms: u64,
     ingress: openworkers_runner::ingress::Config,
     logs: std::sync::Arc<openworkers_runner::logs::Logs>,
+    server: hyper::header::HeaderValue,
 }
 
 /// The listener a request came in on.
@@ -218,6 +219,9 @@ async fn public_request(
     };
 
     response.headers_mut().insert("x-request-id", request_id);
+    response
+        .headers_mut()
+        .insert(hyper::header::SERVER, state.server.clone());
 
     Ok(response)
 }
@@ -1316,6 +1320,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         wall_clock_timeout_ms,
         ingress,
         logs,
+        server: openworkers_runner::runtime::server_header()
+            .parse()
+            .expect("the backend names and the version are header-safe"),
     });
 
     // Signal handler for SIGINT/SIGTERM - graceful on first, forced on second
