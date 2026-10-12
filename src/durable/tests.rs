@@ -31,9 +31,10 @@ const COUNTER: &str = r#"
 fn namespace(id: &str) -> NamespaceConfig {
     NamespaceConfig {
         id: id.to_string(),
-        // Each test has an account of its own, for the limits per account
+        // Each test has an account and a worker of its own, for the limits
+        // per account and the deployments per worker
         user_id: format!("user-{id}"),
-        worker_id: "worker".to_string(),
+        worker_id: format!("worker-{id}"),
         class_name: "Counter".to_string(),
         key: IdKey([1; 32]),
     }
@@ -60,9 +61,11 @@ fn source_of(
             bindings: crate::store::bindings_to_infos(&bindings),
             ..Script::new(code)
         },
+        version: 1,
         ops: Arc::new(ops.with_bindings(bindings)),
         limits: crate::task_executor::TaskExecutionConfig::default_limits(),
         idle,
+        drain: super::DRAIN,
     }
 }
 
@@ -451,5 +454,164 @@ async fn the_worker_logs_tell_why_an_object_failed() {
     assert_eq!(
         *logs.0.lock().unwrap(),
         ["Durable Object Missing a: not built: TypeError: the worker exports no class 'Missing'"]
+    );
+}
+
+/// Answers with the deployment it runs, as `VERSION` gives it.
+const VERSIONED: &str = r#"
+    export class Counter {
+        constructor(state) {
+            this.count = 0;
+        }
+
+        async fetch(request) {
+            switch (new URL(request.url).pathname) {
+                case '/slow':
+                    await new Promise((resolve) => setTimeout(resolve, 300));
+                    return new Response(`v${VERSION} slow`);
+                case '/forever':
+                    await new Promise(() => {});
+                default:
+                    this.count += 1;
+                    return new Response(`v${VERSION} ${this.count}`);
+            }
+        }
+    }
+"#;
+
+/// The deployments of the worker of a namespace, and when each one loaded.
+#[derive(Default)]
+struct Deployments {
+    current: std::sync::atomic::AtomicI32,
+    loads: std::sync::Mutex<Vec<(i32, std::time::Instant)>>,
+}
+
+async fn deployed(
+    namespace: &NamespaceConfig,
+    path: &str,
+    deployments: &Arc<Deployments>,
+) -> Result<String, String> {
+    let deployments = Arc::clone(deployments);
+    let load = move |_| async move {
+        let version = deployments.current.load(Ordering::SeqCst);
+        deployments
+            .loads
+            .lock()
+            .unwrap()
+            .push((version, std::time::Instant::now()));
+
+        let code = format!("const VERSION = {version};\n{VERSIONED}");
+
+        Ok(ObjectSource {
+            version,
+            drain: Duration::from_secs(1),
+            ..source_of(
+                &code,
+                Vec::new(),
+                RunnerOperations::new(),
+                Duration::from_secs(60),
+            )
+        })
+    };
+    let mut request = request();
+    request.url = format!("http://object{path}");
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(10),
+        send(namespace, "a".to_string(), 0, request, load),
+    )
+    .await
+    .expect("the object answers in time")?;
+
+    let body = response.body.collect().await.unwrap().unwrap();
+
+    Ok(String::from_utf8(body.to_vec()).unwrap())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_deployment_starts_after_the_old_object_ends() {
+    let namespace = namespace("ns-deploy");
+    let deployments = Arc::new(Deployments::default());
+    deployments.current.store(1, Ordering::SeqCst);
+
+    assert_eq!(
+        deployed(&namespace, "/", &deployments).await.unwrap(),
+        "v1 1"
+    );
+    assert!(super::running_versions().contains(&("worker-ns-deploy".to_string(), 1)));
+
+    let slow = tokio::spawn({
+        let namespace = namespace.clone();
+        let deployments = Arc::clone(&deployments);
+
+        async move { deployed(&namespace, "/slow", &deployments).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    deployments.current.store(2, Ordering::SeqCst);
+    let retired = std::time::Instant::now();
+    super::retire("worker-ns-deploy", 1);
+
+    // The old object ends its event; the new one starts after it, from 0
+    assert_eq!(
+        deployed(&namespace, "/", &deployments).await.unwrap(),
+        "v2 1"
+    );
+    assert_eq!(slow.await.unwrap().unwrap(), "v1 slow");
+
+    let loads = deployments.loads.lock().unwrap().clone();
+    assert_eq!(loads.len(), 2);
+    assert!(
+        loads[1].1 - retired >= Duration::from_millis(200),
+        "{loads:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_old_object_with_a_stuck_event_ends_after_the_drain_time() {
+    let namespace = namespace("ns-deploy-stuck");
+    let deployments = Arc::new(Deployments::default());
+    deployments.current.store(1, Ordering::SeqCst);
+
+    assert_eq!(
+        deployed(&namespace, "/", &deployments).await.unwrap(),
+        "v1 1"
+    );
+
+    let stuck = tokio::spawn({
+        let namespace = namespace.clone();
+        let deployments = Arc::clone(&deployments);
+
+        async move { deployed(&namespace, "/forever", &deployments).await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    deployments.current.store(2, Ordering::SeqCst);
+    super::retire("worker-ns-deploy-stuck", 1);
+
+    assert_eq!(
+        deployed(&namespace, "/", &deployments).await.unwrap(),
+        "v2 1"
+    );
+    assert_eq!(
+        stuck.await.unwrap().unwrap_err(),
+        "the Durable Object stopped"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retiring_another_version_keeps_the_object() {
+    let namespace = namespace("ns-deploy-other");
+    let deployments = Arc::new(Deployments::default());
+    deployments.current.store(3, Ordering::SeqCst);
+
+    assert_eq!(
+        deployed(&namespace, "/", &deployments).await.unwrap(),
+        "v3 1"
+    );
+    super::retire("worker-ns-deploy-other", 2);
+    assert_eq!(
+        deployed(&namespace, "/", &deployments).await.unwrap(),
+        "v3 2"
     );
 }

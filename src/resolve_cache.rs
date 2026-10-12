@@ -150,6 +150,7 @@ fn store_worker(generation: Option<u64>, meta: WorkerMeta) {
 fn invalidate(reason: &str) {
     GENERATION.fetch_add(1, Ordering::SeqCst);
     CACHE.lock().unwrap().clear();
+    crate::durable::workers_changed();
     tracing::debug!("resolve cache cleared: {reason}");
 }
 

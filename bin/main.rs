@@ -1278,6 +1278,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Keeps the resolution cache in step with the database; off until it listens
     tokio::spawn(openworkers_runner::resolve_cache::listen(db_url.clone()));
 
+    // A new deployment of a worker reaches its running Durable Objects
+    #[cfg(feature = "v8")]
+    tokio::spawn(openworkers_runner::durable::watch_versions(
+        db_internal.clone(),
+    ));
+
     info!(
         "DB pools: internal={} worker={}",
         internal_pool_size, worker_pool_size

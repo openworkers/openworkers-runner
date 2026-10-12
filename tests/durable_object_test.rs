@@ -67,8 +67,10 @@ async fn visit(namespace: &NamespaceConfig, name: &str) -> String {
         Ok(ObjectSource {
             script: Script::new(code),
             ops: Arc::new(ops),
+            version: 1,
             limits: openworkers_runner::task_executor::TaskExecutionConfig::default_limits(),
             idle: Duration::from_millis(100),
+            drain: openworkers_runner::durable::DRAIN,
         })
     };
 

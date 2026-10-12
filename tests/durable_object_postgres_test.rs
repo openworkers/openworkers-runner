@@ -236,3 +236,22 @@ async fn object_snapshots_have_an_index_of_their_own() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+#[ignore]
+async fn an_old_deployment_or_a_deleted_worker_is_outdated() {
+    let db = database().await;
+
+    let user = new_user(&db).await;
+    let worker = new_worker(&db, user, &[]).await.to_string();
+    let gone = Uuid::new_v4().to_string();
+
+    let running = [(worker.clone(), 1), (worker.clone(), 0), (gone.clone(), 1)];
+    let outdated = openworkers_runner::durable::outdated(&db, &running)
+        .await
+        .unwrap();
+
+    assert_eq!(outdated, [(worker.clone(), 0), (gone, 1)]);
+
+    remove_user(&db, user).await;
+}
