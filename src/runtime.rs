@@ -170,6 +170,7 @@ pub fn binding_type_name(binding_type: BindingType) -> &'static str {
         BindingType::Storage => "storage",
         BindingType::Kv => "kv",
         BindingType::Database => "database",
+        BindingType::D1 => "d1",
         BindingType::Worker => "worker",
         BindingType::Images => "images",
     }
