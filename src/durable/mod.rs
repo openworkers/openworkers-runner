@@ -67,8 +67,8 @@ impl Drop for DepthGuard {
 
 #[cfg(feature = "v8")]
 pub use registry::{
-    DRAIN, IDLE, MAX_RESIDENT_PER_ACCOUNT, ObjectSource, alarm, load, retire, running_versions,
-    send, stop_namespace,
+    AlarmError, DRAIN, IDLE, MAX_RESIDENT_PER_ACCOUNT, ObjectSource, alarm, load, retire,
+    running_versions, send, stop_namespace,
 };
 
 /// Without a JavaScript engine that serves objects, none runs.
@@ -320,6 +320,15 @@ mod registry {
         response.map_err(|_| "the Durable Object stopped".to_string())
     }
 
+    /// Why an alarm did not end well.
+    #[derive(Debug, PartialEq)]
+    pub enum AlarmError {
+        /// The runner did not take the alarm: its handler did not run
+        Refused(String),
+        /// The handler failed, or the object stopped before it ended
+        Failed(String),
+    }
+
     /// Runs the alarm handler of the object `id` of `namespace`, as `send`
     /// runs a request. `retry_count` is how many times the alarm failed.
     pub async fn alarm<L, Fut>(
@@ -327,7 +336,7 @@ mod registry {
         id: String,
         retry_count: u32,
         load: L,
-    ) -> Result<(), String>
+    ) -> Result<(), AlarmError>
     where
         L: FnOnce(Arc<CallDepths>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<ObjectSource, String>> + Send + 'static,
@@ -335,11 +344,12 @@ mod registry {
         let (done, outcome) = oneshot::channel();
         let event = ObjectEvent::Alarm(AlarmInit { retry_count, done });
 
-        let _entered = admit(namespace, id, 0, event, load)?;
+        let _entered = admit(namespace, id, 0, event, load).map_err(AlarmError::Refused)?;
 
-        outcome
-            .await
-            .map_err(|_| "the Durable Object stopped".to_string())?
+        match outcome.await {
+            Ok(outcome) => outcome.map_err(AlarmError::Failed),
+            Err(_) => Err(AlarmError::Failed("the Durable Object stopped".to_string())),
+        }
     }
 
     /// Puts `event` in the mailbox of the object, and starts the object if

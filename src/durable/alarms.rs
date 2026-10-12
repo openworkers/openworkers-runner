@@ -191,7 +191,7 @@ pub fn next(at: i64, current: Option<i64>, failed_runs: Option<u32>, now_ms: i64
 }
 
 #[cfg(feature = "v8")]
-pub use delivery::run;
+pub use delivery::{deliver, run};
 
 #[cfg(feature = "v8")]
 mod delivery {
@@ -201,6 +201,7 @@ mod delivery {
 
     use tokio_util::sync::CancellationToken;
 
+    use crate::durable::AlarmError;
     use crate::log::{LogSender, LogSink};
 
     fn now_ms() -> i64 {
@@ -305,7 +306,8 @@ mod delivery {
         }
     }
 
-    async fn deliver(db: PgPool, worker_db: PgPool, log_sink: LogSink, due: Due) {
+    /// Runs one due alarm, and sets the index for what follows it.
+    pub async fn deliver(db: PgPool, worker_db: PgPool, log_sink: LogSink, due: Due) {
         let Due {
             namespace_id,
             object_id,
@@ -376,7 +378,14 @@ mod delivery {
         )
         .await
         {
-            Ok(outcome) => outcome,
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(AlarmError::Failed(error))) => Err(error),
+            // A refusal is no failed run, or a busy account would lose its alarms
+            Ok(Err(AlarmError::Refused(reason))) => {
+                tracing::debug!("durable object alarm: {object_id} waits: {reason}");
+                settle_later(&db, &namespace_id, &object_id, retry_count).await;
+                return;
+            }
             Err(_) => Err("the alarm handler did not end in time".to_string()),
         };
 

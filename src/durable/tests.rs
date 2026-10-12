@@ -652,7 +652,7 @@ async fn an_alarm_runs_the_handler_of_the_object() {
 
     assert_eq!(
         super::alarm(&namespace, "a".to_string(), 0, load()).await,
-        Err("first run fails".to_string())
+        Err(super::AlarmError::Failed("first run fails".to_string()))
     );
     assert_eq!(
         super::alarm(&namespace, "a".to_string(), 1, load()).await,

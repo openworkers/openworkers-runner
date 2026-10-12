@@ -332,3 +332,83 @@ async fn an_alarm_goes_to_the_object_file_and_to_the_due_index() {
 
     remove_user(&db, user).await;
 }
+
+#[cfg(feature = "v8")]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn an_alarm_the_account_limit_refuses_is_not_a_failed_run() {
+    use openworkers_runner::durable::id::IdKey;
+    use openworkers_runner::durable::{self, NamespaceConfig, ObjectSource, alarms};
+
+    let db = database().await;
+    openworkers_runner::d1::install(data_dir());
+    let service = openworkers_runner::d1::service().unwrap();
+
+    let user = new_user(&db).await;
+    let worker = new_worker(&db, user, &[]).await;
+    let namespace = new_namespace(&db, user, worker, "Counter").await;
+    let ns = namespace.to_string();
+    let object = "ef".repeat(32);
+
+    // The account runs as many objects as it may, in another namespace
+    let busy = NamespaceConfig {
+        id: Uuid::new_v4().to_string(),
+        user_id: user.to_string(),
+        worker_id: worker.to_string(),
+        class_name: "Counter".to_string(),
+        key: IdKey([5; 32]),
+    };
+    let started = futures::future::join_all((0..durable::MAX_RESIDENT_PER_ACCOUNT).map(|n| {
+        let load = |_| async {
+            let code = openworkers_transform::parse_worker_code(
+                b"export class Counter { fetch() { return new Response('up'); } }",
+                openworkers_transform::CodeLanguage::JavaScript,
+            )
+            .unwrap();
+
+            Ok(ObjectSource {
+                script: openworkers_core::Script::new(code),
+                ops: std::sync::Arc::new(openworkers_runner::ops::RunnerOperations::new()),
+                version: 1,
+                limits: openworkers_runner::task_executor::TaskExecutionConfig::default_limits(),
+                idle: std::time::Duration::from_secs(60),
+                drain: durable::DRAIN,
+            })
+        };
+        let request = openworkers_core::HttpRequest {
+            method: openworkers_core::HttpMethod::Get,
+            url: "http://object/".to_string(),
+            headers: Default::default(),
+            body: openworkers_core::RequestBody::None,
+        };
+
+        durable::send(&busy, n.to_string(), 0, request, load)
+    }))
+    .await;
+
+    for answer in started {
+        answer.unwrap();
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    alarms::set(service, &db, &ns, &object, Some(now - 1000)).await;
+
+    let (log_sink, _logs) = openworkers_runner::log::LogSink::new();
+    let due = alarms::Due {
+        namespace_id: ns.clone(),
+        object_id: object.clone(),
+        retry_count: 0,
+    };
+    alarms::deliver(db.clone(), db.clone(), log_sink, due).await;
+
+    // The handler did not run: the alarm runs again later, with no failed run
+    let (at, retry_count, delivering) = indexed(&db, namespace, &object).await.unwrap();
+    assert_eq!((retry_count, delivering), (0, false));
+    assert!(at > now);
+
+    durable::stop_namespace(&busy.id);
+    remove_user(&db, user).await;
+}
