@@ -3540,7 +3540,6 @@ dependencies = [
 [[package]]
 name = "openworkers-core"
 version = "0.17.0"
-source = "git+https://github.com/openworkers/openworkers-core?tag=v0.17.0#9e0d99e03c1fcf0394afea51cdf1390bfee607f1"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -3706,7 +3705,6 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8"
 version = "0.17.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.17.0#12d85100c17411b65e8a6252ca1a536269ed7f2e"
 dependencies = [
  "bytes",
  "encoding_rs",
@@ -3736,7 +3734,6 @@ dependencies = [
 [[package]]
 name = "openworkers-runtime-v8-gc-derive"
 version = "0.1.0"
-source = "git+https://github.com/openworkers/openworkers-runtime-v8?tag=v0.17.0#12d85100c17411b65e8a6252ca1a536269ed7f2e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3776,7 +3773,6 @@ dependencies = [
 [[package]]
 name = "openworkers-transform"
 version = "0.1.2"
-source = "git+https://github.com/openworkers/openworkers-transform?tag=v0.1.2#b4ff8c7e9d1a0eae17164a6851a28d9411003455"
 dependencies = [
  "swc_common",
  "swc_ecma_ast",
@@ -3812,7 +3808,6 @@ source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.6#e78
 [[package]]
 name = "openworkers-wintertc"
 version = "0.1.10"
-source = "git+https://github.com/openworkers/openworkers-wintertc?tag=v0.1.10#7c4f48726c75755c45edee9157a6e667ae97f876"
 
 [[package]]
 name = "outref"
