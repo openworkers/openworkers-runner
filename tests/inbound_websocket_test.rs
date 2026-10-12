@@ -17,7 +17,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::Frame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::{CloseCode, Data, OpCode};
 
-use openworkers_core::{Event, FetchInit, HttpRequest, HyperBody, Script};
+use openworkers_core::{Event, FetchInit, HttpRequest, HyperBody, RuntimeLimits, Script};
 use openworkers_runner::RunnerOperations;
 use openworkers_runner::websocket::{self, Upgrade};
 use openworkers_runner::worker_pool::WORKER_POOL;
@@ -26,6 +26,10 @@ use serial_test::serial;
 
 /// Short, so a test can wait it out. The runner reads WS_MAX_IDLE_MS.
 const MAX_IDLE_MS: u64 = 500;
+
+/// Under MAX_IDLE_MS, so a worker that never yields stops before its socket
+/// is idle for too long.
+const WALL_CLOCK_MS: u64 = 300;
 
 const ECHO: &str = r#"
     addEventListener('fetch', (event) => {
@@ -88,7 +92,11 @@ async fn handle(
 
     WORKER_POOL.spawn(move || async move {
         let ops = Arc::new(RunnerOperations::new());
-        let mut worker = Worker::new_with_ops(Script::new(code), None, ops)
+        let limits = RuntimeLimits {
+            max_wall_clock_time_ms: WALL_CLOCK_MS,
+            ..Default::default()
+        };
+        let mut worker = Worker::new_with_ops(Script::new(code), Some(limits), ops)
             .await
             .unwrap();
 
@@ -271,6 +279,39 @@ async fn a_drain_closes_the_socket() {
         Message::Close(Some(frame)) => {
             assert_eq!(frame.code, CloseCode::Away);
             assert_eq!(frame.reason, "The runner is going away");
+        }
+        other => panic!("not a close: {other:?}"),
+    }
+}
+
+/// Never yields once a message comes, so a limit stops the worker.
+const SPINNER: &str = r#"
+    addEventListener('fetch', (event) => {
+        const [client, server] = Object.values(new WebSocketPair());
+
+        server.accept();
+        server.addEventListener('message', () => { while (true) {} });
+
+        event.respondWith(new Response(null, {
+            status: 101,
+            webSocket: client,
+            headers: { 'Sec-WebSocket-Protocol': 'echo' },
+        }));
+    });
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_stopped_worker_closes_the_socket() {
+    let url = serve(SPINNER).await;
+    let mut socket = connect(&url).await;
+
+    socket.send(Message::text("spin")).await.unwrap();
+
+    match next(&mut socket).await {
+        Message::Close(Some(frame)) => {
+            assert_eq!(frame.code, CloseCode::Error);
+            assert_eq!(frame.reason, "The worker stopped");
         }
         other => panic!("not a close: {other:?}"),
     }
