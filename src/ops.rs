@@ -160,8 +160,14 @@ pub struct RunnerOperations {
     pub bindings: BindingConfigs,
     /// Database pool for KV operations
     pub db_pool: Option<DbPool>,
-    /// The namespace and id of the Durable Object these operations serve
-    object_storage: Option<(String, String)>,
+    /// The Durable Object these operations serve
+    object: Option<ServedObject>,
+}
+
+struct ServedObject {
+    namespace_id: String,
+    id: String,
+    depths: Arc<crate::durable::CallDepths>,
 }
 
 impl RunnerOperations {
@@ -178,7 +184,7 @@ impl RunnerOperations {
             }),
             bindings: BindingConfigs::new(),
             db_pool: None,
-            object_storage: None,
+            object: None,
         }
     }
 
@@ -218,9 +224,22 @@ impl RunnerOperations {
         self
     }
 
-    /// Serve the Durable Object `object_id` of the namespace `namespace_id`
-    pub fn with_object_storage(mut self, namespace_id: String, object_id: String) -> Self {
-        self.object_storage = Some((namespace_id, object_id));
+    /// Serve the Durable Object `object_id` of the namespace `namespace_id`.
+    /// Its events share these operations for as long as it lives.
+    pub fn for_object(
+        mut self,
+        namespace_id: String,
+        object_id: String,
+        depths: Arc<crate::durable::CallDepths>,
+    ) -> Self {
+        self.request_state.lock().unwrap().limiters = Arc::new(BindingLimiters::for_object(
+            &openworkers_core::RuntimeLimits::default(),
+        ));
+        self.object = Some(ServedObject {
+            namespace_id,
+            id: object_id,
+            depths,
+        });
         self
     }
 
@@ -238,7 +257,12 @@ impl RunnerOperations {
 
     /// The depth of a worker-to-worker call this request makes.
     fn next_depth(&self) -> u32 {
-        self.request_state.lock().unwrap().depth + 1
+        let depth = match &self.object {
+            Some(object) => object.depths.deepest(),
+            None => self.request_state.lock().unwrap().depth,
+        };
+
+        depth + 1
     }
 
     /// The log sender of the current request
@@ -717,11 +741,13 @@ impl OperationsHandler for RunnerOperations {
         &self,
         op: ObjectStorageOp,
     ) -> OpFuture<'_, ObjectStorageResult> {
-        let Some((namespace_id, object_id)) = self.object_storage.clone() else {
+        let Some(object) = &self.object else {
             return Box::pin(async {
                 ObjectStorageResult::Error("this worker is not a Durable Object".to_string())
             });
         };
+        let namespace_id = object.namespace_id.clone();
+        let object_id = object.id.clone();
 
         let span = self.span();
 
@@ -754,9 +780,16 @@ impl OperationsHandler for RunnerOperations {
             return Box::pin(async { Err("Invalid Durable Object ID".to_string()) });
         };
 
+        // Objects can call each other, and themselves, in a loop
+        let depth = self.next_depth();
+
+        if depth > crate::services::fetch::MAX_CALL_DEPTH {
+            return Box::pin(async { Err("Too many nested Durable Object calls".to_string()) });
+        }
+
         #[cfg(not(feature = "v8"))]
         {
-            let _ = (id, request);
+            let _ = (id, depth, request);
             Box::pin(async { Err("this build cannot run Durable Objects".to_string()) })
         }
 
@@ -776,10 +809,10 @@ impl OperationsHandler for RunnerOperations {
                         let namespace = namespace.clone();
                         let id = id.clone();
 
-                        move || crate::durable::load(namespace, id, db_pool, log_tx)
+                        move |depths| crate::durable::load(namespace, id, depths, db_pool, log_tx)
                     };
 
-                    crate::durable::send(&namespace, id, request, load).await
+                    crate::durable::send(&namespace, id, depth, request, load).await
                 }
                 .instrument(span),
             )

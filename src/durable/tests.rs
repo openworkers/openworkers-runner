@@ -31,7 +31,8 @@ const COUNTER: &str = r#"
 fn namespace(id: &str) -> NamespaceConfig {
     NamespaceConfig {
         id: id.to_string(),
-        user_id: "user".to_string(),
+        // Each test has an account of its own, for the limits per account
+        user_id: format!("user-{id}"),
         worker_id: "worker".to_string(),
         class_name: "Counter".to_string(),
         key: IdKey([1; 32]),
@@ -39,15 +40,27 @@ fn namespace(id: &str) -> NamespaceConfig {
 }
 
 fn source(idle: Duration) -> ObjectSource {
+    source_of(COUNTER, Vec::new(), RunnerOperations::new(), idle)
+}
+
+fn source_of(
+    code: &str,
+    bindings: Vec<Binding>,
+    ops: RunnerOperations,
+    idle: Duration,
+) -> ObjectSource {
     let code = openworkers_transform::parse_worker_code(
-        COUNTER.as_bytes(),
+        code.as_bytes(),
         openworkers_transform::CodeLanguage::JavaScript,
     )
     .unwrap();
 
     ObjectSource {
-        script: Script::new(code),
-        ops: Arc::new(RunnerOperations::new()),
+        script: Script {
+            bindings: crate::store::bindings_to_infos(&bindings),
+            ..Script::new(code)
+        },
+        ops: Arc::new(ops.with_bindings(bindings)),
         limits: crate::task_executor::TaskExecutionConfig::default_limits(),
         idle,
     }
@@ -70,14 +83,14 @@ async fn get(
     loads: &Arc<AtomicUsize>,
 ) -> Result<String, String> {
     let loads = Arc::clone(loads);
-    let load = move || async move {
+    let load = move |_| async move {
         loads.fetch_add(1, Ordering::SeqCst);
         Ok(source(idle))
     };
 
     let response = tokio::time::timeout(
         Duration::from_secs(10),
-        send(namespace, id.to_string(), request(), load),
+        send(namespace, id.to_string(), 0, request(), load),
     )
     .await
     .expect("the object answers in time")?;
@@ -139,7 +152,7 @@ async fn a_failed_load_fails_the_request_and_the_next_one_loads_again() {
     let namespace = namespace("ns-load");
     let loads = Arc::new(AtomicUsize::new(0));
 
-    let failing = send(&namespace, "a".to_string(), request(), || async {
+    let failing = send(&namespace, "a".to_string(), 0, request(), |_| async {
         Err("no worker".to_string())
     })
     .await;
@@ -249,4 +262,154 @@ async fn an_object_needs_the_database_to_load_its_worker() {
         .await;
 
     assert_eq!(answer.unwrap_err(), "the Durable Object stopped");
+}
+
+/// Calls the object `a` of its own namespace `?depth=` times in a chain, or
+/// the binding `OTHER` once with `?other`.
+const CALLER: &str = r#"
+    export class Counter {
+        constructor(state, env) {
+            this.env = env;
+        }
+
+        async fetch(request) {
+            const url = new URL(request.url);
+
+            try {
+                if (url.searchParams.has('other')) {
+                    const stub = this.env.OTHER.getByName('x');
+                    return new Response(await (await stub.fetch('http://other/')).text());
+                }
+
+                const depth = Number(url.searchParams.get('depth'));
+
+                if (depth === 0) {
+                    return new Response('end');
+                }
+
+                const stub = this.env.SELF.getByName('a');
+                const answer = await stub.fetch(`http://object/?depth=${depth - 1}`);
+                return new Response(`${depth} ${await answer.text()}`);
+            } catch (error) {
+                return new Response(error.message);
+            }
+        }
+    }
+"#;
+
+/// Sends `path` to the object `a` of `namespace`, which runs CALLER with the
+/// bindings `SELF` (its own namespace) and `OTHER` (one that never loads).
+async fn call(namespace: &NamespaceConfig, path: &str) -> String {
+    let bindings = vec![
+        Binding::DurableObject {
+            key: "SELF".to_string(),
+            namespace: namespace.clone(),
+        },
+        Binding::DurableObject {
+            key: "OTHER".to_string(),
+            namespace: NamespaceConfig {
+                id: format!("{}-other", namespace.id),
+                ..namespace.clone()
+            },
+        },
+    ];
+    let namespace_id = namespace.id.clone();
+    let id = super::id::from_name(&namespace.key, "a");
+    let mut request = request();
+    request.url = format!("http://object{path}");
+
+    let response = tokio::time::timeout(
+        Duration::from_secs(10),
+        send(namespace, id, 0, request, move |depths| async move {
+            let ops = RunnerOperations::new().for_object(namespace_id, "a".to_string(), depths);
+
+            Ok(source_of(CALLER, bindings, ops, Duration::from_secs(60)))
+        }),
+    )
+    .await
+    .expect("the object answers in time")
+    .unwrap();
+
+    let body = response.body.collect().await.unwrap().unwrap();
+
+    String::from_utf8(body.to_vec()).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_object_makes_subrequests_past_the_count_of_a_request() {
+    let namespace = namespace("ns-subrequests");
+
+    for _ in 0..60 {
+        assert_eq!(
+            call(&namespace, "/?other").await,
+            "the Durable Object stopped"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_object_calls_itself_in_a_chain() {
+    let namespace = namespace("ns-chain");
+
+    assert_eq!(
+        call(&namespace, "/?depth=10").await,
+        "10 9 8 7 6 5 4 3 2 1 end"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chain_of_calls_to_objects_has_a_limit() {
+    let namespace = namespace("ns-loop");
+    let answer = call(&namespace, "/?depth=1000").await;
+
+    assert!(
+        answer.ends_with("Too many nested Durable Object calls"),
+        "{answer}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_account_runs_a_bounded_count_of_objects() {
+    let resident = namespace("ns-resident");
+    let neighbour = namespace("ns-resident-2");
+    let loads = Arc::new(AtomicUsize::new(0));
+    let idle = Duration::from_secs(60);
+
+    let answers = futures::future::join_all((0..super::MAX_RESIDENT_PER_ACCOUNT).map(|n| {
+        let namespace = &resident;
+        let loads = &loads;
+
+        async move { get(namespace, &n.to_string(), idle, loads).await }
+    }))
+    .await;
+
+    for answer in answers {
+        answer.unwrap();
+    }
+
+    assert_eq!(
+        get(&resident, "one more", idle, &loads).await.unwrap_err(),
+        "too many Durable Objects run for this account"
+    );
+
+    // A running object still takes requests, and another account its own
+    assert_eq!(get(&resident, "0", idle, &loads).await.unwrap(), "0 2");
+    assert_eq!(get(&neighbour, "a", idle, &loads).await.unwrap(), "a 1");
+
+    // Its objects leave, and new ones start again
+    super::stop_namespace("ns-resident");
+
+    for _ in 0..100 {
+        if super::stop_namespace("ns-resident") {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let other = NamespaceConfig {
+        id: "ns-resident-3".to_string(),
+        ..resident.clone()
+    };
+    assert_eq!(get(&other, "a", idle, &loads).await.unwrap(), "a 1");
 }

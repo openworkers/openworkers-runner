@@ -187,6 +187,21 @@ impl BindingLimiters {
         }
     }
 
+    /// The limiters of a Durable Object, which its events share for as long
+    /// as it lives: no count of calls, which would only grow. Fetches have no
+    /// cap on concurrency either, since a fetch can wait on another event of
+    /// the same object, which would wait for the slot of the first.
+    pub fn for_object(limits: &openworkers_core::RuntimeLimits) -> Self {
+        let concurrent = |limit: &BindingLimit| BindingLimit::new(0, limit.max_concurrent);
+
+        Self {
+            fetch: BindingLimiter::unlimited("fetch"),
+            kv: BindingLimiter::new(&concurrent(&limits.kv_limit), "kv"),
+            database: BindingLimiter::new(&concurrent(&limits.database_limit), "database"),
+            storage: BindingLimiter::new(&concurrent(&limits.storage_limit), "storage"),
+        }
+    }
+
     /// Create unlimited limiters (no restrictions)
     pub fn unlimited() -> Self {
         Self {
