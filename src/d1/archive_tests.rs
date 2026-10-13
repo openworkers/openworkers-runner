@@ -188,6 +188,7 @@ fn service_with(dir: &TempDir, memory: &Memory, epoch: i64, pause_after: Duratio
         max_open: 16,
         idle: Duration::from_secs(300),
         min_free_bytes: 0,
+        namespace_bytes: u64::MAX,
     })
     .unwrap()
     .with_archive(archive(memory, epoch, pause_after))

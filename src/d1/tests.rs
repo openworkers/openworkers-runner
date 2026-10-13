@@ -42,6 +42,7 @@ fn config(dir: &TempDir) -> Config {
         max_open: 16,
         idle: Duration::from_secs(300),
         min_free_bytes: 0,
+        namespace_bytes: u64::MAX,
     }
 }
 

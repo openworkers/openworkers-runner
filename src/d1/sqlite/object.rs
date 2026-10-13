@@ -195,6 +195,10 @@ impl Database {
 
                 self.check_writes().map_err(|e| e.message)?;
 
+                if let Some(reason) = self.full.as_ref().filter(|_| !puts.is_empty()) {
+                    return Err(format!("the storage is full: {reason}"));
+                }
+
                 let txn = self
                     .conn
                     .unchecked_transaction()

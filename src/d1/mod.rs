@@ -80,6 +80,8 @@ pub struct Config {
     pub idle: Duration,
     /// Writes are refused below this free space on the data volume
     pub min_free_bytes: u64,
+    /// The bytes the objects of one Durable Object namespace can hold
+    pub namespace_bytes: u64,
 }
 
 impl Config {
@@ -107,6 +109,7 @@ impl Config {
             max_open: number("D1_MAX_OPEN", 256) as usize,
             idle: Duration::from_secs(number("D1_IDLE_SECS", 300)),
             min_free_bytes: number("D1_MIN_FREE_BYTES", 2 * 1024 * 1024 * 1024),
+            namespace_bytes: number("DO_MAX_NAMESPACE_BYTES", 1024 * 1024 * 1024),
         })
     }
 }
@@ -131,6 +134,21 @@ impl Handle {
     }
 }
 
+/// What the objects of one Durable Object namespace hold: each object by its
+/// size after its last call, or by the size of its files until then
+#[derive(Default)]
+struct Usage {
+    objects: HashMap<String, u64>,
+    total: u64,
+}
+
+impl Usage {
+    fn set(&mut self, object_id: &str, bytes: u64) {
+        let old = self.objects.insert(object_id.to_string(), bytes);
+        self.total = self.total - old.unwrap_or(0) + bytes;
+    }
+}
+
 pub struct Service {
     config: Config,
     archive: Option<Archive>,
@@ -139,6 +157,8 @@ pub struct Service {
     /// One snapshot pass at a time
     snapshots: tokio::sync::Mutex<()>,
     databases: Mutex<HashMap<String, Arc<Handle>>>,
+    /// By namespace id, from a scan of its directory on first use
+    namespaces: Mutex<HashMap<String, Usage>>,
     /// Held for the life of the process, so a second runner cannot open the
     /// same files, even while this one is paused
     _lock: File,
@@ -274,6 +294,7 @@ impl Service {
             disk_low: AtomicBool::new(false),
             snapshots: tokio::sync::Mutex::new(()),
             databases: Mutex::new(HashMap::new()),
+            namespaces: Mutex::new(HashMap::new()),
             _lock: lock,
         })
     }
@@ -406,6 +427,8 @@ impl Service {
         };
 
         let queue_time = queued.elapsed().as_secs_f64();
+        let object = parse_object_key(id);
+        let full = object.and_then(|(namespace_id, _)| self.full(namespace_id));
 
         if guard.is_none() {
             let path = self.config.data_dir.join(format!("{id}.sqlite"));
@@ -433,6 +456,15 @@ impl Service {
                 )));
             }
 
+            // Even a read makes the file of a new object
+            if let Some(reason) = &full
+                && !path.exists()
+            {
+                return Done::Object(ObjectStorageResult::Error(format!(
+                    "the storage is full: {reason}"
+                )));
+            }
+
             match tokio::task::spawn_blocking(move || Database::open(&path, &limits, commits)).await
             {
                 Ok(Ok(database)) => *guard = Some(database),
@@ -450,12 +482,15 @@ impl Service {
 
         let interrupt = InterruptOnDrop(Some(guard.as_ref().unwrap().interrupt_handle()));
         let paused = self.paused(handle);
+        let measure = object.is_some();
 
         let mut job = tokio::task::spawn_blocking(move || {
-            let result = guard.as_mut().unwrap().run(job, paused);
+            let database = guard.as_mut().unwrap();
+            let result = database.run(job, paused, full);
+            let bytes = measure.then(|| database.used_bytes());
 
             drop(guard);
-            result
+            (result, bytes)
         });
 
         let result = tokio::select! {
@@ -470,12 +505,69 @@ impl Service {
 
         interrupt.disarm();
 
-        let result = result.unwrap_or_else(|_| Done::D1(internal_error()));
+        let result = match result {
+            Ok((result, bytes)) => {
+                if let (Some((namespace_id, object_id)), Some(bytes)) = (object, bytes) {
+                    self.namespaces
+                        .lock()
+                        .unwrap()
+                        .entry(namespace_id.to_string())
+                        .or_default()
+                        .set(object_id, bytes);
+                }
+
+                result
+            }
+            Err(_) => Done::D1(internal_error()),
+        };
         let execution_time = queued.elapsed().as_secs_f64() - queue_time;
 
         crate::metrics::record_d1_call(queue_time, execution_time, outcome(&result));
 
         result
+    }
+
+    /// Why the objects of a namespace cannot hold more, if they cannot
+    fn full(&self, namespace_id: &str) -> Option<String> {
+        let mut namespaces = self.namespaces.lock().unwrap();
+        let usage = namespaces
+            .entry(namespace_id.to_string())
+            .or_insert_with(|| self.scan(namespace_id));
+        let limit = self.config.namespace_bytes;
+
+        (usage.total >= limit).then(|| {
+            format!(
+                "the objects of the namespace hold {} of {} MiB",
+                usage.total >> 20,
+                limit >> 20
+            )
+        })
+    }
+
+    /// The sizes of the object files of a namespace on disk
+    fn scan(&self, namespace_id: &str) -> Usage {
+        let mut usage = Usage::default();
+        let dir = self.config.data_dir.join(OBJECTS).join(namespace_id);
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return usage;
+        };
+
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(object_id) = name
+                .strip_suffix(".sqlite")
+                .or_else(|| name.strip_suffix(".sqlite-wal"))
+            else {
+                continue;
+            };
+
+            let bytes = entry.metadata().map_or(0, |meta| meta.len());
+            let known = usage.objects.get(object_id).copied().unwrap_or(0);
+            usage.set(object_id, known + bytes);
+        }
+
+        usage
     }
 
     /// How long the oldest commit that no snapshot holds has waited
@@ -579,6 +671,11 @@ impl Service {
 
         databases.retain(|key, _| !key.starts_with(&prefix));
         drop(databases);
+
+        self.namespaces
+            .lock()
+            .unwrap()
+            .remove(&namespace_id.to_string());
 
         let dir = self
             .config

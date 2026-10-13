@@ -267,6 +267,7 @@ fn data_dir() -> openworkers_runner::d1::Service {
         max_open: 16,
         idle: std::time::Duration::from_secs(300),
         min_free_bytes: 0,
+        namespace_bytes: u64::MAX,
     })
     .unwrap()
 }

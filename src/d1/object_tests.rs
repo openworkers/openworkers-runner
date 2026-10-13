@@ -21,6 +21,11 @@ impl Drop for TempDir {
 
 fn service() -> (Service, TempDir) {
     let dir = TempDir(std::env::temp_dir().join(format!("do-test-{}", uuid::Uuid::new_v4())));
+
+    (service_in(&dir, u64::MAX), dir)
+}
+
+fn service_in(dir: &TempDir, namespace_bytes: u64) -> Service {
     let config = Config {
         data_dir: dir.0.clone(),
         limits: Limits::default(),
@@ -29,9 +34,10 @@ fn service() -> (Service, TempDir) {
         max_open: 16,
         idle: Duration::from_secs(300),
         min_free_bytes: 0,
+        namespace_bytes,
     };
 
-    (Service::new(config).unwrap(), dir)
+    Service::new(config).unwrap()
 }
 
 fn put(entries: &[(&str, &[u8])]) -> ObjectStorageOp {
@@ -300,5 +306,97 @@ async fn clearing_an_old_alarm_keeps_a_newer_one() {
     assert_eq!(
         service.clear_alarm(NAMESPACE, OBJECT, 9000).await,
         ObjectStorageResult::Alarm(None)
+    );
+}
+
+const OTHER: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+
+/// Puts values of 100 KiB in `object` until the namespace is full, and
+/// answers how many it took.
+async fn fill(service: &Service, object: &str) -> usize {
+    let value = vec![7; 100 * 1024];
+
+    for count in 0..64 {
+        let key = format!("key-{count}");
+
+        match service
+            .object_storage(NAMESPACE, object, put(&[(&key, &value)]))
+            .await
+        {
+            ObjectStorageResult::Written { .. } => {}
+            ObjectStorageResult::Error(err) => {
+                assert!(err.contains("the storage is full"), "{err}");
+                return count;
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    panic!("the namespace takes more than 6 MiB");
+}
+
+#[tokio::test]
+async fn a_full_namespace_takes_deletes_and_no_puts() {
+    let dir = TempDir(std::env::temp_dir().join(format!("do-test-{}", uuid::Uuid::new_v4())));
+    let service = service_in(&dir, 1 << 20);
+
+    let count = fill(&service, OBJECT).await;
+    assert!((8..=11).contains(&count), "{count} values of 100 KiB");
+
+    // Another object of the namespace gets no file, even for a read
+    let read = service
+        .object_storage(NAMESPACE, OTHER, ObjectStorageOp::GetAlarm)
+        .await;
+    assert!(matches!(read, ObjectStorageResult::Error(_)), "{read:?}");
+    assert!(
+        !dir.0
+            .join(format!("objects/{NAMESPACE}/{OTHER}.sqlite"))
+            .exists()
+    );
+
+    // Reads still run, and a delete frees room at once
+    assert_eq!(keys(&service, list()).await.len(), count);
+
+    let clear = ObjectStorageOp::Write {
+        puts: Vec::new(),
+        deletes: Vec::new(),
+        delete_all: true,
+    };
+    assert!(matches!(
+        service.object_storage(NAMESPACE, OBJECT, clear).await,
+        ObjectStorageResult::Written { .. }
+    ));
+
+    // The emptied object keeps the pages of its tables
+    assert!(fill(&service, OTHER).await >= count - 1);
+}
+
+#[tokio::test]
+async fn the_limit_counts_the_files_already_on_disk() {
+    let dir = TempDir(std::env::temp_dir().join(format!("do-test-{}", uuid::Uuid::new_v4())));
+
+    let service = service_in(&dir, 1 << 20);
+    let count = fill(&service, OBJECT).await;
+    drop(service);
+
+    // A runner that starts again knows what the namespace holds
+    let service = service_in(&dir, 1 << 20);
+    let value = vec![7; 100 * 1024];
+    let refused = service
+        .object_storage(NAMESPACE, OBJECT, put(&[("one-more", &value)]))
+        .await;
+    assert!(
+        matches!(&refused, ObjectStorageResult::Error(err) if err.contains("the storage is full")),
+        "{refused:?} after {count} values"
+    );
+
+    // Another namespace has its own limit
+    let other_namespace = "44444444-4444-4444-8444-444444444444";
+    let written = service
+        .object_storage(other_namespace, OBJECT, put(&[("one", &value)]))
+        .await;
+    assert!(
+        matches!(written, ObjectStorageResult::Written { .. }),
+        "{written:?}"
     );
 }

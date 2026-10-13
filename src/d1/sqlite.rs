@@ -117,6 +117,9 @@ pub struct Database {
     result_bytes: usize,
     /// Why writes are refused during the current job, if they are
     paused: Option<String>,
+    /// Why writes that add data are refused during the current job, if they
+    /// are; deletes still run
+    full: Option<String>,
 }
 
 impl Database {
@@ -168,6 +171,7 @@ impl Database {
             page_size,
             result_bytes: limits.result_bytes,
             paused: None,
+            full: None,
         })
     }
 
@@ -176,9 +180,10 @@ impl Database {
     }
 
     /// Runs a job. With `paused`, a statement that writes fails with that
-    /// reason and reads still run.
-    pub fn run(&mut self, job: Job, paused: Option<String>) -> Done {
+    /// reason and reads still run. With `full`, a put of an object fails.
+    pub fn run(&mut self, job: Job, paused: Option<String>, full: Option<String>) -> Done {
         self.paused = paused;
+        self.full = full;
 
         let op = match job {
             Job::Op(op) => op,
@@ -446,6 +451,22 @@ impl Database {
         if !self.conn.is_autocommit() {
             let _ = self.trusted("ROLLBACK");
         }
+    }
+
+    /// The bytes of the pages in use, which a delete frees at once
+    pub fn used_bytes(&self) -> u64 {
+        self.guest.store(false, Ordering::Relaxed);
+
+        let pages = |pragma: &str| -> u64 {
+            self.conn
+                .pragma_query_value(None, pragma, |row| row.get::<_, i64>(0))
+                .unwrap_or(0) as u64
+        };
+        let used = pages("page_count").saturating_sub(pages("freelist_count"));
+
+        self.guest.store(true, Ordering::Relaxed);
+
+        used * self.page_size
     }
 
     fn size(&self) -> u64 {

@@ -258,16 +258,17 @@ D1 is off when `D1_DATA_DIR` is unset. The runner keeps one SQLite file per
 database in that directory and locks the directory: a second process cannot
 open it. A result returns after its commit is on the local disk.
 
-| Variable                | Default     | Description                                                |
-| ----------------------- | ----------- | ---------------------------------------------------------- |
-| `D1_DATA_DIR`           | unset       | Directory of the database files                            |
-| `D1_MAX_DATABASE_BYTES` | `524288000` | Largest database; a write past it fails                    |
-| `D1_MAX_RESULT_BYTES`   | `16777216`  | Largest result of one statement                            |
-| `D1_TIMEOUT_MS`         | `30000`     | Time a call can wait in its queue and run                  |
-| `D1_MAX_QUEUE`          | `64`        | Calls waiting for one database before new calls fail       |
-| `D1_MAX_OPEN`           | `256`       | Open databases; the least recently used idle one closes    |
-| `D1_IDLE_SECS`          | `300`       | A database unused this long closes                         |
-| `D1_MIN_FREE_BYTES`     | `2147483648` | Writes pause below this free space on the data volume     |
+| Variable                 | Default      | Description                                               |
+| ------------------------ | ------------ | --------------------------------------------------------- |
+| `D1_DATA_DIR`            | unset        | Directory of the database files                           |
+| `D1_MAX_DATABASE_BYTES`  | `524288000`  | Largest database; a write past it fails                   |
+| `D1_MAX_RESULT_BYTES`    | `16777216`   | Largest result of one statement                           |
+| `D1_TIMEOUT_MS`          | `30000`      | Time a call can wait in its queue and run                 |
+| `D1_MAX_QUEUE`           | `64`         | Calls waiting for one database before new calls fail      |
+| `D1_MAX_OPEN`            | `256`        | Open databases; the least recently used idle one closes   |
+| `D1_IDLE_SECS`           | `300`        | A database unused this long closes                        |
+| `D1_MIN_FREE_BYTES`      | `2147483648` | Writes pause below this free space on the data volume     |
+| `DO_MAX_NAMESPACE_BYTES` | `1073741824` | Storage of a Durable Object namespace; past it, puts fail |
 
 With `D1_ARCHIVE_ENDPOINT`, `D1_ARCHIVE_BUCKET`, `D1_ARCHIVE_ACCESS_KEY_ID` and
 `D1_ARCHIVE_SECRET_ACCESS_KEY` set (`D1_ARCHIVE_PREFIX` and `D1_ARCHIVE_REGION`
