@@ -12,7 +12,7 @@ use openworkers_core::{
     WebSocketUpgrade,
 };
 use openworkers_runtime_v8::SocketEvent;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
 use super::{CallDepths, NamespaceConfig, ObjectSource};
 use crate::websocket::MAX_QUEUED_BYTES;
@@ -236,6 +236,7 @@ fn deliver(
     object_id: &str,
     socket: WebSocketId,
     incoming: WebSocketIncoming,
+    permit: Option<OwnedSemaphorePermit>,
 ) -> Result<(), String> {
     let reload = wake.reload.clone();
     let load = move |depths| reload(depths);
@@ -243,7 +244,11 @@ fn deliver(
     super::socket_event(
         &wake.namespace,
         object_id.to_string(),
-        SocketEvent { socket, incoming },
+        SocketEvent {
+            socket,
+            incoming,
+            permit,
+        },
         load,
     )
 }
@@ -291,7 +296,7 @@ async fn run(
                         code: 1008,
                         reason: "The client does not read fast enough".into(),
                     };
-                    let _ = deliver(&wake, &key.1, socket, closed);
+                    let _ = deliver(&wake, &key.1, socket, closed, None);
                     return;
                 }
             }
@@ -306,6 +311,9 @@ async fn run(
         forget(&key, socket);
         return;
     };
+
+    // The bytes of the frames of the client that the object did not take yet
+    let unread = Arc::new(Semaphore::new(MAX_QUEUED_BYTES));
 
     for message in waiting {
         let closes = matches!(message, WebSocketOutgoing::Close { .. });
@@ -337,12 +345,27 @@ async fn run(
                 });
                 let last = matches!(incoming, WebSocketIncoming::Closed { .. } | WebSocketIncoming::Error(_));
 
+                let bytes = match &incoming {
+                    WebSocketIncoming::Text(text) => text.len(),
+                    WebSocketIncoming::Binary(bytes) => bytes.len(),
+                    _ => 0,
+                };
+
+                let Ok(permit) = unread.clone().try_acquire_many_owned(bytes as u32) else {
+                    let reason = "The object does not take the messages fast enough";
+                    forget(&key, socket);
+                    let _ = send_tx.send(WebSocketOutgoing::Close { code: 1008, reason: reason.into() });
+                    let closed = WebSocketIncoming::Closed { code: 1008, reason: reason.into() };
+                    let _ = deliver(&wake, &key.1, socket, closed, None);
+                    break;
+                };
+
                 if last {
                     forget(&key, socket);
                 }
 
                 // An object the runner cannot start loses the client
-                if let Err(reason) = deliver(&wake, &key.1, socket, incoming) {
+                if let Err(reason) = deliver(&wake, &key.1, socket, incoming, Some(permit)) {
                     let reason = reason.chars().take(120).collect();
                     let _ = send_tx.send(WebSocketOutgoing::Close { code: 1013, reason });
                     break;

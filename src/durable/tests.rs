@@ -719,6 +719,16 @@ fn room(
     idle: Duration,
     loads: Arc<AtomicUsize>,
 ) -> super::sockets::Reload {
+    object_of(ROOM, namespace, idle, loads)
+}
+
+/// Builds `script` as the object `a` of `namespace`, and counts the builds.
+fn object_of(
+    script: &'static str,
+    namespace: NamespaceConfig,
+    idle: Duration,
+    loads: Arc<AtomicUsize>,
+) -> super::sockets::Reload {
     Arc::new(move |depths| {
         let namespace = namespace.clone();
         let loads = Arc::clone(&loads);
@@ -726,12 +736,12 @@ fn room(
         Box::pin(async move {
             loads.fetch_add(1, Ordering::SeqCst);
 
-            let reload = room(namespace.clone(), idle, loads);
+            let reload = object_of(script, namespace.clone(), idle, loads);
             let ops = RunnerOperations::new()
                 .for_object(namespace, "a".to_string(), depths)
                 .reloading_with(reload);
 
-            Ok(source_of(ROOM, Vec::new(), ops, idle))
+            Ok(source_of(script, Vec::new(), ops, idle))
         })
     })
 }
@@ -907,4 +917,102 @@ async fn a_socket_that_queues_too_much_before_its_client_comes_closes() {
     }
 
     panic!("the socket still holds its frames");
+}
+
+/// Holds its events for a second on `block`, and counts the frames it got.
+const SLOW: &str = r#"
+    export class Counter {
+        constructor(state) {
+            this.state = state;
+            this.frames = 0;
+            this.bytes = 0;
+        }
+
+        async fetch(request) {
+            const [client, server] = Object.values(new WebSocketPair());
+            this.state.acceptWebSocket(server);
+            server.send('hello');
+
+            return new Response(null, { status: 101, webSocket: client });
+        }
+
+        webSocketMessage(ws, message) {
+            if (message === 'block') {
+                this.state.blockConcurrencyWhile(() => new Promise((ok) => setTimeout(ok, 1000)));
+            } else if (message === 'count') {
+                ws.send(`${this.frames} ${this.bytes}`);
+            } else {
+                this.frames += 1;
+                this.bytes += message.length;
+            }
+        }
+    }
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_sends_more_than_its_object_takes_closes() {
+    let namespace = namespace("ns-socket-slow");
+    let reload = object_of(
+        SLOW,
+        namespace.clone(),
+        Duration::from_secs(60),
+        Arc::default(),
+    );
+
+    let mut client = Client::connect(&namespace, "/", reload).await;
+    assert_eq!(text(client.recv().await), "hello");
+
+    client.send("block");
+    let mib = "x".repeat(1 << 20);
+
+    for _ in 0..64 {
+        let _ = client
+            .to_object
+            .send(openworkers_core::WebSocketIncoming::Text(mib.clone()));
+    }
+
+    // The socket can be closed by now
+    let _ = client
+        .to_object
+        .send(openworkers_core::WebSocketIncoming::Text(
+            "count".to_string(),
+        ));
+
+    let answer = client.recv().await;
+    assert!(
+        matches!(
+            answer,
+            openworkers_core::WebSocketOutgoing::Close { code: 1008, .. }
+        ),
+        "the object took {answer:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_that_its_object_keeps_up_with_stays_open() {
+    let namespace = namespace("ns-socket-busy");
+    let reload = object_of(
+        SLOW,
+        namespace.clone(),
+        Duration::from_secs(60),
+        Arc::default(),
+    );
+
+    let mut client = Client::connect(&namespace, "/", reload).await;
+    assert_eq!(text(client.recv().await), "hello");
+
+    let mib = "x".repeat(1 << 20);
+
+    // Bursts of 4 MiB, each under the limit
+    for round in 1..=16 {
+        for _ in 0..4 {
+            client.send(&mib);
+        }
+
+        client.send("count");
+        assert_eq!(
+            text(client.recv().await),
+            format!("{} {}", round * 4, round * 4 << 20)
+        );
+    }
 }
