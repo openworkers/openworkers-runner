@@ -32,8 +32,8 @@ use openworkers_core::{D1Op, D1Result};
 use openworkers_core::{DatabaseOp, DatabaseResult};
 use openworkers_core::{
     HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, ObjectIdSource,
-    ObjectStorageOp, ObjectStorageResult, OpFuture, OperationsHandler, RequestBody, StorageOp,
-    StorageResult, WebSocketConnection,
+    ObjectResponse, ObjectStorageOp, ObjectStorageResult, OpFuture, OperationsHandler, RequestBody,
+    StorageOp, StorageResult, WebSocketConnection,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -165,9 +165,12 @@ pub struct RunnerOperations {
 }
 
 struct ServedObject {
-    namespace_id: String,
+    namespace: crate::durable::NamespaceConfig,
     id: String,
     depths: Arc<crate::durable::CallDepths>,
+    /// Builds the object again for a frame of its WebSockets
+    #[cfg(feature = "v8")]
+    reload: Option<crate::durable::sockets::Reload>,
 }
 
 impl RunnerOperations {
@@ -224,11 +227,11 @@ impl RunnerOperations {
         self
     }
 
-    /// Serve the Durable Object `object_id` of the namespace `namespace_id`.
-    /// Its events share these operations for as long as it lives.
+    /// Serve the Durable Object `object_id` of `namespace`. Its events share
+    /// these operations for as long as it lives.
     pub fn for_object(
         mut self,
-        namespace_id: String,
+        namespace: crate::durable::NamespaceConfig,
         object_id: String,
         depths: Arc<crate::durable::CallDepths>,
     ) -> Self {
@@ -236,10 +239,23 @@ impl RunnerOperations {
             &openworkers_core::RuntimeLimits::default(),
         ));
         self.object = Some(ServedObject {
-            namespace_id,
+            namespace,
             id: object_id,
             depths,
+            #[cfg(feature = "v8")]
+            reload: None,
         });
+        self
+    }
+
+    /// How the object is built again when a frame of one of its WebSockets
+    /// comes and it does not run.
+    #[cfg(feature = "v8")]
+    pub fn reloading_with(mut self, reload: crate::durable::sockets::Reload) -> Self {
+        if let Some(object) = &mut self.object {
+            object.reload = Some(reload);
+        }
+
         self
     }
 
@@ -746,7 +762,7 @@ impl OperationsHandler for RunnerOperations {
                 ObjectStorageResult::Error("this worker is not a Durable Object".to_string())
             });
         };
-        let namespace_id = object.namespace_id.clone();
+        let namespace_id = object.namespace.id.clone();
         let object_id = object.id.clone();
 
         let span = self.span();
@@ -774,12 +790,71 @@ impl OperationsHandler for RunnerOperations {
         )
     }
 
+    #[cfg(feature = "v8")]
+    fn handle_durable_object_socket(&self, op: openworkers_core::ObjectSocketOp) {
+        use crate::durable::sockets;
+        use openworkers_core::ObjectSocketOp;
+
+        let Some(object) = &self.object else {
+            return;
+        };
+        let namespace_id = &object.namespace.id;
+        let object_id = &object.id;
+
+        match op {
+            ObjectSocketOp::Accept {
+                socket,
+                tags,
+                hibernatable,
+            } => {
+                let Some(reload) = object.reload.clone() else {
+                    return self.handle_log(
+                        LogLevel::Error,
+                        "this Durable Object cannot keep WebSockets".to_string(),
+                    );
+                };
+
+                let wake = sockets::Wake {
+                    namespace: object.namespace.clone(),
+                    reload,
+                };
+
+                if let Err(error) = sockets::accept(wake, object_id, socket, tags, hibernatable) {
+                    self.handle_log(LogLevel::Error, error);
+                }
+            }
+            ObjectSocketOp::Attach { socket, upgrade } => {
+                if !sockets::attach(namespace_id, object_id, socket, upgrade) {
+                    self.handle_log(
+                        LogLevel::Error,
+                        "a 101 response of a Durable Object must carry a WebSocket it accepted"
+                            .to_string(),
+                    );
+                }
+            }
+            ObjectSocketOp::Send { socket, message } => {
+                sockets::send(namespace_id, object_id, socket, message);
+            }
+            ObjectSocketOp::Attachment { socket, value } => {
+                sockets::set_attachment(namespace_id, object_id, socket, value);
+            }
+        }
+    }
+
+    #[cfg(feature = "v8")]
+    fn durable_object_sockets(&self) -> Vec<openworkers_core::ObjectSocket> {
+        match &self.object {
+            Some(object) => crate::durable::sockets::hibernatable(&object.namespace.id, &object.id),
+            None => Vec::new(),
+        }
+    }
+
     fn handle_binding_durable_object(
         &self,
         binding: &str,
         id: &str,
         request: HttpRequest,
-    ) -> OpFuture<'_, Result<HttpResponse, String>> {
+    ) -> OpFuture<'_, Result<ObjectResponse, String>> {
         let Some(namespace) = self.bindings.durable_object.get(binding).cloned() else {
             let error = format!("Durable Object binding '{binding}' not configured");
             return Box::pin(async move { Err(error) });

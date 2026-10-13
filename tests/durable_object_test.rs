@@ -54,10 +54,10 @@ fn new_namespace() -> NamespaceConfig {
 /// gives it.
 async fn visit(namespace: &NamespaceConfig, name: &str) -> String {
     let id = openworkers_runner::durable::id::from_name(&namespace.key, name);
-    let namespace_id = namespace.id.clone();
+    let served = namespace.clone();
     let object_id = id.clone();
     let load = move |depths| async move {
-        let ops = RunnerOperations::new().for_object(namespace_id, object_id, depths);
+        let ops = RunnerOperations::new().for_object(served, object_id, depths);
         let code = openworkers_transform::parse_worker_code(
             VISITS.as_bytes(),
             openworkers_transform::CodeLanguage::JavaScript,
@@ -89,7 +89,7 @@ async fn visit(namespace: &NamespaceConfig, name: &str) -> String {
     .expect("the object answers in time")
     .unwrap();
 
-    let body = response.body.collect().await.unwrap().unwrap();
+    let body = response.response.body.collect().await.unwrap().unwrap();
 
     String::from_utf8(body.to_vec()).unwrap()
 }

@@ -98,7 +98,7 @@ async fn get(
     .await
     .expect("the object answers in time")?;
 
-    let body = response.body.collect().await.unwrap().unwrap();
+    let body = response.response.body.collect().await.unwrap().unwrap();
 
     Ok(String::from_utf8(body.to_vec()).unwrap())
 }
@@ -316,7 +316,7 @@ async fn call(namespace: &NamespaceConfig, path: &str) -> String {
             },
         },
     ];
-    let namespace_id = namespace.id.clone();
+    let served = namespace.clone();
     let id = super::id::from_name(&namespace.key, "a");
     let mut request = request();
     request.url = format!("http://object{path}");
@@ -324,7 +324,7 @@ async fn call(namespace: &NamespaceConfig, path: &str) -> String {
     let response = tokio::time::timeout(
         Duration::from_secs(10),
         send(namespace, id, 0, request, move |depths| async move {
-            let ops = RunnerOperations::new().for_object(namespace_id, "a".to_string(), depths);
+            let ops = RunnerOperations::new().for_object(served, "a".to_string(), depths);
 
             Ok(source_of(CALLER, bindings, ops, Duration::from_secs(60)))
         }),
@@ -333,7 +333,7 @@ async fn call(namespace: &NamespaceConfig, path: &str) -> String {
     .expect("the object answers in time")
     .unwrap();
 
-    let body = response.body.collect().await.unwrap().unwrap();
+    let body = response.response.body.collect().await.unwrap().unwrap();
 
     String::from_utf8(body.to_vec()).unwrap()
 }
@@ -523,7 +523,7 @@ async fn deployed(
     .await
     .expect("the object answers in time")?;
 
-    let body = response.body.collect().await.unwrap().unwrap();
+    let body = response.response.body.collect().await.unwrap().unwrap();
 
     Ok(String::from_utf8(body.to_vec()).unwrap())
 }
@@ -549,7 +549,6 @@ async fn a_new_deployment_starts_after_the_old_object_ends() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     deployments.current.store(2, Ordering::SeqCst);
-    let retired = std::time::Instant::now();
     super::retire("worker-ns-deploy", 1);
 
     // The old object ends its event; the new one starts after it, from 0
@@ -559,10 +558,12 @@ async fn a_new_deployment_starts_after_the_old_object_ends() {
     );
     assert_eq!(slow.await.unwrap().unwrap(), "v1 slow");
 
+    // The slow event of the old object starts after its load and takes
+    // 300 ms, so the new load comes at least that much later
     let loads = deployments.loads.lock().unwrap().clone();
     assert_eq!(loads.len(), 2);
     assert!(
-        loads[1].1 - retired >= Duration::from_millis(200),
+        loads[1].1 - loads[0].1 >= Duration::from_millis(300),
         "{loads:?}"
     );
 }
@@ -662,6 +663,208 @@ async fn an_alarm_runs_the_handler_of_the_object() {
     let runs = send(&namespace, "a".to_string(), 0, request(), load())
         .await
         .unwrap();
-    let body = runs.body.collect().await.unwrap().unwrap();
+    let body = runs.response.body.collect().await.unwrap().unwrap();
     assert_eq!(body.as_ref(), b"[0,1]");
+}
+
+/// Keeps the socket of its request: hibernatable on `/`, with listeners on
+/// `/listen`, where the frame `break` breaks the object.
+const ROOM: &str = r#"
+    export class Counter {
+        constructor(state) {
+            this.state = state;
+            this.events = 0;
+        }
+
+        async fetch(request) {
+            const [client, server] = Object.values(new WebSocketPair());
+
+            if (new URL(request.url).pathname === '/listen') {
+                server.accept();
+                server.addEventListener('message', () => {
+                    this.state.blockConcurrencyWhile(() => {
+                        throw new Error('broken');
+                    });
+                });
+            } else {
+                this.state.acceptWebSocket(server, ['room']);
+                server.serializeAttachment({ joined: 1 });
+            }
+
+            server.send('hello');
+
+            return new Response(null, { status: 101, webSocket: client });
+        }
+
+        webSocketMessage(ws, message) {
+            this.events += 1;
+            const count = this.state.getWebSockets('room').length;
+            ws.send(`${message} ${this.events} ${count} ${ws.deserializeAttachment().joined}`);
+        }
+    }
+"#;
+
+/// Builds ROOM as the object `a` of `namespace`, and counts the builds.
+fn room(
+    namespace: NamespaceConfig,
+    idle: Duration,
+    loads: Arc<AtomicUsize>,
+) -> super::sockets::Reload {
+    Arc::new(move |depths| {
+        let namespace = namespace.clone();
+        let loads = Arc::clone(&loads);
+
+        Box::pin(async move {
+            loads.fetch_add(1, Ordering::SeqCst);
+
+            let reload = room(namespace.clone(), idle, loads);
+            let ops = RunnerOperations::new()
+                .for_object(namespace, "a".to_string(), depths)
+                .reloading_with(reload);
+
+            Ok(source_of(ROOM, Vec::new(), ops, idle))
+        })
+    })
+}
+
+/// The client of a socket of an object, as the ingress holds it.
+struct Client {
+    to_object: tokio::sync::mpsc::UnboundedSender<openworkers_core::WebSocketIncoming>,
+    from_object: tokio::sync::mpsc::UnboundedReceiver<openworkers_core::WebSocketOutgoing>,
+}
+
+impl Client {
+    async fn connect(
+        namespace: &NamespaceConfig,
+        path: &str,
+        reload: super::sockets::Reload,
+    ) -> Self {
+        let mut request = request();
+        request.url = format!("http://object{path}");
+        request
+            .headers
+            .insert("upgrade".to_string(), "websocket".to_string());
+
+        let answer = send(namespace, "a".to_string(), 0, request, move |depths| {
+            reload(depths)
+        })
+        .await
+        .unwrap();
+        assert_eq!(answer.response.status, 101);
+
+        let (send_tx, from_object) = tokio::sync::mpsc::unbounded_channel();
+        let (to_object, recv_rx) = tokio::sync::mpsc::unbounded_channel();
+        answer
+            .socket
+            .expect("a 101 hands over a socket")
+            .send(openworkers_core::WebSocketConnection { send_tx, recv_rx })
+            .unwrap();
+
+        Self {
+            to_object,
+            from_object,
+        }
+    }
+
+    fn send(&self, text: &str) {
+        self.to_object
+            .send(openworkers_core::WebSocketIncoming::Text(text.to_string()))
+            .unwrap();
+    }
+
+    async fn recv(&mut self) -> openworkers_core::WebSocketOutgoing {
+        tokio::time::timeout(Duration::from_secs(5), self.from_object.recv())
+            .await
+            .expect("the object answers in time")
+            .expect("the socket is open")
+    }
+}
+
+fn text(message: openworkers_core::WebSocketOutgoing) -> String {
+    match message {
+        openworkers_core::WebSocketOutgoing::Text(text) => text,
+        other => panic!("not a text frame: {other:?}"),
+    }
+}
+
+fn close_code(message: openworkers_core::WebSocketOutgoing) -> u16 {
+    match message {
+        openworkers_core::WebSocketOutgoing::Close { code, .. } => code,
+        other => panic!("not a close: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hibernatable_socket_starts_its_object_again() {
+    let namespace = namespace("ns-socket");
+    let loads = Arc::new(AtomicUsize::new(0));
+    let reload = room(namespace.clone(), Duration::from_millis(100), loads.clone());
+
+    let mut client = Client::connect(&namespace, "/", reload).await;
+    assert_eq!(text(client.recv().await), "hello");
+
+    // Past the idle time the object leaves, and its socket stays open
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!is_running("ns-socket", "a"));
+
+    client.send("ping");
+    assert_eq!(text(client.recv().await), "ping 1 1 1");
+    assert_eq!(loads.load(Ordering::SeqCst), 2);
+
+    client
+        .to_object
+        .send(openworkers_core::WebSocketIncoming::Closed {
+            code: 1000,
+            reason: String::new(),
+        })
+        .unwrap();
+
+    for _ in 0..100 {
+        if super::sockets::hibernatable("ns-socket", "a").is_empty() {
+            return;
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    panic!("a closed socket leaves its object");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_deployment_closes_the_sockets() {
+    let namespace = namespace("ns-socket-deploy");
+    let reload = room(namespace.clone(), Duration::from_secs(60), Arc::default());
+
+    let mut client = Client::connect(&namespace, "/", reload).await;
+    assert_eq!(text(client.recv().await), "hello");
+
+    super::retire(&namespace.worker_id, 1);
+
+    assert_eq!(close_code(client.recv().await), 1012);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_socket_with_listeners_closes_when_its_object_stops() {
+    let namespace = namespace("ns-socket-listen");
+    let reload = room(namespace.clone(), Duration::from_secs(60), Arc::default());
+
+    let mut client = Client::connect(&namespace, "/listen", reload).await;
+    assert_eq!(text(client.recv().await), "hello");
+
+    client.send("break");
+
+    assert_eq!(close_code(client.recv().await), 1011);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deleted_namespace_closes_the_sockets() {
+    let namespace = namespace("ns-socket-stop");
+    let reload = room(namespace.clone(), Duration::from_secs(60), Arc::default());
+
+    let mut client = Client::connect(&namespace, "/", reload).await;
+    assert_eq!(text(client.recv().await), "hello");
+
+    super::stop_namespace("ns-socket-stop");
+
+    assert_eq!(close_code(client.recv().await), 1001);
 }

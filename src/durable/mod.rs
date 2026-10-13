@@ -7,6 +7,8 @@
 
 pub mod alarms;
 pub mod id;
+#[cfg(feature = "v8")]
+pub mod sockets;
 
 use std::sync::{Arc, Mutex};
 
@@ -68,7 +70,7 @@ impl Drop for DepthGuard {
 #[cfg(feature = "v8")]
 pub use registry::{
     AlarmError, DRAIN, IDLE, MAX_RESIDENT_PER_ACCOUNT, ObjectSource, alarm, load, retire,
-    running_versions, send, stop_namespace,
+    running_versions, send, socket_event, stop_namespace,
 };
 
 /// Without a JavaScript engine that serves objects, none runs.
@@ -147,10 +149,10 @@ mod registry {
 
     use once_cell::sync::Lazy;
     use openworkers_core::{
-        FetchInit, HttpRequest, HttpResponse, LogEvent, LogLevel, OperationsHandle, RuntimeLimits,
-        Script, TerminationReason,
+        FetchInit, HttpRequest, LogEvent, LogLevel, ObjectResponse, OperationsHandle,
+        RuntimeLimits, Script, TerminationReason,
     };
-    use openworkers_runtime_v8::{AlarmInit, DurableObject, ObjectEvent, ObjectSpec};
+    use openworkers_runtime_v8::{AlarmInit, DurableObject, ObjectEvent, ObjectSpec, SocketEvent};
     use tokio::sync::{mpsc, oneshot};
 
     use super::CallDepths;
@@ -251,14 +253,20 @@ mod registry {
     /// and each one ends after the requests it has taken. Answers whether
     /// none runs any more, so its files can go.
     pub fn stop_namespace(namespace_id: &str) -> bool {
-        let mut registry = REGISTRY.lock().unwrap();
+        let none_runs = {
+            let mut registry = REGISTRY.lock().unwrap();
 
-        registry.stopped.insert(namespace_id.to_string());
-        registry
-            .objects
-            .retain(|key, _| key.namespace != namespace_id);
+            registry.stopped.insert(namespace_id.to_string());
+            registry
+                .objects
+                .retain(|key, _| key.namespace != namespace_id);
 
-        !registry.running.contains_key(namespace_id)
+            !registry.running.contains_key(namespace_id)
+        };
+
+        super::sockets::close_namespace(namespace_id);
+
+        none_runs
     }
 
     /// The workers that export the classes of running objects, with the
@@ -277,20 +285,34 @@ mod registry {
     /// Stops the objects that run `version` of `worker_id`: they take no new
     /// request, and end once their events do, or after DRAIN. The next
     /// request starts the object again, after the old one ends.
+    /// Their WebSockets close, as on Cloudflare.
     pub fn retire(worker_id: &str, version: i32) {
-        let mut registry = REGISTRY.lock().unwrap();
-        let old: Vec<ObjectKey> = registry
-            .objects
-            .iter()
-            .filter(|(_, entry)| entry.worker_id == worker_id && entry.version == Some(version))
-            .map(|(key, _)| key.clone())
-            .collect();
+        let old: Vec<ObjectKey> = {
+            let mut registry = REGISTRY.lock().unwrap();
+            let old: Vec<ObjectKey> = registry
+                .objects
+                .iter()
+                .filter(|(_, entry)| entry.worker_id == worker_id && entry.version == Some(version))
+                .map(|(key, _)| key.clone())
+                .collect();
+
+            for key in &old {
+                let entry = registry.objects.remove(key).expect("the key is listed");
+                registry
+                    .retiring
+                    .insert(key.clone(), (entry.generation, entry.done));
+            }
+
+            old
+        };
 
         for key in old {
-            let entry = registry.objects.remove(&key).expect("the key is listed");
-            registry
-                .retiring
-                .insert(key, (entry.generation, entry.done));
+            super::sockets::close_object(
+                &key.namespace,
+                &key.id,
+                1012,
+                "the Durable Object restarts for a new deployment",
+            );
         }
     }
 
@@ -304,20 +326,49 @@ mod registry {
         depth: u32,
         request: HttpRequest,
         load: L,
-    ) -> Result<HttpResponse, String>
+    ) -> Result<ObjectResponse, String>
     where
         L: FnOnce(Arc<CallDepths>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<ObjectSource, String>> + Send + 'static,
     {
         let (res_tx, res_rx) = oneshot::channel();
-        let event = ObjectEvent::Fetch(FetchInit::new(request, res_tx));
+
+        // The object can answer a WebSocket upgrade with a socket of its own
+        let upgrades = request.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("upgrade") && value.eq_ignore_ascii_case("websocket")
+        });
+
+        let (init, socket) = if upgrades {
+            let (init, socket) = FetchInit::upgradable(request, res_tx);
+            (init, Some(socket))
+        } else {
+            (FetchInit::new(request, res_tx), None)
+        };
 
         // The event counts at its depth until its response comes
-        let entered = admit(namespace, id, depth, event, load)?;
+        let entered = admit(namespace, id, depth, ObjectEvent::Fetch(init), load)?;
         let response = res_rx.await;
         drop(entered);
 
-        response.map_err(|_| "the Durable Object stopped".to_string())
+        let response = response.map_err(|_| "the Durable Object stopped".to_string())?;
+        let socket = socket.filter(|_| response.status == 101);
+
+        Ok(ObjectResponse { response, socket })
+    }
+
+    /// Puts what came on a WebSocket of the object `id` in its mailbox, and
+    /// starts the object if it is not running.
+    pub fn socket_event<L, Fut>(
+        namespace: &super::NamespaceConfig,
+        id: String,
+        event: SocketEvent,
+        load: L,
+    ) -> Result<(), String>
+    where
+        L: FnOnce(Arc<CallDepths>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<ObjectSource, String>> + Send + 'static,
+    {
+        admit(namespace, id, 0, ObjectEvent::Socket(event), load).map(drop)
     }
 
     /// Why an alarm did not end well.
@@ -507,6 +558,8 @@ mod registry {
             {
                 log("stopped", reason);
             }
+
+            super::sockets::instance_ended(&key.namespace, &key.id);
         }
     }
 
@@ -539,7 +592,18 @@ mod registry {
     /// What the object `object_id` of `namespace` is built from: the worker
     /// that exports the class, its bindings and its logs, as for a request
     /// to it.
-    pub async fn load(
+    pub fn load(
+        namespace: super::NamespaceConfig,
+        object_id: String,
+        depths: Arc<CallDepths>,
+        db_pool: Option<crate::ops::DbPool>,
+        log_tx: Option<crate::ops::LogTx>,
+    ) -> futures::future::BoxFuture<'static, Result<ObjectSource, String>> {
+        // Boxed, as the object it builds can build itself again
+        Box::pin(load_worker(namespace, object_id, depths, db_pool, log_tx))
+    }
+
+    async fn load_worker(
         namespace: super::NamespaceConfig,
         object_id: String,
         depths: Arc<CallDepths>,
@@ -587,12 +651,30 @@ mod registry {
 
         let script = crate::worker::prepare_script(&data).map_err(|e| failed(format!("{e:?}")))?;
 
+        let reload: super::sockets::Reload = {
+            let namespace = namespace.clone();
+            let object_id = object_id.clone();
+            let db_pool = db_pool.clone();
+            let log_tx = log_tx.clone();
+
+            Arc::new(move |depths| {
+                load(
+                    namespace.clone(),
+                    object_id.clone(),
+                    depths,
+                    Some(db_pool.clone()),
+                    log_tx.clone(),
+                )
+            })
+        };
+
         let mut ops = crate::ops::RunnerOperations::new()
             .with_worker_id(data.id.clone())
             .with_user_id(data.user_id.clone())
             .with_bindings(data.bindings)
             .with_db_pool(db_pool)
-            .for_object(namespace.id, object_id, depths);
+            .for_object(namespace.clone(), object_id, depths)
+            .reloading_with(reload);
 
         if let Some(log_tx) = log_tx {
             ops = ops.with_log_tx(log_tx.for_worker(data.id));
