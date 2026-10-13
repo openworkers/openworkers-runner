@@ -11,17 +11,23 @@ use openworkers_core::{
 };
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::oneshot;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite;
+use tokio_util::sync::CancellationToken;
 use tungstenite::protocol::{Role, WebSocketConfig};
 
 /// The largest message, and frame, a client can send. A larger one closes the
 /// socket with 1009.
 pub const MAX_MESSAGE_BYTES: usize = 1 << 20;
+
+/// The bytes a socket holds for a peer that does not read them. Past this
+/// the socket closes with 1008, or else the peer grows the memory of the
+/// runner.
+pub const MAX_QUEUED_BYTES: usize = 8 << 20;
 
 /// How long the socket of a client stays open with no frame either way (from
 /// WS_MAX_IDLE_MS env). The default is the idle limit of the Cloudflare proxy.
@@ -189,30 +195,72 @@ where
 
     let (send_tx, mut send_rx) = tokio::sync::mpsc::unbounded_channel::<WebSocketOutgoing>();
     let (recv_tx, recv_rx) = tokio::sync::mpsc::unbounded_channel::<WebSocketIncoming>();
+    let (write_tx, mut write_rx) = tokio::sync::mpsc::unbounded_channel();
+    let queued = Arc::new(AtomicUsize::new(0));
+    let slow = CancellationToken::new();
 
-    // JS -> WS
-    tokio::spawn(async move {
-        while let Some(msg) = send_rx.recv().await {
-            let ws_msg = match msg {
-                WebSocketOutgoing::Text(s) => tungstenite::Message::Text(s.into()),
-                WebSocketOutgoing::Binary(b) => tungstenite::Message::Binary(bytes::Bytes::from(b)),
-                WebSocketOutgoing::Close { code, reason } => {
-                    let frame = tungstenite::protocol::CloseFrame {
-                        code: tungstenite::protocol::frame::coding::CloseCode::from(code),
-                        reason: reason.into(),
-                    };
-                    tungstenite::Message::Close(Some(frame))
+    // JS -> queue, which counts the bytes the client did not take yet
+    tokio::spawn({
+        let queued = Arc::clone(&queued);
+        let slow = slow.clone();
+
+        async move {
+            while let Some(msg) = send_rx.recv().await {
+                let (ws_msg, bytes) = match msg {
+                    WebSocketOutgoing::Text(s) => {
+                        let bytes = s.len();
+                        (tungstenite::Message::Text(s.into()), bytes)
+                    }
+                    WebSocketOutgoing::Binary(b) => {
+                        let bytes = b.len();
+                        (tungstenite::Message::Binary(bytes::Bytes::from(b)), bytes)
+                    }
+                    WebSocketOutgoing::Close { code, reason } => {
+                        let frame = tungstenite::protocol::CloseFrame {
+                            code: tungstenite::protocol::frame::coding::CloseCode::from(code),
+                            reason: reason.into(),
+                        };
+                        (tungstenite::Message::Close(Some(frame)), 0)
+                    }
+                };
+
+                if queued.fetch_add(bytes, Ordering::Relaxed) >= MAX_QUEUED_BYTES {
+                    slow.cancel();
+                    break;
                 }
-            };
 
-            touch();
-
-            if ws_write.send(ws_msg).await.is_err() {
-                break;
+                if write_tx.send((ws_msg, bytes)).is_err() {
+                    break;
+                }
             }
         }
+    });
 
-        let _ = ws_write.close().await;
+    // queue -> WS. A client that stops reading blocks the write, so the
+    // cancel drops the socket instead.
+    tokio::spawn({
+        let slow = slow.clone();
+
+        async move {
+            let write = async {
+                while let Some((ws_msg, bytes)) = write_rx.recv().await {
+                    touch();
+
+                    if ws_write.send(ws_msg).await.is_err() {
+                        break;
+                    }
+
+                    queued.fetch_sub(bytes, Ordering::Relaxed);
+                }
+
+                let _ = ws_write.close().await;
+            };
+
+            tokio::select! {
+                _ = write => {}
+                _ = slow.cancelled() => {}
+            }
+        }
     });
 
     // WS -> JS
@@ -248,6 +296,14 @@ where
 
             let result = tokio::select! {
                 biased;
+
+                _ = slow.cancelled() => {
+                    let _ = recv_tx.send(WebSocketIncoming::Closed {
+                        code: 1008,
+                        reason: "The client does not read fast enough".into(),
+                    });
+                    break;
+                }
 
                 _ = drain => {
                     close(1001, "The runner is going away");
@@ -369,5 +425,63 @@ mod tests {
         let mut headers = handshake();
         headers.remove("connection");
         assert_eq!(refused(&headers, &Method::GET), 400);
+    }
+
+    /// The bridge of a socket and the client at its other end, in memory.
+    async fn piped() -> (
+        WebSocketConnection,
+        WebSocketStream<tokio::io::DuplexStream>,
+    ) {
+        let (server, client) = tokio::io::duplex(64 * 1024);
+        let (server, client) = tokio::join!(
+            WebSocketStream::from_raw_socket(server, Role::Server, None),
+            WebSocketStream::from_raw_socket(client, Role::Client, None)
+        );
+
+        (pipe(server, None), client)
+    }
+
+    /// 64 MiB in messages of 64 KiB
+    const MESSAGES: usize = 1024;
+
+    fn message() -> WebSocketOutgoing {
+        WebSocketOutgoing::Text("x".repeat(64 * 1024))
+    }
+
+    #[tokio::test]
+    async fn a_client_that_does_not_read_closes_the_socket() {
+        let (mut socket, _client) = piped().await;
+
+        for _ in 0..MESSAGES {
+            let _ = socket.send_tx.send(message());
+        }
+
+        let closed = tokio::time::timeout(Duration::from_secs(5), socket.recv_rx.recv())
+            .await
+            .expect("the socket closes in time");
+
+        assert!(
+            matches!(closed, Some(WebSocketIncoming::Closed { code: 1008, .. })),
+            "{closed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_that_reads_gets_every_message() {
+        let (mut socket, mut client) = piped().await;
+
+        // Bursts of 4 MiB, each under the limit
+        for _ in 0..MESSAGES / 64 {
+            for _ in 0..64 {
+                socket.send_tx.send(message()).unwrap();
+            }
+
+            for _ in 0..64 {
+                let message = client.next().await.unwrap().unwrap();
+                assert_eq!(message.len(), 64 * 1024);
+            }
+        }
+
+        assert!(socket.recv_rx.try_recv().is_err());
     }
 }

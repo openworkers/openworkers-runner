@@ -15,6 +15,7 @@ use openworkers_runtime_v8::SocketEvent;
 use tokio::sync::{mpsc, oneshot};
 
 use super::{CallDepths, NamespaceConfig, ObjectSource};
+use crate::websocket::MAX_QUEUED_BYTES;
 
 /// The open sockets of one object, as on Cloudflare
 pub const MAX_SOCKETS_PER_OBJECT: usize = 32_768;
@@ -258,10 +259,44 @@ async fn run(
     attached: oneshot::Receiver<WebSocketUpgrade>,
 ) {
     let attach = async { attached.await.ok()?.await.ok() };
-    let conn = tokio::time::timeout(ATTACH_TIMEOUT, attach)
-        .await
-        .ok()
-        .flatten();
+    let deadline = tokio::time::sleep(ATTACH_TIMEOUT);
+    tokio::pin!(attach, deadline);
+
+    // The frames of the object before the client comes
+    let mut waiting = Vec::new();
+    let mut waiting_bytes = 0;
+    let mut open = true;
+
+    let conn = loop {
+        tokio::select! {
+            conn = &mut attach => break conn,
+            _ = &mut deadline => break None,
+
+            message = out_rx.recv(), if open => {
+                let Some(message) = message else {
+                    open = false;
+                    continue;
+                };
+
+                waiting_bytes += match &message {
+                    WebSocketOutgoing::Text(text) => text.len(),
+                    WebSocketOutgoing::Binary(bytes) => bytes.len(),
+                    WebSocketOutgoing::Close { .. } => 0,
+                };
+                waiting.push(message);
+
+                if waiting_bytes > MAX_QUEUED_BYTES {
+                    forget(&key, socket);
+                    let closed = WebSocketIncoming::Closed {
+                        code: 1008,
+                        reason: "The client does not read fast enough".into(),
+                    };
+                    let _ = deliver(&wake, &key.1, socket, closed);
+                    return;
+                }
+            }
+        }
+    };
 
     let Some(WebSocketConnection {
         send_tx,
@@ -271,6 +306,16 @@ async fn run(
         forget(&key, socket);
         return;
     };
+
+    for message in waiting {
+        let closes = matches!(message, WebSocketOutgoing::Close { .. });
+        let _ = send_tx.send(message);
+
+        if closes {
+            forget(&key, socket);
+            return;
+        }
+    }
 
     loop {
         tokio::select! {

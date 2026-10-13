@@ -668,7 +668,8 @@ async fn an_alarm_runs_the_handler_of_the_object() {
 }
 
 /// Keeps the socket of its request: hibernatable on `/`, with listeners on
-/// `/listen`, where the frame `break` breaks the object.
+/// `/listen`, where the frame `break` breaks the object. On `/flood` it
+/// sends 16 MiB before its response.
 const ROOM: &str = r#"
     export class Counter {
         constructor(state) {
@@ -689,6 +690,14 @@ const ROOM: &str = r#"
             } else {
                 this.state.acceptWebSocket(server, ['room']);
                 server.serializeAttachment({ joined: 1 });
+            }
+
+            if (new URL(request.url).pathname === '/flood') {
+                const mib = 'x'.repeat(1 << 20);
+
+                for (let i = 0; i < 16; i++) {
+                    server.send(mib);
+                }
             }
 
             server.send('hello');
@@ -867,4 +876,35 @@ async fn a_deleted_namespace_closes_the_sockets() {
     super::stop_namespace("ns-socket-stop");
 
     assert_eq!(close_code(client.recv().await), 1001);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_socket_that_queues_too_much_before_its_client_comes_closes() {
+    let namespace = namespace("ns-socket-flood");
+    let reload = room(namespace.clone(), Duration::from_secs(60), Arc::default());
+
+    let mut request = request();
+    request.url = "http://object/flood".to_string();
+    request
+        .headers
+        .insert("upgrade".to_string(), "websocket".to_string());
+
+    // The client never comes, and the frames wait for it
+    let answer = send(&namespace, "a".to_string(), 0, request, move |depths| {
+        reload(depths)
+    })
+    .await
+    .unwrap();
+    assert_eq!(answer.response.status, 101);
+
+    for _ in 0..200 {
+        if super::sockets::hibernatable("ns-socket-flood", "a").is_empty() {
+            drop(answer);
+            return;
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    panic!("the socket still holds its frames");
 }
