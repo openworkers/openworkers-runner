@@ -249,7 +249,8 @@ back its worker slot and takes a socket slot.
 | `WS_MAX_IDLE_MS`     | `100000`                 | A socket with no frame either way closes with 1001 |
 
 A message or frame over 1 MiB closes the socket with 1009. A drain closes
-every open socket with 1001.
+every open socket with 1001. A peer that leaves more than 8 MiB unread
+loses the connection, and the worker gets a close with 1008.
 
 #### D1 (SQLite)
 
