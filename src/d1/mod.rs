@@ -132,6 +132,18 @@ impl Handle {
     fn unsaved(&self) -> bool {
         self.commits.load(Ordering::SeqCst) != self.saved.load(Ordering::SeqCst)
     }
+
+    /// Whether it holds its connection; a call under way counts as open
+    fn is_open(&self) -> bool {
+        self.database.try_lock().map_or(true, |db| db.is_some())
+    }
+
+    /// Drops the connection; the next call opens the file again
+    fn close(&self) {
+        if let Ok(mut db) = self.database.try_lock() {
+            *db = None;
+        }
+    }
 }
 
 /// What the objects of one Durable Object namespace hold: each object by its
@@ -383,6 +395,13 @@ impl Service {
         handle.waiting.fetch_sub(1, Ordering::SeqCst);
         *handle.last_used.lock().unwrap() = Instant::now();
 
+        // Without snapshots, the local commit is all there is to save, or
+        // else the database would stay open for good
+        if self.archive.is_none() {
+            let commits = handle.commits.load(Ordering::SeqCst);
+            handle.saved.store(commits, Ordering::SeqCst);
+        }
+
         if handle.unsaved() {
             handle
                 .unsaved_since
@@ -590,15 +609,23 @@ impl Service {
             return handle.clone();
         }
 
-        if databases.len() >= self.config.max_open {
+        let open = databases.values().filter(|handle| handle.is_open()).count();
+
+        if open >= self.config.max_open {
             let oldest = databases
                 .iter()
-                .filter(|(_, handle)| Arc::strong_count(handle) == 1 && !handle.unsaved())
+                .filter(|(_, handle)| Arc::strong_count(handle) == 1 && handle.is_open())
                 .min_by_key(|(_, handle)| *handle.last_used.lock().unwrap())
                 .map(|(id, _)| id.clone());
 
+            // A database with commits that no snapshot holds keeps its entry,
+            // so the next snapshot pass still finds it
             if let Some(oldest) = oldest {
-                databases.remove(&oldest);
+                if databases[&oldest].unsaved() {
+                    databases[&oldest].close();
+                } else {
+                    databases.remove(&oldest);
+                }
             }
         }
 
@@ -707,14 +734,20 @@ impl Service {
 
     /// Drops the connections nobody used for `idle`; SQLite checkpoints the
     /// WAL when the last connection closes. A database with commits that no
-    /// snapshot holds stays open until a snapshot holds them.
+    /// snapshot holds keeps its entry until a snapshot holds them.
     fn close_idle(&self) {
         let now = Instant::now();
 
         self.databases.lock().unwrap().retain(|_, handle| {
-            Arc::strong_count(handle) > 1
-                || handle.unsaved()
-                || now.duration_since(*handle.last_used.lock().unwrap()) < self.config.idle
+            let idle = Arc::strong_count(handle) == 1
+                && now.duration_since(*handle.last_used.lock().unwrap()) >= self.config.idle;
+
+            if !idle {
+                return true;
+            }
+
+            handle.close();
+            handle.unsaved()
         });
     }
 

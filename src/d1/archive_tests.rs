@@ -511,3 +511,41 @@ async fn a_lost_object_comes_back_from_its_last_snapshot() {
         ObjectStorageResult::Values(vec![Some(b"saved".to_vec())])
     );
 }
+
+#[tokio::test]
+async fn unsaved_objects_close_their_files_and_still_get_their_snapshot() {
+    use openworkers_core::ObjectStorageOp;
+    use openworkers_core::ObjectStorageResult;
+
+    const NAMESPACE: &str = "66666666-6666-4666-8666-666666666666";
+
+    let dir = temp_dir();
+    let memory = Memory::default();
+    let service = service(&dir, &memory);
+
+    for index in 0..32 {
+        let put = ObjectStorageOp::Write {
+            puts: vec![("k".to_string(), b"v".to_vec())],
+            deletes: Vec::new(),
+            delete_all: false,
+        };
+        let written = service
+            .object_storage(NAMESPACE, &format!("{index:064x}"), put)
+            .await;
+        assert!(matches!(written, ObjectStorageResult::Written { .. }));
+    }
+
+    let open = service
+        .databases
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|handle| handle.database.try_lock().map_or(true, |db| db.is_some()))
+        .count();
+    assert!(open <= 16, "{open} files open, over D1_MAX_OPEN");
+
+    service.snapshot_all().await;
+
+    let snapshots = memory.objects.lock().unwrap().len();
+    assert_eq!(snapshots, 32);
+}

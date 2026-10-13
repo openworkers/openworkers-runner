@@ -400,3 +400,19 @@ async fn the_limit_counts_the_files_already_on_disk() {
         "{written:?}"
     );
 }
+
+#[tokio::test]
+async fn without_snapshots_written_objects_do_not_stay_open() {
+    let (service, _dir) = service();
+
+    for index in 0..32 {
+        let object = format!("{index:064x}");
+        let written = service
+            .object_storage(NAMESPACE, &object, put(&[("key", b"value")]))
+            .await;
+        assert!(matches!(written, ObjectStorageResult::Written { .. }));
+    }
+
+    let open = service.databases.lock().unwrap().len();
+    assert!(open <= 16, "{open} databases open, over D1_MAX_OPEN");
+}
