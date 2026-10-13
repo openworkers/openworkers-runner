@@ -111,9 +111,17 @@ async fn the_sockets_of_objects_take_socket_slots() {
         .expect("a socket over the slots closes");
     assert!(!first.is_closed() && !second.is_closed());
 
-    // A socket that ends gives its slot back
+    // A socket that ends gives its slot back, and tells the drain
+    let notify = openworkers_runner::worker_pool::TASK_COMPLETION_NOTIFY.clone();
+    let ended = notify.notified();
+    tokio::pin!(ended);
+    ended.as_mut().enable();
+
     drop(first);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    tokio::time::timeout(Duration::from_secs(2), ended)
+        .await
+        .expect("the drain hears of the socket that ended");
 
     let (_, fourth) = upgrade(&namespace, &id).await;
     tokio::time::sleep(Duration::from_millis(100)).await;

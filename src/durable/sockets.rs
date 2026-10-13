@@ -48,6 +48,17 @@ struct Socket {
     hibernatable: bool,
 }
 
+/// The socket slot of a socket, which the drain counts until it drops.
+struct Slot(Option<OwnedSemaphorePermit>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        // The slot goes back before the drain looks, or it would count it
+        self.0.take();
+        crate::worker_pool::notify_task_completed();
+    }
+}
+
 /// An object: its namespace and its id
 type ObjectRef = (String, String);
 
@@ -99,7 +110,7 @@ pub fn accept(
         );
     }
 
-    tokio::spawn(run(key, socket, wake, out_rx, attached, slot));
+    tokio::spawn(run(key, socket, wake, out_rx, attached, Slot(Some(slot))));
 
     Ok(())
 }
@@ -269,7 +280,7 @@ async fn run(
     wake: Wake,
     mut out_rx: mpsc::UnboundedReceiver<WebSocketOutgoing>,
     attached: oneshot::Receiver<WebSocketUpgrade>,
-    _slot: OwnedSemaphorePermit,
+    _slot: Slot,
 ) {
     let attach = async { attached.await.ok()?.await.ok() };
     let deadline = tokio::time::sleep(ATTACH_TIMEOUT);
