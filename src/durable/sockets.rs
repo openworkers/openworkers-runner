@@ -67,6 +67,13 @@ pub fn accept(
     hibernatable: bool,
 ) -> Result<(), String> {
     let key = key(&wake.namespace.id, object_id);
+
+    // The socket of the request gives its slot back once the worker ends,
+    // and this socket can outlive it by far
+    let Ok(slot) = crate::worker_pool::WS_SEMAPHORE.clone().try_acquire_owned() else {
+        return Err("too many WebSockets are open on this runner".to_string());
+    };
+
     let (out, out_rx) = mpsc::unbounded_channel();
     let (attach, attached) = oneshot::channel();
 
@@ -92,7 +99,7 @@ pub fn accept(
         );
     }
 
-    tokio::spawn(run(key, socket, wake, out_rx, attached));
+    tokio::spawn(run(key, socket, wake, out_rx, attached, slot));
 
     Ok(())
 }
@@ -255,13 +262,14 @@ fn deliver(
 
 /// Moves the frames of one socket: waits for the response that hands it
 /// over and for the client, then sends the frames of the object and
-/// delivers the frames of the client.
+/// delivers the frames of the client. Holds a socket slot until it ends.
 async fn run(
     key: ObjectRef,
     socket: WebSocketId,
     wake: Wake,
     mut out_rx: mpsc::UnboundedReceiver<WebSocketOutgoing>,
     attached: oneshot::Receiver<WebSocketUpgrade>,
+    _slot: OwnedSemaphorePermit,
 ) {
     let attach = async { attached.await.ok()?.await.ok() };
     let deadline = tokio::time::sleep(ATTACH_TIMEOUT);
