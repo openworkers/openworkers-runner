@@ -1012,7 +1012,7 @@ async fn a_client_that_its_object_keeps_up_with_stays_open() {
         client.send("count");
         assert_eq!(
             text(client.recv().await),
-            format!("{} {}", round * 4, round * 4 << 20)
+            format!("{} {}", round * 4, (round * 4) << 20)
         );
     }
 }
