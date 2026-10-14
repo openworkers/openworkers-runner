@@ -67,7 +67,8 @@ async fn lower(db: &PgPool, namespace_id: &str, object_id: &str, at: i64) -> sql
 enum UnderWay {
     /// It stays marked, and sets the index when it ends
     Keep,
-    /// It ends with this change
+    /// It ends with this change; only the delivery of v8 ends one
+    #[cfg_attr(not(feature = "v8"), allow(dead_code))]
     End,
 }
 
