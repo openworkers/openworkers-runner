@@ -15,6 +15,7 @@ use openworkers_core::D1ErrorKind;
 use openworkers_core::D1Op;
 use openworkers_core::D1Result;
 use sqlx::postgres::PgListener;
+use tokio_util::sync::CancellationToken;
 
 use super::Migration;
 use super::Service;
@@ -36,25 +37,37 @@ enum Request {
     Restore,
 }
 
-/// Serves the requests while the process lives, on a connection of its own.
-pub async fn listen(service: &'static Service, database_url: String) {
-    loop {
-        if let Err(err) = listen_once(service, &database_url).await {
+/// Serves the requests on a connection of its own until `stop`. A request
+/// under way ends first, so the last snapshots of the runner hold it.
+pub async fn listen(service: &'static Service, database_url: String, stop: CancellationToken) {
+    while !stop.is_cancelled() {
+        if let Err(err) = listen_once(service, &database_url, &stop).await {
             tracing::warn!("D1 requests: listener: {err}");
         }
 
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::select! {
+            _ = stop.cancelled() => {}
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
     }
 }
 
-async fn listen_once(service: &Service, database_url: &str) -> Result<(), sqlx::Error> {
-    let mut listener = PgListener::connect(database_url).await?;
+async fn listen_once(
+    service: &Service,
+    database_url: &str,
+    stop: &CancellationToken,
+) -> Result<(), sqlx::Error> {
+    let mut listener = tokio::select! {
+        listener = PgListener::connect(database_url) => listener?,
+        _ = stop.cancelled() => return Ok(()),
+    };
     let mut sweep = tokio::time::interval(SWEEP);
 
     listener.listen(CHANNEL).await?;
 
     loop {
         let notified = tokio::select! {
+            _ = stop.cancelled() => return Ok(()),
             notification = listener.try_recv() => match notification? {
                 Some(_) => true,
                 None => return Ok(()),
@@ -62,7 +75,7 @@ async fn listen_once(service: &Service, database_url: &str) -> Result<(), sqlx::
             _ = sweep.tick() => false,
         };
 
-        serve_pending(service, &mut listener).await?;
+        serve_pending(service, &mut listener, stop).await?;
 
         if !notified {
             clean_up(service, &mut listener).await?;
@@ -70,7 +83,11 @@ async fn listen_once(service: &Service, database_url: &str) -> Result<(), sqlx::
     }
 }
 
-async fn serve_pending(service: &Service, listener: &mut PgListener) -> Result<(), sqlx::Error> {
+async fn serve_pending(
+    service: &Service,
+    listener: &mut PgListener,
+    stop: &CancellationToken,
+) -> Result<(), sqlx::Error> {
     let pending: Vec<(String, String, serde_json::Value, bool)> = sqlx::query_as(
         r#"
         SELECT r.id::text, r.database_id::text, r.request, d.deleted_at IS NOT NULL
@@ -84,6 +101,10 @@ async fn serve_pending(service: &Service, listener: &mut PgListener) -> Result<(
     .await?;
 
     for (id, database_id, request, deleted) in pending {
+        if stop.is_cancelled() {
+            break;
+        }
+
         let result = if deleted {
             failure(D1ErrorKind::Unavailable, "the database is deleted".into())
         } else {
