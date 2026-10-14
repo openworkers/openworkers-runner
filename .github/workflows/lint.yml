@@ -15,12 +15,17 @@ on:
 
 jobs:
   clippy:
-    name: Clippy (${{ matrix.features }})
+    name: Clippy (${{ matrix.features }}${{ matrix.no_default && ', no default' || '' }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         features: ["v8,wasm", "wasm", "quickjs,wasm"]
+        no_default: [false]
+        # Without the database feature, which is on by default
+        include:
+          - features: "v8"
+            no_default: true
     steps:
       - name: Check Out Repo
         uses: actions/checkout@v4
@@ -31,8 +36,8 @@ jobs:
       - name: Cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.features }}
+          key: ${{ matrix.features }}-${{ matrix.no_default }}
       - name: Format
         run: cargo fmt --check
       - name: Clippy
-        run: cargo clippy --features "${{ matrix.features }}" --lib --tests --bins -- -D warnings
+        run: cargo clippy ${{ matrix.no_default && '--no-default-features' || '' }} --features "${{ matrix.features }}" --lib --tests --bins -- -D warnings

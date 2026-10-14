@@ -27,8 +27,8 @@
 //! It only knows the binding NAME (e.g., "ASSETS"). The runner looks up
 //! the config and injects auth headers transparently.
 
-#[cfg(feature = "database")]
 use openworkers_core::{D1Op, D1Result};
+#[cfg(feature = "database")]
 use openworkers_core::{DatabaseOp, DatabaseResult};
 use openworkers_core::{
     HttpMethod, HttpRequest, HttpResponse, KvOp, KvResult, LogEvent, LogLevel, ObjectIdSource,
