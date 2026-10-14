@@ -62,26 +62,37 @@ async fn lower(db: &PgPool, namespace_id: &str, object_id: &str, at: i64) -> sql
     Ok(())
 }
 
+/// What a change of the index does to a delivery under way
+#[derive(Clone, Copy)]
+enum UnderWay {
+    /// It stays marked, and sets the index when it ends
+    Keep,
+    /// It ends with this change
+    End,
+}
+
 /// Puts the index at the alarm of the file, with its count of failed runs,
-/// and wakes the loop for it. A delivery under way stays marked: it sets the
-/// index when it ends.
+/// and wakes the loop for it.
 async fn follow(
     db: &PgPool,
     namespace_id: &str,
     object_id: &str,
     alarm: Option<(i64, u32)>,
+    under_way: UnderWay,
 ) -> sqlx::Result<()> {
     match alarm {
         Some((at, retry_count)) => sqlx::query(
             "INSERT INTO durable_object_alarms (namespace_id, object_id, scheduled_at, retry_count) \
              VALUES ($1::uuid, $2, to_timestamp($3::float8 / 1000), $4) \
              ON CONFLICT (namespace_id, object_id) DO UPDATE \
-             SET scheduled_at = excluded.scheduled_at, retry_count = excluded.retry_count",
+             SET scheduled_at = excluded.scheduled_at, retry_count = excluded.retry_count, \
+                 delivering = durable_object_alarms.delivering AND NOT $5",
         )
         .bind(namespace_id)
         .bind(object_id)
         .bind(at)
-        .bind(retry_count as i32),
+        .bind(retry_count as i32)
+        .bind(matches!(under_way, UnderWay::End)),
         None => sqlx::query(
             "DELETE FROM durable_object_alarms WHERE namespace_id = $1::uuid AND object_id = $2",
         )
@@ -126,7 +137,7 @@ pub async fn set(
         // makes the delivery read the file early
         let alarm = at.map(|at| (at, 0));
 
-        if let Err(err) = follow(db, namespace_id, object_id, alarm).await {
+        if let Err(err) = follow(db, namespace_id, object_id, alarm, UnderWay::Keep).await {
             tracing::warn!("durable object alarm: cannot index {object_id}: {err}");
         }
 
@@ -219,30 +230,7 @@ mod delivery {
         object_id: &str,
         alarm: Option<(i64, u32)>,
     ) -> sqlx::Result<()> {
-        match alarm {
-            Some((at, retry_count)) => sqlx::query(
-                "INSERT INTO durable_object_alarms (namespace_id, object_id, scheduled_at, retry_count) \
-                 VALUES ($1::uuid, $2, to_timestamp($3::float8 / 1000), $4) \
-                 ON CONFLICT (namespace_id, object_id) DO UPDATE \
-                 SET scheduled_at = excluded.scheduled_at, retry_count = excluded.retry_count, \
-                     delivering = false",
-            )
-            .bind(namespace_id)
-            .bind(object_id)
-            .bind(at)
-            .bind(retry_count as i32),
-            None => sqlx::query(
-                "DELETE FROM durable_object_alarms WHERE namespace_id = $1::uuid AND object_id = $2",
-            )
-            .bind(namespace_id)
-            .bind(object_id),
-        }
-        .execute(db)
-        .await?;
-
-        CHANGED.notify_one();
-
-        Ok(())
+        follow(db, namespace_id, object_id, alarm, UnderWay::End).await
     }
 
     /// The longest an alarm handler runs before the run counts as failed

@@ -46,6 +46,9 @@ use sqlite::Job;
 /// `objects/<namespace id>/<object id>.sqlite`
 const OBJECTS: &str = "objects";
 
+/// The files of a database, by suffix: `<id>.sqlite` and those of its WAL
+const FILES: [&str; 3] = ["sqlite", "sqlite-wal", "sqlite-shm"];
+
 /// The key of the storage file of an object, from a namespace UUID and an
 /// object ID of 64 lowercase hex digits; `None` for anything else, so a key
 /// never leaves the data directory.
@@ -662,7 +665,7 @@ impl Service {
         databases.remove(&id);
         drop(databases);
 
-        for suffix in ["sqlite", "sqlite-wal", "sqlite-shm"] {
+        for suffix in FILES {
             let path = self.config.data_dir.join(format!("{id}.{suffix}"));
 
             match std::fs::remove_file(&path) {
@@ -888,7 +891,7 @@ impl Service {
 
         let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S");
 
-        for suffix in ["sqlite", "sqlite-wal", "sqlite-shm"] {
+        for suffix in FILES {
             let path = self.config.data_dir.join(format!("{id}.{suffix}"));
 
             if path.exists() {
