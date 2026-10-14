@@ -99,7 +99,8 @@ pub struct Archive {
 impl Archive {
     /// Uploads a snapshot, checks it, records it, then drops the oldest ones
     /// beyond `keep`: their rows first, so a restore never reads a deleted
-    /// object.
+    /// object. The new snapshot counts even when that cleanup fails: the next
+    /// save tries again, and a deleted row queues its object for the purge.
     pub async fn save(&self, database_id: &str, bytes: Vec<u8>) -> Result<Snapshot, String> {
         let epoch = self.index.epoch();
         let seq = chrono::Utc::now().timestamp_millis();
@@ -130,11 +131,19 @@ impl Archive {
 
         self.index.record(snapshot.clone()).await?;
 
-        let snapshots = self.index.list(database_id.to_string()).await?;
+        let drop_old = async {
+            let snapshots = self.index.list(database_id.to_string()).await?;
 
-        for old in snapshots.into_iter().skip(self.config.keep) {
-            self.index.forget(old.database_id, old.seq).await?;
-            self.store.delete(old.key).await?;
+            for old in snapshots.into_iter().skip(self.config.keep) {
+                self.index.forget(old.database_id, old.seq).await?;
+                self.store.delete(old.key).await?;
+            }
+
+            Ok::<(), String>(())
+        };
+
+        if let Err(err) = drop_old.await {
+            tracing::warn!("D1: cannot drop the old snapshots of {database_id}: {err}");
         }
 
         Ok(snapshot)

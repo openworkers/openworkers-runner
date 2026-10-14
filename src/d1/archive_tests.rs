@@ -32,6 +32,7 @@ const DB: &str = "44444444-4444-4444-8444-444444444444";
 struct Faults {
     put: AtomicBool,
     record: AtomicBool,
+    delete: AtomicBool,
     /// Store a different object than the one uploaded
     corrupt: AtomicBool,
 }
@@ -83,6 +84,10 @@ impl Store for MemStore {
 
     fn delete(&self, key: String) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(async move {
+            if self.0.faults.delete.load(Ordering::SeqCst) {
+                return Err("delete failed".to_string());
+            }
+
             self.0.objects.lock().unwrap().remove(&key);
             Ok(())
         })
@@ -383,6 +388,29 @@ async fn only_the_latest_snapshots_are_kept() {
 
     assert_eq!(memory.rows.lock().unwrap().len(), 3);
     assert_eq!(memory.objects.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn a_failed_delete_of_an_old_snapshot_keeps_the_new_one() {
+    let dir = temp_dir();
+    let memory = Memory::default();
+    let service = service(&dir, &memory);
+
+    exec(&service, "CREATE TABLE t (a)").await;
+
+    for value in 0..3 {
+        exec(&service, &format!("INSERT INTO t VALUES ({value})")).await;
+        service.snapshot_all().await;
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+
+    // The purge of d1_purge deletes the old object later
+    memory.faults.delete.store(true, Ordering::SeqCst);
+    exec(&service, "INSERT INTO t VALUES (3)").await;
+    service.snapshot_all().await;
+
+    assert_eq!(service.oldest_unsaved(), None);
+    assert_eq!(memory.rows.lock().unwrap().len(), 3);
 }
 
 #[tokio::test]
