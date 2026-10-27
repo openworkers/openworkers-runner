@@ -69,7 +69,7 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["h
 openworkers-core = { git = "https://github.com/openworkers/openworkers-core", tag = "v0.18.0", features = ["hyper"] }
 
 # Transform (TS strip + export default -> globalThis.default)
-openworkers-transform = { git = "https://github.com/openworkers/openworkers-transform", tag = "v0.1.3", optional = true }
+openworkers-transform = { git = "https://github.com/openworkers/openworkers-transform", tag = "v0.1.4", optional = true }
 
 # Runtime backends
 openworkers-runtime-v8 = { git = "https://github.com/openworkers/openworkers-runtime-v8", tag = "v0.18.4", optional = true, features = ["ptrcomp"] }
