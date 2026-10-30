@@ -90,12 +90,13 @@ pub fn build_s3_url(config: &StorageConfig, url_or_path: &str) -> Result<String,
         url_or_path.to_string()
     };
 
+    // With or without a prefix: a `..` climbs out of the bucket in the URL
+    let sanitized =
+        sanitize_path(&path).ok_or_else(|| "Invalid path: traversal not allowed".to_string())?;
+
     let full_path = match &config.prefix {
-        Some(prefix) => {
-            let sanitized = sanitize_path(&path)
-                .ok_or_else(|| "Invalid path: traversal not allowed".to_string())?;
-            format!("{}/{}", prefix.trim_end_matches('/'), sanitized)
-        }
+        Some(prefix) => format!("{}/{}", prefix.trim_end_matches('/'), sanitized),
+        // The path as it came, so a key with an encoded character keeps its name
         None => path.trim_start_matches('/').to_string(),
     };
 
@@ -683,11 +684,36 @@ mod tests {
     }
 
     #[test]
-    fn test_build_s3_url_no_prefix_allows_any_path() {
-        // Without prefix, paths are not sanitized (direct S3 access)
+    fn test_build_s3_url_no_prefix_allows_ordinary_paths() {
+        // Without prefix the bucket is the root: any path inside it goes through
         let config = make_config("https://s3.example.com", "my-bucket", None);
         let url = build_s3_url(&config, "/any/path/here.txt").unwrap();
         assert_eq!(url, "https://s3.example.com/my-bucket/any/path/here.txt");
+    }
+
+    #[test]
+    fn test_build_s3_url_no_prefix_keeps_an_encoded_key_as_it_came() {
+        let config = make_config("https://s3.example.com", "my-bucket", None);
+        let url = build_s3_url(&config, "/hello%20world.txt").unwrap();
+        assert_eq!(url, "https://s3.example.com/my-bucket/hello%20world.txt");
+    }
+
+    #[test]
+    fn test_build_s3_url_no_prefix_rejects_traversal() {
+        let config = make_config("https://s3.example.com", "my-bucket", None);
+
+        for path in [
+            "/../other-bucket/secret",
+            "/a/../../other-bucket/secret",
+            "/%2e%2e/other-bucket/secret",
+            "/%252e%252e/other-bucket/secret",
+            "../other-bucket/secret",
+        ] {
+            let result = build_s3_url(&config, path);
+
+            assert!(result.is_err(), "{path} was accepted: {result:?}");
+            assert!(result.unwrap_err().contains("traversal"));
+        }
     }
 
     #[test]
