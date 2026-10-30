@@ -3762,9 +3762,9 @@ dependencies = [
 
 [[package]]
 name = "openworkers-serde-v8"
-version = "152.2.1"
+version = "152.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1222cea9de9ebe54307ad1e01fcb80db3141fe12b1490529f8fd5690d820e7bf"
+checksum = "16d30676bf50c786a4606f0b83bce2838a66818f3a90b6421fea3b31b426c5d7"
 dependencies = [
  "bytes",
  "num-bigint 0.5.1",
