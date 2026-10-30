@@ -214,7 +214,7 @@ compiled once instead of on every cold start.
 
 | Variable                 | Default   | Description                                       |
 | ------------------------ | --------- | ------------------------------------------------- |
-| `V8_EXECUTE`             | `PINNED`  | Execution mode: `PINNED`, `POOLED`, or `ONESHOT`  |
+| `V8_EXECUTE`             | `PINNED`  | Execution mode: `PINNED` or `ONESHOT`             |
 | `WORKER_POOL_SIZE`       | CPU cores | Number of V8 worker threads                       |
 | `MAX_QUEUED_WORKERS`     | pool × 10 | Max queued tasks before backpressure              |
 | `WORKER_WAIT_TIMEOUT_MS` | `10000`   | Timeout (ms) waiting for a worker slot            |
@@ -229,13 +229,9 @@ Thread-local isolate pools — each thread maintains its own pool of V8 isolates
 
 A new V8 context is created per request, so no JS state leaks between requests. The isolate (engine, heap, GC) is reused to avoid the allocation cost.
 
-##### `POOLED`
-
-Single global LRU pool shared across all threads, protected by a mutex. Isolates are keyed by `worker_id`. Simpler model but higher contention under load since all threads compete for the same lock.
-
 ##### `ONESHOT`
 
-Fresh V8 isolate per request, destroyed after each response. No reuse, no pooling. Slower (~1-2ms overhead per request) but useful for debugging. Also serves as a workaround for a V8 SIGSEGV (`SEGV_PKUERR`) that affects PINNED and POOLED modes in some containerized environments (see [#2](https://github.com/openworkers/openworkers-runner/issues/2)).
+Fresh V8 isolate per request, destroyed after each response. No reuse, no pooling. Slower (~1-2ms overhead per request) but useful for debugging. Also serves as a workaround for a V8 SIGSEGV (`SEGV_PKUERR`) that affects PINNED mode in some containerized environments (see [#2](https://github.com/openworkers/openworkers-runner/issues/2)).
 
 #### WebSockets
 
