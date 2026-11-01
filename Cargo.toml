@@ -1,6 +1,6 @@
 [package]
 name = "openworkers-runner"
-version = "1.18.7"
+version = "1.18.8"
 edition = "2024"
 license = "MIT"
 default-run = "openworkers-runner"
